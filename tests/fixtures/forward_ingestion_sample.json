@@ -1,0 +1,43 @@
+{
+  "locations": [
+    {
+      "name": "SITE-ALPHA",
+      "city": "Metropolis",
+      "country": "United States"
+    },
+    {
+      "name": "SITE-BETA",
+      "city": "Gotham",
+      "country": "United States"
+    }
+  ],
+  "platforms": [
+    {
+      "name": "N9K-C93180YC-FX",
+      "manufacturer": "Vendor.CISCO",
+      "device_type": "DeviceType.SWITCH"
+    }
+  ],
+  "device_types": [
+    {
+      "name": "DeviceType.SWITCH",
+      "color": "9e9e9e"
+    }
+  ],
+  "devices": [
+    {
+      "name": "device-alpha-01",
+      "location": "SITE-ALPHA",
+      "vendor": "Vendor.CISCO",
+      "model": "N9K-C93180YC-FX",
+      "device_type": "DeviceType.SWITCH"
+    },
+    {
+      "name": "device-beta-01",
+      "location": "SITE-BETA",
+      "vendor": "Vendor.CISCO",
+      "model": "N9K-C93180YC-FX",
+      "device_type": "DeviceType.SWITCH"
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+// Forward query scaffold for Nautobot modules.
+// TODO: replace with the bundled Forward NQE that returns module rows.
+

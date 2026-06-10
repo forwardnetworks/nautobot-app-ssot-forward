@@ -1,0 +1,3 @@
+// Forward query scaffold for Nautobot VRFs.
+// TODO: replace with the bundled Forward NQE that returns VRF rows.
+

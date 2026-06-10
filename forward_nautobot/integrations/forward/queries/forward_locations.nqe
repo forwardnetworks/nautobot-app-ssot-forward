@@ -1,0 +1,13 @@
+/**
+ * @intent Forward locations
+ * @description Location rows for Nautobot ingestion testing and initial location mapping.
+ */
+
+@query
+f() =
+foreach location in network.locations
+select distinct {
+  name: location.name,
+  city: if isPresent(location.city) then location.city else "",
+  country: if isPresent(location.country) then location.country else ""
+};

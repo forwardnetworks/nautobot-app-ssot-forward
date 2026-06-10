@@ -1,0 +1,14 @@
+/**
+ * @intent Forward device types
+ * @description Device type rows for Nautobot ingestion testing and initial device role mapping.
+ */
+
+@query
+f() =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+select distinct {
+  name: toString(device.platform.deviceType),
+  color: "9e9e9e"
+};

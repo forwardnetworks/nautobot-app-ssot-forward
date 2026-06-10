@@ -1,0 +1,3 @@
+// Forward query scaffold for Nautobot IP addresses.
+// TODO: replace with the bundled Forward NQE that returns IP address rows.
+

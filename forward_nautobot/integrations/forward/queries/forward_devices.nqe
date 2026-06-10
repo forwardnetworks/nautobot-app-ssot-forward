@@ -1,0 +1,17 @@
+/**
+ * @intent Forward devices
+ * @description Device rows for Nautobot ingestion testing and initial device mapping.
+ */
+
+@query
+f() =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+select {
+  name: device.name,
+  location: if isPresent(device.locationName) then device.locationName else "",
+  vendor: toString(device.platform.vendor),
+  model: if isPresent(device.platform.model) then device.platform.model else "",
+  device_type: toString(device.platform.deviceType)
+};
