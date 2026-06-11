@@ -1,4 +1,4 @@
-"""UI views for the Forward Nautobot plugin."""
+"""UI views for the Forward Networks SSoT integration."""
 
 from __future__ import annotations
 
@@ -226,8 +226,8 @@ class ForwardHomeView(View):
     def get(self, request=None, *args, **kwargs):
         return HttpResponse(
             "<h1>Forward Networks</h1>"
-            "<p>Forward Nautobot plugin.</p>"
-            "<p>Use the jobs page to preview or sync a Forward network.</p>"
+            "<p>Forward Networks SSoT integration.</p>"
+            "<p>Use the SSoT job page to sync a Forward network.</p>"
         )
 
 

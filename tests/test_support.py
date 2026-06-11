@@ -23,7 +23,7 @@ def test_support_bundle_preserves_raw_sample_rows():
             ForwardSnapshotInfo(id="snap-1", label="snap-1"),
         ),
         planned_models=("devices",),
-        notes=("sync-boundary",),
+        notes=("ssot-sync",),
     )
 
     bundle = build_support_bundle(report, sample_size=1)

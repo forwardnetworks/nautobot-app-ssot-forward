@@ -1,4 +1,4 @@
-"""URL routes for the Forward Nautobot plugin."""
+"""URL routes for the Forward Networks SSoT integration."""
 
 try:
     from django.urls import path

@@ -1,4 +1,4 @@
-"""Navigation for the Forward Nautobot plugin."""
+"""Navigation for the Forward Networks SSoT integration."""
 
 try:
     from django.utils.translation import gettext as _

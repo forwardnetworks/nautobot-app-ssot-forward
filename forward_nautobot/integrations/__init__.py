@@ -1,2 +1,1 @@
-"""Integration packages for the Forward Nautobot plugin."""
-
+"""Integration packages for the Forward Networks SSoT integration."""

@@ -10,7 +10,7 @@ def test_home_view_mentions_forward_plugin():
     response = ForwardHomeView().get()
 
     assert response.status_code == 200
-    assert "Forward Nautobot plugin." in response.content
+    assert "Use the SSoT job page to sync a Forward network." in response.content
 
 
 def test_configuration_view_mentions_profile_fields():

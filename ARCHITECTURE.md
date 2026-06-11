@@ -73,8 +73,8 @@ ForwardInventoryDataSource
   -> SSoT Sync.diff / Sync.summary
 ```
 
-Standalone preview and ingestion-plan jobs remain registered for diagnostics while the SSoT path
-stabilizes.
+The only registered sync job is `ForwardInventoryDataSource`. The fixture-backed dry-run helper
+remains available for diagnostics and replay.
 
 ## Next Boundaries
 

@@ -1,1 +1,1 @@
-"""API namespace for the Forward Nautobot plugin."""
+"""API namespace for the Forward Networks SSoT integration."""

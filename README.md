@@ -20,16 +20,16 @@ Target platform: Nautobot 3.1.
 - Raw source/target adapter layer that keeps NQE fields untouched
 - Raw ingestion planner that loads bundled NQE outputs into the adapter stores
 - Raw write-plan layer that surfaces create/update/no-change intent before Nautobot persistence exists
-- Nautobot write executor for the first core slices behind an opt-in `apply_writes` job flag
+- Nautobot write executor for the first core slices behind the SSoT dry-run toggle
 - Safe-delete reconciliation for the first supported slices when `delete_policy` is `delete` or `mark_inactive`
 - Bundled core NQE queries tagged with an explicit contract version
 - Bundled query contract drift checks in tests and CI
 - Sanitized fixture ingestion tests that exercise the raw adapter contract without live credentials
 - Fixture-backed dry-run helper for local troubleshooting of raw Forward payloads
 - Native `forward_dry_run` management command for replaying saved payloads
-- Nautobot job entrypoints for SSoT sync, preview, and sync-boundary runs
+- Nautobot job entrypoint for the SSoT sync path
 - Read-only configuration/status surface for profile readiness and current policy
-- Nautobot ingestion-plan job for bundled NQE validation and support bundles
+- Fixture-backed dry-run helper for bundled NQE validation and support bundles
 - CI gates for query contracts, wheel contents, and release/tag state
 - Minimal UI and URL surfaces
 - Repo docs for architecture and planning
