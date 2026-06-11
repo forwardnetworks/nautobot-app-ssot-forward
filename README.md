@@ -12,6 +12,7 @@ Target platform: Nautobot 3.1.
 - Forward API client with snapshot, query, and pagination support
 - Forward sync runner that resolves query refs and returns a sync report
 - Forward connection profile for persistent plugin configuration
+- Persistent SSoT profile selection for the sync job
 - Write-prerequisite fields in the connection profile for the first Nautobot objects
 - Editable profile form for the plugin UI
 - Delete-policy support for missing-row handling

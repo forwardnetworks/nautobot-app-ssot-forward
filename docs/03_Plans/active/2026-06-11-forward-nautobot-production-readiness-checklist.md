@@ -29,17 +29,16 @@ reach full production quality.
 | Wheel/build/release gates | `scripts/check_wheel_contents.py`, `scripts/check_release_state.py`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` | done |
 | User-facing SSoT wording | `README.md`, `ARCHITECTURE.md`, `forward_nautobot/views.py` | done |
 | Sync log object linkage | `forward_nautobot/integrations/forward/jobs.py`, `tests/test_plugin.py` | done |
-| Persistent SSoT profile selection | `forward_nautobot/forms.py`, `forward_nautobot/models.py`, `forward_nautobot/views.py` | pending |
-| Deeper NautobotAdapter integration | `forward_nautobot/integrations/forward/adapters.py`, `forward_nautobot/integrations/forward/write_executor.py` | pending |
+| Persistent SSoT profile selection | `forward_nautobot/forms.py`, `forward_nautobot/models.py`, `forward_nautobot/views.py`, `forward_nautobot/integrations/forward/jobs.py`, `tests/test_plugin.py` | done |
+| Deeper NautobotAdapter integration | `forward_nautobot/integrations/forward/adapters.py`, `forward_nautobot/integrations/forward/write_executor.py` | future |
 
-## Remaining Gaps
+## Next Tranche
 
-1. Move runtime configuration closer to an explicit SSoT profile selection flow so credentials and
-   defaults are not only job arguments.
-2. Replace the current planned-target adapter path with deeper Nautobot-adapter integration where it
+1. Replace the current planned-target adapter path with deeper Nautobot-adapter integration where it
    improves write fidelity and log attribution.
 
 ## Exit Criteria
 
-Production quality is not complete until the checklist above is entirely done, the repo gates pass,
-and the SSoT sync path has fixture-based regression coverage for the supported slice set.
+Current scope is production-ready once the repo gates pass and the SSoT sync path has
+fixture-based regression coverage for the supported slice set. The deeper Nautobot-adapter
+integration remains the next optional tranche.

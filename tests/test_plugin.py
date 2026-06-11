@@ -6,6 +6,7 @@ from forward_nautobot.integrations.forward import CORE_MODEL_SLUGS
 from forward_nautobot.integrations.forward.client import ForwardClient
 import forward_nautobot.integrations.forward.jobs as jobs_module
 from forward_nautobot.integrations.forward.jobs import ForwardInventoryDataSource
+from forward_nautobot.models import ForwardConnectionProfileRecord
 
 from .test_client import _mock_transport
 
@@ -41,11 +42,95 @@ def test_ssot_data_source_metadata():
     assert ForwardInventoryDataSource.Meta.name == "Forward Networks inventory"
     assert ForwardInventoryDataSource.Meta.data_source == "Forward Networks"
     assert not hasattr(ForwardInventoryDataSource, "query_mode")
+    assert ForwardInventoryDataSource.config_information()["Profile selection"] == (
+        "Uses a persisted profile by name or the default saved profile when available."
+    )
     assert ForwardInventoryDataSource.config_information()["Query input"] == (
         "Bundled Forward NQE contracts only."
     )
     assert mappings[0].source_name == "Forward locations"
     assert mappings[0].target_name == "dcim.location"
+
+
+def test_ssot_data_source_uses_persisted_profile_selection(monkeypatch):
+    stored_profile = ForwardConnectionProfileRecord(
+        name="primary",
+        base_url="https://fwd.example",
+        username="alice",
+        password="secret",
+        network_id="net-1",
+        snapshot_id="latestProcessed",
+        enabled_models=("devices",),
+        default_location_type_name="Building",
+        default_location_status_name="Active",
+        default_device_role_name="Access Switch",
+        default_device_status_name="Active",
+        delete_policy="mark_inactive",
+        is_default=True,
+    )
+    captured = {"writes": 0}
+
+    class _FakeManager:
+        def all(self):
+            return [SimpleNamespace(to_record=lambda: stored_profile)]
+
+    class _FakeExecution:
+        def as_dict(self):
+            return {
+                "items": [{"model_slug": "devices", "status": "created"}],
+                "summary": {
+                    "created": 2,
+                    "updated": 0,
+                    "no-change": 0,
+                    "blocked": 0,
+                    "skipped": 0,
+                    "errors": 0,
+                },
+                "configuration_status": {"profile_provided": True, "write_ready": True},
+                "failure_classification": "clean",
+            }
+
+    class _FakeExecutor:
+        def execute(self, plan, profile):
+            captured["writes"] += 1
+            captured["profile"] = profile
+            return _FakeExecution()
+
+    def _client_factory(settings):
+        captured["settings"] = settings
+        return ForwardClient(settings, transport=_mock_transport())
+
+    monkeypatch.setattr(
+        jobs_module,
+        "ForwardConnectionProfile",
+        SimpleNamespace(objects=_FakeManager()),
+    )
+    monkeypatch.setattr(
+        "forward_nautobot.integrations.forward.jobs.ForwardClient",
+        _client_factory,
+    )
+    monkeypatch.setattr(
+        "forward_nautobot.integrations.forward.jobs.ForwardNautobotWriteExecutor",
+        lambda: _FakeExecutor(),
+    )
+
+    job = ForwardInventoryDataSource()
+    result = job.run(
+        profile_name="primary",
+        selected_models="",
+        snapshot_id="latestProcessed",
+        fetch_all=False,
+        limit=1,
+        dryrun=True,
+    )
+
+    assert captured["settings"].base_url == "https://fwd.example"
+    assert captured["settings"].network_id == "net-1"
+    assert captured["writes"] == 0
+    assert result["source_summary"]["model_counts"]["devices"] == 2
+    assert result["configuration_status"]["profile_provided"] is True
+    assert result["profile_status"]["last_failure"] == "clean"
+    assert result["profile_status"]["last_support_bundle"] == "forward_devices.nqe"
 
 
 def test_ssot_lookup_object_resolves_real_objects(monkeypatch):

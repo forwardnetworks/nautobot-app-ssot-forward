@@ -7,6 +7,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from .client import ForwardClient
+from ...models import ForwardConnectionProfile
 from ...models import ForwardConnectionProfileRecord
 from .models import ForwardConnectionSettings
 from .models import LATEST_PROCESSED_SNAPSHOT
@@ -114,6 +115,51 @@ def _split_unique_id(unique_id: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in str(unique_id or "").split("|") if part.strip())
 
 
+def _iter_persisted_profile_records() -> tuple[ForwardConnectionProfileRecord, ...]:
+    manager = getattr(ForwardConnectionProfile, "objects", None)
+    if manager is None or not hasattr(manager, "all"):
+        return ()
+    try:
+        records = manager.all()
+    except Exception:  # pragma: no cover - defensive
+        return ()
+    return tuple(
+        record.to_record() if hasattr(record, "to_record") else record
+        for record in records
+    )
+
+
+def _resolve_profile_record(**data):
+    profile_name = str(data.get("profile_name") or "").strip()
+    profiles = _iter_persisted_profile_records()
+    selected = None
+    if profile_name:
+        for profile in profiles:
+            if profile.name == profile_name:
+                selected = profile
+                break
+    elif profiles:
+        for profile in profiles:
+            if profile.is_default:
+                selected = profile
+                break
+        if selected is None:
+            selected = profiles[0]
+
+    if selected is not None:
+        return ForwardConnectionProfileRecord.from_mapping(
+            data,
+            default_name=selected.name,
+            existing=selected,
+        )
+    if profile_name or _has_meaningful_profile_inputs(data):
+        return ForwardConnectionProfileRecord.from_mapping(
+            data,
+            default_name=profile_name or "job-profile",
+        )
+    return None
+
+
 def _build_connection_settings(**data):
     return ForwardConnectionSettings(
         base_url=data["base_url"],
@@ -124,30 +170,18 @@ def _build_connection_settings(**data):
     )
 
 
-def _build_connection_profile(**data):
-    return ForwardConnectionProfileRecord(
-        name=str(data.get("profile_name") or "job-profile").strip() or "job-profile",
-        base_url=data["base_url"],
-        username=data.get("username") or "",
-        password=data.get("password") or "",
-        network_id=data.get("network_id") or "",
-        snapshot_id=data.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT,
-        enabled_models=_split_csv(data.get("selected_models")),
-        default_location_type_name=data.get("default_location_type_name") or "",
-        default_location_status_name=data.get("default_location_status_name") or "",
-        default_device_role_name=data.get("default_device_role_name") or "",
-        default_device_status_name=data.get("default_device_status_name") or "",
-        delete_policy=data.get("delete_policy") or "ignore",
-    )
-
-
 def _build_ingestion_request(*, dryrun: bool, **data):
-    connection = _build_connection_settings(**data)
+    connection_profile = _resolve_profile_record(**data)
     selected_models = _split_csv(data.get("selected_models"))
+    if not selected_models and connection_profile is not None:
+        selected_models = tuple(connection_profile.enabled_models)
     limit = int(data.get("limit") or 0)
-    connection_profile = _build_connection_profile(**data)
-    if dryrun and not _has_meaningful_profile_inputs(data):
+    if connection_profile is None and dryrun and not _has_meaningful_profile_inputs(data):
         connection_profile = None
+    if connection_profile is not None:
+        connection = connection_profile.to_connection_settings()
+    else:
+        connection = _build_connection_settings(**data)
     return ForwardIngestionRequest(
         connection=connection,
         model_names=selected_models,
@@ -240,7 +274,7 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
     base_url = StringVar(default="https://fwd.app", description="Forward API URL.")
     username = StringVar(required=False, description="Forward username.")
     password = StringVar(required=False, description="Forward password.")
-    network_id = StringVar(required=True, description="Forward network ID.")
+    network_id = StringVar(required=False, description="Forward network ID.")
     snapshot_id = StringVar(
         default=LATEST_PROCESSED_SNAPSHOT,
         required=False,
@@ -259,12 +293,12 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
     selected_models = StringVar(
         required=False,
         default="",
-        description="Comma-separated model slugs to include in the sync.",
+        description="Comma-separated model slugs to include in the sync, or leave blank to use the selected profile.",
     )
     profile_name = StringVar(
         required=False,
-        default="job-profile",
-        description="Name for the Forward connection profile.",
+        default="",
+        description="Name of the persisted Forward profile to use.",
     )
     default_location_type_name = StringVar(
         required=False,
@@ -332,6 +366,7 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
             "Forward API URL": "Provided at job runtime.",
             "Forward network": "Provided at job runtime.",
             "Snapshot": f"Defaults to {LATEST_PROCESSED_SNAPSHOT}.",
+            "Profile selection": "Uses a persisted profile by name or the default saved profile when available.",
             "Query input": "Bundled Forward NQE contracts only.",
             "Write behavior": "SSoT dry run plans only; non-dry-run applies supported Nautobot writes.",
         }

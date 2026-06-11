@@ -76,9 +76,8 @@ ForwardInventoryDataSource
 The only registered sync job is `ForwardInventoryDataSource`. The fixture-backed dry-run helper
 remains available for diagnostics and replay.
 
-## Next Boundaries
+## Next Tranche
 
 1. Replace the planned target adapter with a deeper Nautobot adapter where it improves SSoT logs and object lookup.
 2. Expand object lookup coverage for any additional Nautobot object types introduced by future slices.
-3. Move runtime configuration toward persistent SSoT-friendly profile selection.
-4. Expand ingestion tests around the SSoT job surface.
+3. Expand ingestion tests around the SSoT job surface.
