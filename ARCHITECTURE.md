@@ -1,16 +1,19 @@
-# Forward Nautobot Architecture
+# Forward Networks SSoT Architecture
 
 ## Goal
 
-Build a Nautobot 3.1 plugin that mirrors the useful parts of the existing Forward integration work:
+Build a Nautobot 3.1 SSoT integration that syncs Forward Networks data into Nautobot through the
+`nautobot-ssot` framework:
 
 - Forward API client boundary
 - query and snapshot abstractions
-- Nautobot job entrypoints for sync work
+- Nautobot SSoT `DataSource` entrypoint for sync work
 - a small UI surface for configuration and execution visibility
 - a model registry for the first inventory/IPAM slice
 
-Earlier branching/sharding protection is intentionally not carried over. Nautobot will use preview/sync jobs, DiffSync adapters, and API-level pagination/retry protection instead.
+Earlier branching/sharding protection is intentionally not carried over. Nautobot will use the SSoT
+job lifecycle, DiffSync adapters, API-level pagination/retry protection, and explicit dry-run gates
+instead.
 
 ## Current Shape
 
@@ -47,13 +50,35 @@ forward_nautobot/
 - `forward_nautobot/integrations/forward/planner.py` turns bundled NQE rows into a raw ingestion plan across selected slices.
 - `forward_nautobot/integrations/forward/support.py` turns a report into a sanitized support bundle with raw row samples and adapter summaries.
 - `forward_nautobot/integrations/forward/registry.py` defines the first model slices and the expected Forward query filenames.
-- `forward_nautobot/integrations/forward/jobs.py` owns Nautobot job inputs, registration, and the ingestion-plan entrypoint.
+- `forward_nautobot/integrations/forward/jobs.py` owns Nautobot job inputs, SSoT `DataSource`
+  registration, and the ingestion-plan entrypoint.
+- Support-bundle capture remains part of the sync path so operators can share sanitized evidence
+  when an ingestion run fails.
+
+## SSoT Pivot
+
+The primary sync surface is now `ForwardInventoryDataSource`, a `nautobot_ssot.jobs.DataSource`
+wrapper. It lets the SSoT app own run history, dashboard discovery, and dry-run semantics while
+reusing the existing Forward planner, write executor, and support-bundle path.
+
+```text
+ForwardInventoryDataSource
+  -> ForwardIngestionPlanner
+     -> ForwardClient
+     -> ForwardSourceAdapter
+     -> NautobotTargetAdapter
+     -> ForwardWritePlanner
+  -> ForwardNautobotWriteExecutor only when SSoT dryrun is false
+  -> support bundle pair
+  -> SSoT Sync.diff / Sync.summary
+```
+
+Standalone preview and ingestion-plan jobs remain registered for diagnostics while the SSoT path
+stabilizes.
 
 ## Next Boundaries
 
-1. DiffSync model classes for the core inventory/IPAM slice.
-2. Real Nautobot object writes in the sync runner.
-3. Persistent source/config records and a proper UI form flow.
-4. Query files and contract tests for the model registry.
-5. Support-bundle capture and issue-reporting surfaces for user diagnostics.
-6. Sanitized fixture dataset ingestion tests once the write path and query contracts are in place.
+1. Replace the planned target adapter with a deeper Nautobot adapter where it improves SSoT logs and object lookup.
+2. Add SSoT `lookup_object()` coverage for supported Nautobot objects.
+3. Move runtime configuration toward persistent SSoT-friendly profile selection.
+4. Expand ingestion tests around the SSoT job surface.

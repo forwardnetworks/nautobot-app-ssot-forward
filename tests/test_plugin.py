@@ -3,6 +3,7 @@ from forward_nautobot import menu
 from forward_nautobot.integrations.forward import CORE_MODEL_MAPPINGS
 from forward_nautobot.integrations.forward import CORE_MODEL_SLUGS
 from forward_nautobot.integrations.forward.client import ForwardClient
+from forward_nautobot.integrations.forward.jobs import ForwardInventoryDataSource
 from forward_nautobot.integrations.forward.jobs import ForwardIngestionPlanJob
 from forward_nautobot.integrations.forward.jobs import ForwardInventoryPreview
 
@@ -12,7 +13,7 @@ from .test_client import _mock_transport
 def test_plugin_config_metadata():
     assert config.name == "forward_nautobot"
     assert config.base_url == "forward"
-    assert config.verbose_name == "Forward Nautobot Plugin"
+    assert config.verbose_name == "Forward Networks SSoT"
     assert config.jobs == "integrations.forward.jobs"
 
 
@@ -55,6 +56,92 @@ def test_job_query_building():
     assert spec.query.execution_mode == "query_path"
     assert spec.query.parameters == {"limit": 10}
     assert spec.model_names == ("devices", "interfaces")
+
+
+def test_ssot_data_source_metadata():
+    mappings = ForwardInventoryDataSource.data_mappings()
+
+    assert ForwardInventoryDataSource.Meta.name == "Forward Networks inventory"
+    assert ForwardInventoryDataSource.Meta.data_source == "Forward Networks"
+    assert mappings[0].source_name == "Forward locations"
+    assert mappings[0].target_name == "dcim.location"
+    assert ForwardInventoryDataSource.config_information()["Query source"] == (
+        "Bundled Forward NQE contracts."
+    )
+
+
+def test_ssot_data_source_uses_dryrun_as_write_gate(monkeypatch):
+    captured = {"writes": 0}
+
+    class _FakeExecution:
+        def as_dict(self):
+            return {
+                "items": [{"model_slug": "devices", "status": "created"}],
+                "summary": {
+                    "created": 1,
+                    "updated": 0,
+                    "no-change": 0,
+                    "blocked": 0,
+                    "skipped": 0,
+                    "errors": 0,
+                },
+                "configuration_status": {"profile_provided": True, "write_ready": True},
+                "failure_classification": "clean",
+            }
+
+    class _FakeExecutor:
+        def execute(self, plan, profile):
+            captured["writes"] += 1
+            captured["profile"] = profile
+            return _FakeExecution()
+
+    def _client_factory(settings):
+        return ForwardClient(settings, transport=_mock_transport())
+
+    monkeypatch.setattr(
+        "forward_nautobot.integrations.forward.jobs.ForwardClient",
+        _client_factory,
+    )
+    monkeypatch.setattr(
+        "forward_nautobot.integrations.forward.jobs.ForwardNautobotWriteExecutor",
+        lambda: _FakeExecutor(),
+    )
+
+    dryrun_job = ForwardInventoryDataSource()
+    dryrun_result = dryrun_job.run(
+        base_url="https://fwd.example",
+        username="alice",
+        password="secret",
+        network_id="net-1",
+        snapshot_id="latestProcessed",
+        fetch_all=False,
+        limit=1,
+        selected_models="devices",
+        dryrun=True,
+    )
+    assert dryrun_result["write_execution"] == {}
+    assert captured["writes"] == 0
+
+    write_job = ForwardInventoryDataSource()
+    write_result = write_job.run(
+        base_url="https://fwd.example",
+        username="alice",
+        password="secret",
+        network_id="net-1",
+        snapshot_id="latestProcessed",
+        fetch_all=False,
+        limit=1,
+        selected_models="devices",
+        dryrun=False,
+        default_location_type_name="Building",
+        default_location_status_name="Active",
+        default_device_role_name="Access Switch",
+        default_device_status_name="Active",
+        profile_name="primary",
+    )
+    assert write_result["write_execution"]["summary"]["created"] == 1
+    assert captured["writes"] == 1
+    assert captured["profile"] is not None
 
 
 def test_requested_model_mappings_are_deduplicated():

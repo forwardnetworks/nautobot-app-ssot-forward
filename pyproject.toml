@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "forward-nautobot"
+name = "nautobot-app-ssot-forward"
 version = "0.1.0"
-description = "Forward Networks Nautobot plugin"
+description = "Forward Networks SSoT integration for Nautobot"
 authors = ["Forward Networks"]
 license = "MIT"
 readme = "README.md"
@@ -16,6 +16,7 @@ python = "^3.11"
 diffsync = ">=2.0,<3.0"
 httpx = ">=0.27,<0.29"
 nautobot = "^3.1"
+nautobot-ssot = ">=4.4,<5.0"
 
 [tool.poetry.group.dev.dependencies]
 build = "^1.2.2"

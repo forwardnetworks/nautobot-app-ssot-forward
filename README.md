@@ -1,11 +1,14 @@
-# Forward Nautobot
+# Forward Networks SSoT for Nautobot
 
-Nautobot 3.1 plugin for syncing Forward Networks data into Nautobot.
+Nautobot 3.1 SSoT app integration for syncing Forward Networks data into Nautobot.
 Target platform: Nautobot 3.1.
 
 ## What Exists Now
 
-- Plugin metadata and Nautobot app config
+- Nautobot app metadata for the `forward_nautobot` import package
+- Python distribution metadata for `nautobot-app-ssot-forward`
+- SSoT `DataSource` job for Forward Networks inventory
+- SSoT dashboard data mappings for the bundled Forward model slices
 - Forward API client with snapshot, query, and pagination support
 - Forward sync runner that resolves query refs and returns a sync report
 - Forward connection profile for persistent plugin configuration
@@ -24,7 +27,7 @@ Target platform: Nautobot 3.1.
 - Sanitized fixture ingestion tests that exercise the raw adapter contract without live credentials
 - Fixture-backed dry-run helper for local troubleshooting of raw Forward payloads
 - Native `forward_dry_run` management command for replaying saved payloads
-- Nautobot job entrypoints for preview and sync-boundary runs
+- Nautobot job entrypoints for SSoT sync, preview, and sync-boundary runs
 - Read-only configuration/status surface for profile readiness and current policy
 - Nautobot ingestion-plan job for bundled NQE validation and support bundles
 - CI gates for query contracts, wheel contents, and release/tag state
@@ -36,6 +39,7 @@ Target platform: Nautobot 3.1.
 
 ## Future Enhancements
 
+- deeper use of `nautobot_ssot.contrib.adapter.NautobotAdapter` once the write model matures
 - broader replay tooling for future slice drift
 
 ## Repo Map

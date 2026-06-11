@@ -8,7 +8,7 @@ def test_connection_profile_record_round_trips_connection_settings():
         base_url="https://fwd.example",
         username="alice",
         password="secret",
-        network_id="155541",
+        network_id="net-fixture-1",
         snapshot_id="latestProcessed",
         enabled_models=("devices", "locations"),
         default_location_type_name="Building",
@@ -26,7 +26,7 @@ def test_connection_profile_record_round_trips_connection_settings():
 
     assert settings.base_url == "https://fwd.example"
     assert settings.username == "alice"
-    assert settings.network_id == "155541"
+    assert settings.network_id == "net-fixture-1"
     assert profile.as_dict()["enabled_models"] == ["devices", "locations"]
     assert profile.write_ready
     assert profile.as_dict()["default_device_role_name"] == "Access Switch"
@@ -45,12 +45,12 @@ def test_connection_profile_record_invalid_delete_policy_defaults_to_ignore():
 def test_plugin_configuration_tracks_default_profile():
     primary = ForwardConnectionProfileRecord(
         name="primary",
-        network_id="155541",
+        network_id="net-fixture-1",
         is_default=True,
     )
     secondary = ForwardConnectionProfileRecord(
         name="secondary",
-        network_id="155541",
+        network_id="net-fixture-1",
     )
     configuration = ForwardPluginConfiguration(
         default_profile_name="primary",

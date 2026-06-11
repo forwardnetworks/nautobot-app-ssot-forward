@@ -1,5 +1,6 @@
 """Job helpers for the Forward integration."""
 
+from collections import namedtuple
 import json
 
 from .client import ForwardClient
@@ -11,6 +12,7 @@ from .models import LATEST_PROCESSED_SNAPSHOT
 from ...models import WRITE_DEFAULT_FIELD_NAMES
 from .planner import ForwardIngestionPlanner
 from .planner import ForwardIngestionRequest
+from .registry import CORE_MODEL_MAPPINGS
 from .write_executor import ForwardNautobotWriteExecutor
 from .support import build_support_bundle_pair
 from .support import classify_failure
@@ -50,6 +52,36 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
 
     def register_jobs(*jobs):  # type: ignore[no-redef]
         return None
+
+
+try:
+    from nautobot_ssot.jobs.base import DataMapping
+    from nautobot_ssot.jobs.base import DataSource
+except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+    DataMapping = namedtuple(
+        "DataMapping",
+        ["source_name", "source_url", "target_name", "target_url"],
+    )
+
+    class DataSource:  # type: ignore[too-many-ancestors]
+        """Fallback SSoT base for local tests without nautobot-ssot installed."""
+
+        sync = None
+        job_result = None
+        logger = None
+
+        def __init__(self):
+            self.dryrun = True
+            self.memory_profiling = False
+            self.parallel_loading = False
+            self.source_adapter = None
+            self.target_adapter = None
+
+        def run(self, *args, **kwargs):
+            self.dryrun = bool(kwargs.get("dryrun", True))
+            self.memory_profiling = bool(kwargs.get("memory_profiling", False))
+            self.parallel_loading = bool(kwargs.get("parallel_loading", False))
+            return self.sync_data(self.memory_profiling)
 
 
 def _split_csv(value):
@@ -376,7 +408,7 @@ class ForwardIngestionPlanJob(Job):
             connection_profile=connection_profile,
         )
 
-    def run(self, **data):
+    def _execute_ingestion_plan(self, **data):
         request = self._build_request(**data)
         client = ForwardClient(request.connection)
         planner = ForwardIngestionPlanner(client)
@@ -436,7 +468,7 @@ class ForwardIngestionPlanJob(Job):
                 profile_status = prof.status_record(
                     last_run=str(bundle.get("generated_at") or "not recorded")
                 ).as_dict()
-        return {
+        result = {
             "reports": [report.as_dict() for report in plan.reports],
             "source_summary": plan.source_summary,
             "target_summary": plan.target_summary,
@@ -449,6 +481,91 @@ class ForwardIngestionPlanJob(Job):
             "support_bundle_shared": shared_bundle,
             "profile_status": profile_status,
         }
+        return result, plan, write_execution
+
+    def run(self, **data):
+        result, _plan, _write_execution = self._execute_ingestion_plan(**data)
+        return result
 
 
-register_jobs(ForwardInventoryPreview, ForwardInventorySync, ForwardIngestionPlanJob)
+class ForwardInventoryDataSource(DataSource, ForwardIngestionPlanJob):
+    """SSoT DataSource wrapper for Forward inventory ingestion."""
+
+    support_bundle_sharing_profile = ChoiceVar(
+        choices=(
+            ("external", "External support bundle"),
+            ("internal", "Internal support bundle"),
+        ),
+        default="external",
+        required=False,
+        description="Redaction profile to use for the shared support bundle.",
+    )
+
+    class Meta:
+        name = "Forward Networks inventory"
+        description = "Sync Forward Networks inventory data into Nautobot through the SSoT app."
+        data_source = "Forward Networks"
+        dryrun_default = True
+
+    @classmethod
+    def data_mappings(cls):
+        """Describe the Forward query slices surfaced to the SSoT dashboard."""
+        return [
+            DataMapping(
+                source_name=f"Forward {mapping.slug}",
+                source_url="",
+                target_name=mapping.nautobot_scope,
+                target_url="",
+            )
+            for mapping in CORE_MODEL_MAPPINGS
+        ]
+
+    @classmethod
+    def config_information(cls):
+        """Describe user-visible configuration without exposing sensitive values."""
+        return {
+            "Forward API URL": "Provided at job runtime.",
+            "Forward network": "Provided at job runtime.",
+            "Snapshot": f"Defaults to {LATEST_PROCESSED_SNAPSHOT}.",
+            "Query source": "Bundled Forward NQE contracts.",
+            "Write behavior": "SSoT dry run plans only; non-dry-run applies supported Nautobot writes.",
+        }
+
+    def run(self, *args, **kwargs):
+        """Capture Forward-specific job inputs, then let SSoT own the run lifecycle."""
+        self._forward_job_data = dict(kwargs)
+        return super().run(*args, **kwargs)
+
+    def _save_sync_result(self, plan):
+        sync = getattr(self, "sync", None)
+        if sync is None:
+            return
+        try:
+            sync.diff = plan.diff_detail
+            if hasattr(sync, "summary"):
+                sync.summary = plan.diff_summary
+            sync.save()
+        except Exception as error:  # pragma: no cover - defensive for version-specific models
+            if getattr(self, "logger", None):
+                self.logger.warning("Unable to save Forward SSoT diff summary: %s", error)
+
+    def sync_data(self, memory_profiling=False):
+        """Run the existing Forward planner under the SSoT DataSource lifecycle."""
+        del memory_profiling
+        data = dict(getattr(self, "_forward_job_data", {}))
+        data["apply_writes"] = not bool(getattr(self, "dryrun", True))
+        result, plan, _write_execution = self._execute_ingestion_plan(**data)
+        self.source_adapter = plan.source
+        self.target_adapter = plan.target
+        self._save_sync_result(plan)
+        if getattr(self, "logger", None):
+            self.logger.info("Forward SSoT sync summary: %s", result["diff_summary"])
+        return result
+
+
+register_jobs(
+    ForwardInventoryDataSource,
+    ForwardInventoryPreview,
+    ForwardInventorySync,
+    ForwardIngestionPlanJob,
+)

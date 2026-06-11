@@ -1,4 +1,4 @@
-"""Forward Networks Nautobot plugin."""
+"""Forward Networks SSoT integration for Nautobot."""
 
 try:
     from nautobot.apps import NautobotAppConfig
@@ -16,8 +16,8 @@ from .models import ForwardPluginConfiguration
 
 class ForwardNautobotConfig(NautobotAppConfig):
     name = "forward_nautobot"
-    verbose_name = "Forward Nautobot Plugin"
-    description = "Sync Forward Networks data into Nautobot."
+    verbose_name = "Forward Networks SSoT"
+    description = "Sync Forward Networks data into Nautobot through the SSoT app."
     version = "0.1.0"
     author = "Forward Networks"
     author_email = "support@forwardnetworks.com"

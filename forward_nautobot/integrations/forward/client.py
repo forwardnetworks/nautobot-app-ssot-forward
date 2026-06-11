@@ -71,7 +71,7 @@ class ForwardClient:
         return {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "forward-nautobot/0.1.0",
+            "User-Agent": "nautobot-app-ssot-forward/0.1.0",
         }
 
     def _request(
