@@ -11,8 +11,7 @@ REQUIRED_PATHS = [
     "ARCHITECTURE.md",
     "README.md",
     "docs/00_Project_Knowledge/README.md",
-    "docs/03_Plans/active/2026-06-10-forward-nautobot-implementation.md",
-    "docs/03_Plans/active/2026-06-10-forward-nautobot-next-tranche.md",
+    "docs/03_Plans/active/2026-06-11-forward-nautobot-production-readiness-checklist.md",
     "forward_nautobot/migrations/0001_initial.py",
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
@@ -26,10 +25,9 @@ REQUIRED_PATHS = [
 PLAN_REQUIRED_HEADINGS = [
     "## Goal",
     "## Scope",
-    "## Out of Scope",
-    "## Acceptance Criteria",
-    "## Current Status",
-    "## Next Step",
+    "## Checklist",
+    "## Next Tranche",
+    "## Exit Criteria",
 ]
 
 REQUIRED_TEXT = {
@@ -83,7 +81,7 @@ def _check_required_text(failures: list[str]) -> None:
 
 
 def _check_plan_headings(failures: list[str]) -> None:
-    plan_path = REPO_ROOT / "docs/03_Plans/active/2026-06-10-forward-nautobot-implementation.md"
+    plan_path = REPO_ROOT / "docs/03_Plans/active/2026-06-11-forward-nautobot-production-readiness-checklist.md"
     if not plan_path.exists():
         return
     text = plan_path.read_text(encoding="utf-8")

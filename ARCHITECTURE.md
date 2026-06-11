@@ -51,7 +51,7 @@ forward_nautobot/
 - `forward_nautobot/integrations/forward/support.py` turns a report into a sanitized support bundle with raw row samples and adapter summaries.
 - `forward_nautobot/integrations/forward/registry.py` defines the first model slices and the expected Forward query filenames.
 - `forward_nautobot/integrations/forward/jobs.py` owns Nautobot job inputs, SSoT `DataSource`
-  registration, and the ingestion-plan entrypoint.
+  registration, and the sync job entrypoint.
 - Support-bundle capture remains part of the sync path so operators can share sanitized evidence
   when an ingestion run fails.
 
