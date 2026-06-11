@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 
+from .models import WRITE_DEFAULT_FIELD_NAMES
+
 FORWARD_PROFILE_FORM_FIELDS: tuple[str, ...] = (
     "name",
     "base_url",
@@ -20,6 +22,16 @@ FORWARD_PROFILE_FORM_FIELDS: tuple[str, ...] = (
     "default_device_status_name",
     "delete_policy",
     "is_default",
+)
+
+FORWARD_PROFILE_PREREQUISITE_FIELDS: tuple[str, ...] = (
+    "username",
+    "password",
+    "network_id",
+    "snapshot_id",
+    "query_contract_version",
+    *WRITE_DEFAULT_FIELD_NAMES,
+    "delete_policy",
 )
 
 DELETE_POLICY_CHOICES: tuple[tuple[str, str], ...] = (
@@ -62,7 +74,7 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
             else:
                 self.cleaned_data["base_url"] = base_url
 
-            for field_name in ("username", "password", "network_id", "snapshot_id", "query_contract_version", "default_location_type_name", "default_location_status_name", "default_device_role_name", "default_device_status_name", "delete_policy"):
+            for field_name in FORWARD_PROFILE_PREREQUISITE_FIELDS:
                 self.cleaned_data[field_name] = str(self.data.get(field_name) or "").strip()
             if not self.cleaned_data["snapshot_id"]:
                 self.cleaned_data["snapshot_id"] = "latestProcessed"

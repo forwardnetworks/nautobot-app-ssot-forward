@@ -32,6 +32,7 @@ from .forms import ForwardConnectionProfileForm
 from .models import ForwardConnectionProfile
 from .models import ForwardConnectionProfileRecord
 from .models import ForwardPluginConfiguration
+from .models import WRITE_DEFAULT_FIELD_NAMES
 
 
 def _iter_persisted_profile_records() -> tuple[ForwardConnectionProfileRecord, ...]:
@@ -243,7 +244,7 @@ class ForwardConfigurationView(View):
             "<h1>Forward Configuration</h1>"
             "<p>Persistent connection profiles are modeled in forward_nautobot.models.</p>"
             "<p>Profile fields: name, base_url, username, password, network_id, snapshot_id, enabled_models, query_contract_version, delete_policy.</p>"
-            "<p>Write prerequisites: default_location_type_name, default_location_status_name, default_device_role_name, default_device_status_name.</p>"
+            f"<p>Write prerequisites: {', '.join(WRITE_DEFAULT_FIELD_NAMES)}.</p>"
             f"<p>Editable form fields: {', '.join(FORWARD_PROFILE_FORM_FIELDS)}</p>"
             "<h2>Profile Editor</h2>"
             f"{_render_profile_editor(default_profile)}"
