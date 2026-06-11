@@ -1,3 +1,20 @@
-// Forward query scaffold for Nautobot VRFs.
-// TODO: replace with the bundled Forward NQE that returns VRF rows.
+/**
+ * @intent Forward VRFs
+ * @description VRF rows derived from Forward network instances.
+ * @contract-version v1
+ */
 
+@query
+f() =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach ni in device.networkInstances
+where ni.name != "default"
+where toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE"
+select distinct {
+  name: ni.name,
+  rd: null : String,
+  description: "",
+  enforce_unique: false
+};

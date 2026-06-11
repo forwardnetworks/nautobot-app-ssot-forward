@@ -35,7 +35,7 @@ forward_nautobot/
 
 - Keep the repo as the system of record.
 - Put integration boundaries in code, not in chat.
-- Prefer tiny stubs that explain intent over large unverified abstractions.
+- Prefer small helper functions that explain intent over large unverified abstractions.
 - Make the first working surfaces importable and testable before adding depth.
 - Keep contract fields unnormalized: if a field shape needs to change, do it in NQE so the Python side can carry the raw contract through unchanged.
 

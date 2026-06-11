@@ -2,7 +2,7 @@
 
 try:
     from django.utils.translation import gettext as _
-except ModuleNotFoundError:  # pragma: no cover - local scaffold import path
+except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
     def _(value):
         return value
 
@@ -10,7 +10,7 @@ try:
     from nautobot.apps.ui import PluginMenu
     from nautobot.apps.ui import PluginMenuButton
     from nautobot.apps.ui import PluginMenuItem
-except ModuleNotFoundError:  # pragma: no cover - local scaffold import path
+except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
     from dataclasses import dataclass
 
     @dataclass(slots=True)
@@ -52,4 +52,3 @@ menu = PluginMenu(
         ("Configuration", (configuration,)),
     ),
 )
-

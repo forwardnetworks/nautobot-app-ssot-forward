@@ -35,7 +35,10 @@ def test_planner_syncs_rows_with_diffsync():
 
     assert plan.source.count("devices") == 2
     assert plan.target.count("devices") == 2
+    assert plan.write_summary["create"] == 2
     assert plan.diff_summary["create"] == 2
     assert plan.reports[0].query_reference == "forward_devices.nqe"
+    assert plan.reports[0].query_contract_version == "v1"
     assert plan.source_summary["model_counts"]["devices"] == 2
     assert plan.target_summary["planned_counts"]["devices"] == 2
+    assert plan.write_plan.slice_policies["devices"]["missing_row_policy"] == "mark_inactive"

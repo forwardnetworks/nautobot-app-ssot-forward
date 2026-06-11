@@ -1,6 +1,7 @@
 /**
  * @intent Forward devices
  * @description Device rows for Nautobot ingestion testing and initial device mapping.
+ * @contract-version v1
  */
 
 @query

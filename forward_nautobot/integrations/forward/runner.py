@@ -1,4 +1,4 @@
-"""Sync runner scaffolding for the Forward integration."""
+"""Sync runner helpers for the Forward integration."""
 
 from dataclasses import dataclass
 from dataclasses import replace
@@ -46,7 +46,7 @@ class ForwardSyncRunner:
         notes = ()
         if mode == "sync":
             notes = (
-                "Nautobot write path is not implemented yet; this run is preview-only.",
+                "This run reports the sync boundary only; write execution is handled by the ingestion plan job.",
             )
         return ForwardSyncReport(
             mode=mode,
@@ -55,6 +55,7 @@ class ForwardSyncRunner:
             snapshot_id=snapshot_id,
             query_mode=query_spec.execution_mode,
             query_reference=query_spec.reference,
+            query_contract_version="",
             row_count=len(rows),
             rows=tuple(rows),
             snapshot_metrics=snapshot_metrics,
@@ -78,4 +79,3 @@ class ForwardSyncRunner:
     def sync(self, spec: ForwardSyncSpec) -> ForwardSyncReport:
         sync_spec = replace(spec, mode="sync")
         return self._run(sync_spec, mode="sync")
-

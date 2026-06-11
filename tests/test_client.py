@@ -1,8 +1,11 @@
 import json
 
 import httpx
+import pytest
 
 from forward_nautobot.integrations.forward.client import ForwardClient
+import forward_nautobot.integrations.forward.client as client_module
+from forward_nautobot.integrations.forward.exceptions import ForwardClientError
 from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
 from forward_nautobot.integrations.forward.models import ForwardQuerySpec
 
@@ -126,3 +129,241 @@ def test_client_network_snapshot_and_query_flow():
     assert [row["id"] for row in rows] == ["r1", "r2"]
     assert client.get_latest_processed_snapshot_id("net-1") == "snap-2"
     assert client.get_snapshot_metrics("snap-2")["snapshotState"] == "processed"
+
+
+def test_client_caches_query_resolution_for_repeated_runs():
+    calls = {"snapshot_lookups": 0, "query_lookups": 0, "nqe_runs": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/snapshots/latestProcessed":
+            calls["snapshot_lookups"] += 1
+            return httpx.Response(200, json={"id": "snap-2", "state": "processed"})
+        if path == "/api/nqe/repos/org/commits/head/queries":
+            calls["query_lookups"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "queries": [
+                        {
+                            "path": "/queries/devices.nqe",
+                            "queryId": "query-123",
+                            "lastCommit": {"id": "commit-abc"},
+                        }
+                    ]
+                },
+            )
+        if path == "/api/nqe":
+            calls["nqe_runs"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "items": [{"fields": {"id": "r1"}}],
+                    "totalNumItems": 1,
+                },
+            )
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    spec = ForwardQuerySpec(query_path="/queries/devices.nqe")
+    rows1 = client.run_nqe_query(query_spec=spec, fetch_all=False)
+    rows2 = client.run_nqe_query(query_spec=spec, fetch_all=False)
+
+    assert rows1 == rows2 == [{"id": "r1"}]
+    assert calls["snapshot_lookups"] == 1
+    assert calls["query_lookups"] == 1
+    assert calls["nqe_runs"] == 2
+
+
+def test_client_respects_request_min_interval(monkeypatch):
+    slept = []
+    timestamps = iter([10.0, 10.1, 10.2])
+
+    monkeypatch.setattr(client_module.time, "monotonic", lambda: next(timestamps))
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: slept.append(seconds))
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            request_min_interval_seconds=0.5,
+        ),
+        transport=_mock_transport(),
+    )
+
+    client.get_networks()
+    client.get_networks()
+
+    assert len(slept) == 1
+    assert abs(slept[0] - 0.4) < 1e-9
+
+
+def test_client_caches_snapshot_listing_and_latest_processed_snapshot():
+    calls = {"snapshot_listings": 0, "latest_processed": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/snapshots":
+            calls["snapshot_listings"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "snapshots": [
+                        {
+                            "id": "snap-1",
+                            "state": "archived",
+                            "createdAt": "2026-06-09T00:00:00Z",
+                        }
+                    ]
+                },
+            )
+        if path == "/api/networks/net-1/snapshots/latestProcessed":
+            calls["latest_processed"] += 1
+            return httpx.Response(200, json={"id": "snap-2", "state": "processed"})
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    snapshots_1 = client.get_snapshots("net-1")
+    snapshots_2 = client.get_snapshots("net-1")
+    latest_1 = client.get_latest_processed_snapshot_id("net-1")
+    latest_2 = client.get_latest_processed_snapshot_id("net-1")
+
+    assert snapshots_1 == snapshots_2 == [{"id": "snap-1", "state": "archived", "created_at": "2026-06-09T00:00:00Z", "processed_at": "", "label": "snap-1 | archived | 2026-06-09T00:00:00Z"}]
+    assert latest_1 == latest_2 == "snap-2"
+    assert calls["snapshot_listings"] == 1
+    assert calls["latest_processed"] == 1
+
+
+def test_client_retries_transient_http_errors_before_succeeding():
+    calls = {"nqe_runs": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/snapshots/latestProcessed":
+            return httpx.Response(200, json={"id": "snap-2", "state": "processed"})
+        if path == "/api/nqe":
+            calls["nqe_runs"] += 1
+            if calls["nqe_runs"] == 1:
+                return httpx.Response(503, text="temporarily unavailable")
+            return httpx.Response(
+                200,
+                json={
+                    "items": [{"fields": {"id": "r1"}}],
+                    "totalNumItems": 1,
+                },
+            )
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            retries=1,
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    rows = client.run_nqe_query(
+        query_spec=ForwardQuerySpec(query_text="select { id: string }"),
+        fetch_all=False,
+    )
+
+    assert rows == [{"id": "r1"}]
+    assert calls["nqe_runs"] == 2
+
+
+def test_client_rejects_auth_failures_without_retry():
+    calls = {"nqe_runs": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/snapshots/latestProcessed":
+            return httpx.Response(200, json={"id": "snap-2", "state": "processed"})
+        if path == "/api/nqe":
+            calls["nqe_runs"] += 1
+            return httpx.Response(401, text="unauthorized")
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            retries=2,
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ForwardClientError, match="HTTP 401"):
+        client.run_nqe_query(
+            query_spec=ForwardQuerySpec(query_text="select { id: string }"),
+            fetch_all=False,
+        )
+
+    assert calls["nqe_runs"] == 1
+
+
+def test_client_detects_stalled_full_page_pagination():
+    calls = {"nqe_runs": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/snapshots/latestProcessed":
+            return httpx.Response(200, json={"id": "snap-2", "state": "processed"})
+        if path == "/api/nqe":
+            calls["nqe_runs"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "items": [{"fields": {"id": "r1"}}],
+                },
+            )
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            nqe_page_size=1,
+            nqe_identical_full_page_streak_limit=1,
+            nqe_fetch_all_max_pages=4,
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(
+        ForwardClientError,
+        match="pagination did not advance; repeated identical pages were returned",
+    ):
+        client.run_nqe_query(
+            query_spec=ForwardQuerySpec(query_text="select { id: string }"),
+            fetch_all=True,
+            limit=1,
+        )
+
+    assert calls["nqe_runs"] == 2

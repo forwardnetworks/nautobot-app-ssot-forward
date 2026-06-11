@@ -1,6 +1,7 @@
 /**
  * @intent Forward device types
  * @description Device type rows for Nautobot ingestion testing and initial device role mapping.
+ * @contract-version v1
  */
 
 @query

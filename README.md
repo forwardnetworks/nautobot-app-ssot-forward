@@ -8,25 +8,35 @@ Target platform: Nautobot 3.1.
 - Plugin metadata and Nautobot app config
 - Forward API client with snapshot, query, and pagination support
 - Forward sync runner that resolves query refs and returns a sync report
-- Support-bundle helper that preserves raw sample rows and adapter summaries for troubleshooting
-- Raw source/target adapter scaffolding that keeps NQE fields untouched
+- Forward connection profile for persistent plugin configuration
+- Write-prerequisite fields in the connection profile for the first Nautobot objects
+- Editable profile form for the plugin UI
+- Delete-policy support for missing-row handling
+- Support-bundle helper that preserves raw sample rows, adapter summaries, and failure classification for troubleshooting
+- Support-bundle redaction helper for safe sharing
+- Raw source/target adapter layer that keeps NQE fields untouched
 - Raw ingestion planner that loads bundled NQE outputs into the adapter stores
+- Raw write-plan layer that surfaces create/update/no-change intent before Nautobot persistence exists
+- Nautobot write executor for the first core slices behind an opt-in `apply_writes` job flag
+- Safe-delete reconciliation for the first supported slices when `delete_policy` is `delete` or `mark_inactive`
+- Bundled core NQE queries tagged with an explicit contract version
+- Bundled query contract drift checks in tests and CI
 - Sanitized fixture ingestion tests that exercise the raw adapter contract without live credentials
-- Nautobot job entrypoints for preview and sync runs
+- Fixture-backed dry-run helper for local troubleshooting of raw Forward payloads
+- Native `forward_dry_run` management command for replaying saved payloads
+- Nautobot job entrypoints for preview and sync-boundary runs
+- Read-only configuration/status surface for profile readiness and current policy
 - Nautobot ingestion-plan job for bundled NQE validation and support bundles
-- Minimal UI and URL stubs
+- CI gates for query contracts, wheel contents, and release/tag state
+- Minimal UI and URL surfaces
 - Repo docs for architecture and planning
 - Tests for client, runner, jobs, and package wiring
 - Live ingestion tests for the corrected Forward network when `FORWARD_LIVE_*` env vars are present
 - GitHub Actions CI for tests plus wheel build
 
-## What Is Not Built Yet
+## Future Enhancements
 
-- DiffSync object writes into Nautobot core models
-- full model mapping execution for every Forward query file
-- real UI forms for persistent source records
-- delete/safe-delete policy for the write path
-- broader sanitized fixture coverage for additional model slices
+- broader replay tooling for future slice drift
 
 ## Repo Map
 

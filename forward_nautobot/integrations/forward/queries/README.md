@@ -1,8 +1,9 @@
 # Forward query bundle
 
 This directory holds the bundled Forward NQE filenames used by the registry.
+Each bundled contract query declares its contract version in the file header.
 
-Current scaffold files:
+Current files:
 
 - `forward_locations.nqe`
 - `forward_platforms.nqe`
@@ -17,4 +18,5 @@ Current scaffold files:
 - `forward_inventory_items.nqe`
 - `forward_modules.nqe`
 
-These are placeholders until the real Forward query bodies are added for the Nautobot contract.
+All bundled files now carry contract-shaped query bodies and explicit contract-version headers.
+The registry and executor use the same slice order so the Python layer stays thin and raw.

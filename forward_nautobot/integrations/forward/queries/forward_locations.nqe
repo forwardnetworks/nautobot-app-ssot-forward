@@ -1,6 +1,7 @@
 /**
  * @intent Forward locations
  * @description Location rows for Nautobot ingestion testing and initial location mapping.
+ * @contract-version v1
  */
 
 @query

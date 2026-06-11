@@ -1,3 +1,19 @@
-// Forward query scaffold for Nautobot VLANs.
-// TODO: replace with the bundled Forward NQE that returns VLAN rows.
+/**
+ * @intent Forward VLANs
+ * @description VLAN rows derived from Forward network instances.
+ * @contract-version v1
+ */
 
+@query
+f() =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach ni in device.networkInstances
+foreach vlan in ni.vlans
+select distinct {
+  site: if isPresent(device.locationName) then device.locationName else "",
+  vid: vlan.vlanId,
+  name: if isPresent(vlan.name) then vlan.name else join(" ", ["VLAN", toString(vlan.vlanId)]),
+  status: "active"
+};

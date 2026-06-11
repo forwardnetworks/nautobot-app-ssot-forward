@@ -11,9 +11,16 @@ REQUIRED_PATHS = [
     "ARCHITECTURE.md",
     "README.md",
     "docs/00_Project_Knowledge/README.md",
-    "docs/03_Plans/active/2026-06-10-forward-nautobot-scaffold.md",
+    "docs/03_Plans/active/2026-06-10-forward-nautobot-implementation.md",
+    "docs/03_Plans/active/2026-06-10-forward-nautobot-next-tranche.md",
+    "forward_nautobot/migrations/0001_initial.py",
     ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
     "scripts/check_sensitive_content.py",
+    "scripts/check_query_contracts.py",
+    "scripts/generate_contract_diff_report.py",
+    "scripts/check_wheel_contents.py",
+    "scripts/check_release_state.py",
 ]
 
 PLAN_REQUIRED_HEADINGS = [
@@ -42,8 +49,18 @@ REQUIRED_TEXT = {
     ".github/workflows/ci.yml": [
         "check_sensitive_content.py",
         "check_harness.py",
+        "check_query_contracts.py",
+        "generate_contract_diff_report.py",
+        "check_wheel_contents.py",
         "pytest",
         "build",
+    ],
+    ".github/workflows/release.yml": [
+        "check_release_state.py",
+        "check_query_contracts.py",
+        "generate_contract_diff_report.py",
+        "check_wheel_contents.py",
+        "softprops/action-gh-release",
     ],
 }
 
@@ -66,7 +83,7 @@ def _check_required_text(failures: list[str]) -> None:
 
 
 def _check_plan_headings(failures: list[str]) -> None:
-    plan_path = REPO_ROOT / "docs/03_Plans/active/2026-06-10-forward-nautobot-scaffold.md"
+    plan_path = REPO_ROOT / "docs/03_Plans/active/2026-06-10-forward-nautobot-implementation.md"
     if not plan_path.exists():
         return
     text = plan_path.read_text(encoding="utf-8")

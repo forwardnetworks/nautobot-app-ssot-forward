@@ -1,15 +1,19 @@
-"""Job scaffolding for the Forward integration."""
+"""Job helpers for the Forward integration."""
 
 import json
 
 from .client import ForwardClient
+from ...models import ForwardConnectionProfileRecord
 from .models import ForwardConnectionSettings
 from .models import ForwardQuerySpec
 from .models import ForwardSyncSpec
 from .models import LATEST_PROCESSED_SNAPSHOT
+from ...models import WRITE_DEFAULT_FIELD_NAMES
 from .planner import ForwardIngestionPlanner
 from .planner import ForwardIngestionRequest
-from .support import build_support_bundle
+from .write_executor import ForwardNautobotWriteExecutor
+from .support import build_support_bundle_pair
+from .support import classify_failure
 from .runner import ForwardSyncRunner
 
 try:
@@ -20,7 +24,7 @@ try:
     from nautobot.apps.jobs import StringVar
     from nautobot.apps.jobs import TextVar
     from nautobot.apps.jobs import register_jobs
-except ModuleNotFoundError:  # pragma: no cover - local scaffold import path
+except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
     class _Var:
         def __init__(self, *args, **kwargs):
             self.args = args
@@ -54,6 +58,17 @@ def _split_csv(value):
     if isinstance(value, (list, tuple)):
         return tuple(str(item).strip() for item in value if str(item).strip())
     return tuple(part.strip() for part in str(value).split(",") if part.strip())
+
+
+def _has_meaningful_profile_inputs(data) -> bool:
+    profile_name = str(data.get("profile_name") or "").strip()
+    if profile_name and profile_name not in {"job-profile", "plan-profile"}:
+        return True
+    for field_name in WRITE_DEFAULT_FIELD_NAMES:
+        if str(data.get(field_name) or "").strip():
+            return True
+    delete_policy = str(data.get("delete_policy") or "ignore").strip()
+    return delete_policy != "ignore"
 
 
 class ForwardJobBase(Job):
@@ -111,6 +126,55 @@ class ForwardJobBase(Job):
         default="",
         description="Comma-separated model slugs to include in the preview.",
     )
+    profile_name = StringVar(
+        required=False,
+        default="job-profile",
+        description="Name for the Forward connection profile.",
+    )
+    default_location_type_name = StringVar(
+        required=False,
+        default="",
+        description="Default Nautobot location type used for write readiness.",
+    )
+    default_location_status_name = StringVar(
+        required=False,
+        default="",
+        description="Default Nautobot location status used for write readiness.",
+    )
+    default_device_role_name = StringVar(
+        required=False,
+        default="",
+        description="Default Nautobot device role used for write readiness.",
+    )
+    default_device_status_name = StringVar(
+        required=False,
+        default="",
+        description="Default Nautobot device status used for write readiness.",
+    )
+    support_bundle_sharing_profile = ChoiceVar(
+        choices=(
+            ("external", "External support bundle"),
+            ("internal", "Internal support bundle"),
+        ),
+        default="external",
+        required=False,
+        description="Redaction profile to use for the shared support bundle.",
+    )
+    delete_policy = ChoiceVar(
+        choices=(
+            ("ignore", "Ignore missing rows"),
+            ("mark_inactive", "Mark missing rows inactive"),
+            ("delete", "Delete missing rows"),
+        ),
+        default="ignore",
+        required=False,
+        description="How missing source rows should be handled.",
+    )
+    apply_writes = BooleanVar(
+        default=False,
+        required=False,
+        description="Apply the planned writes to Nautobot.",
+    )
 
     def _build_connection_settings(self, **data):
         return ForwardConnectionSettings(
@@ -149,6 +213,22 @@ class ForwardJobBase(Job):
             parameters=parameters,
         )
 
+    def _build_connection_profile(self, **data):
+        return ForwardConnectionProfileRecord(
+            name=str(data.get("profile_name") or "job-profile").strip() or "job-profile",
+            base_url=data["base_url"],
+            username=data.get("username") or "",
+            password=data.get("password") or "",
+            network_id=data.get("network_id") or "",
+            snapshot_id=data.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT,
+            enabled_models=_split_csv(data.get("selected_models")),
+            default_location_type_name=data.get("default_location_type_name") or "",
+            default_location_status_name=data.get("default_location_status_name") or "",
+            default_device_role_name=data.get("default_device_role_name") or "",
+            default_device_status_name=data.get("default_device_status_name") or "",
+            delete_policy=data.get("delete_policy") or "ignore",
+        )
+
     def _build_spec(self, mode, **data):
         connection = self._build_connection_settings(**data)
         query = self._build_query_spec(**data)
@@ -184,8 +264,8 @@ class ForwardInventoryPreview(ForwardJobBase):
 
 class ForwardInventorySync(ForwardJobBase):
     class Meta:
-        name = "Forward inventory sync"
-        description = "Sync Forward data into Nautobot."
+        name = "Forward inventory sync report"
+        description = "Report on the Forward -> Nautobot sync boundary."
 
     def run(self, **data):
         return self._run("sync", **data)
@@ -219,6 +299,41 @@ class ForwardIngestionPlanJob(Job):
         default="",
         description="Comma-separated model slugs to include in the plan.",
     )
+    profile_name = StringVar(
+        required=False,
+        default="plan-profile",
+        description="Name for the Forward connection profile.",
+    )
+    default_location_type_name = StringVar(
+        required=False,
+        default="",
+        description="Default Nautobot location type used for write readiness.",
+    )
+    default_location_status_name = StringVar(
+        required=False,
+        default="",
+        description="Default Nautobot location status used for write readiness.",
+    )
+    default_device_role_name = StringVar(
+        required=False,
+        default="",
+        description="Default Nautobot device role used for write readiness.",
+    )
+    default_device_status_name = StringVar(
+        required=False,
+        default="",
+        description="Default Nautobot device status used for write readiness.",
+    )
+    delete_policy = ChoiceVar(
+        choices=(
+            ("ignore", "Ignore missing rows"),
+            ("mark_inactive", "Mark missing rows inactive"),
+            ("delete", "Delete missing rows"),
+        ),
+        default="ignore",
+        required=False,
+        description="How missing source rows should be handled.",
+    )
 
     def _build_connection_settings(self, **data):
         return ForwardConnectionSettings(
@@ -229,16 +344,36 @@ class ForwardIngestionPlanJob(Job):
             snapshot_id=data.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT,
         )
 
+    def _build_connection_profile(self, **data):
+        return ForwardConnectionProfileRecord(
+            name=str(data.get("profile_name") or "plan-profile").strip() or "plan-profile",
+            base_url=data["base_url"],
+            username=data.get("username") or "",
+            password=data.get("password") or "",
+            network_id=data.get("network_id") or "",
+            snapshot_id=data.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT,
+            enabled_models=_split_csv(data.get("selected_models")),
+            default_location_type_name=data.get("default_location_type_name") or "",
+            default_location_status_name=data.get("default_location_status_name") or "",
+            default_device_role_name=data.get("default_device_role_name") or "",
+            default_device_status_name=data.get("default_device_status_name") or "",
+            delete_policy=data.get("delete_policy") or "ignore",
+        )
+
     def _build_request(self, **data):
         connection = self._build_connection_settings(**data)
         selected_models = _split_csv(data.get("selected_models"))
         limit = int(data.get("limit") or 0)
+        connection_profile = self._build_connection_profile(**data)
+        if not (data.get("apply_writes") or _has_meaningful_profile_inputs(data)):
+            connection_profile = None
         return ForwardIngestionRequest(
             connection=connection,
             model_names=selected_models,
             fetch_all=bool(data.get("fetch_all", True)),
             limit=limit or None,
             snapshot_id=data.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT,
+            connection_profile=connection_profile,
         )
 
     def run(self, **data):
@@ -246,23 +381,73 @@ class ForwardIngestionPlanJob(Job):
         client = ForwardClient(request.connection)
         planner = ForwardIngestionPlanner(client)
         plan = planner.run(request)
+        apply_writes = bool(data.get("apply_writes"))
+        write_execution = {}
+        if apply_writes:
+            write_execution = ForwardNautobotWriteExecutor().execute(
+                plan.write_plan,
+                request.connection_profile,
+            ).as_dict()
         bundle = {}
+        shared_bundle = {}
+        profile_status = {}
+        failure_classification = (
+            "clean"
+            if not apply_writes and not plan.configuration_status.get("profile_provided")
+            else classify_failure(
+                write_summary=plan.write_summary,
+                configuration_status=plan.configuration_status,
+            )
+        )
+        if apply_writes and write_execution:
+            failure_classification = str(
+                write_execution.get("failure_classification") or failure_classification
+            )
         if plan.reports:
-            bundle = build_support_bundle(
+            bundle, shared_bundle = build_support_bundle_pair(
                 plan.reports[0],
                 source_summary=plan.source_summary,
                 target_summary=plan.target_summary,
+                write_summary=plan.write_summary,
+                diff_summary=plan.diff_summary,
+                write_policy=plan.write_plan.slice_policies,
+                configuration_status=plan.configuration_status,
+                failure_classification=failure_classification,
                 diagnostics={
+                    "write_summary": plan.write_summary,
+                    "configuration_status": plan.configuration_status,
                     "diff_summary": plan.diff_summary,
+                    "write_policy": plan.write_plan.slice_policies,
                     "diff_detail": plan.diff_detail,
+                    "write_execution_summary": write_execution.get("summary", {}),
                 },
-            ).as_dict()
+                sharing_profile=str(
+                    data.get("support_bundle_sharing_profile") or "external"
+                ).strip()
+                or "external",
+            )
+            bundle = bundle.as_dict()
+            if request.connection_profile is not None:
+                prof = request.connection_profile.with_run_history(
+                    last_run_at=str(bundle.get("generated_at") or ""),
+                    last_failure=str(failure_classification or ""),
+                    last_support_bundle=str(bundle.get("query_reference") or ""),
+                )
+                profile_status = prof.status_record(
+                    last_run=str(bundle.get("generated_at") or "not recorded")
+                ).as_dict()
         return {
             "reports": [report.as_dict() for report in plan.reports],
             "source_summary": plan.source_summary,
             "target_summary": plan.target_summary,
+            "write_summary": plan.write_summary,
+            "configuration_status": plan.configuration_status,
+            "failure_classification": failure_classification,
+            "write_execution": write_execution,
             "diff_summary": plan.diff_summary,
             "support_bundle": bundle,
+            "support_bundle_shared": shared_bundle,
+            "profile_status": profile_status,
         }
 
 

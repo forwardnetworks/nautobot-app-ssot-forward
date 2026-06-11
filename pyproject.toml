@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "forward-nautobot"
 version = "0.1.0"
-description = "Scaffold for a Forward Networks Nautobot plugin"
+description = "Forward Networks Nautobot plugin"
 authors = ["Forward Networks"]
 license = "MIT"
 readme = "README.md"

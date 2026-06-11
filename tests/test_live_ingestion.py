@@ -186,8 +186,13 @@ def test_live_combined_ingestion_plan_contract():
 
     assert len(plan.reports) == 4
     assert plan.reports[0].row_count >= 1
+    assert plan.reports[0].query_contract_version == "v1"
     assert plan.source_summary["model_counts"]["devices"] >= 1
     assert plan.target_summary["planned_counts"]["devices"] >= 1
+    assert plan.write_summary["create"] >= 1
+    assert plan.configuration_status["profile_provided"] is False
+    assert plan.configuration_status["delete_policy"] == "ignore"
+    assert plan.configuration_status["missing_defaults"] == []
     assert plan.diff_summary["create"] >= 1
 
     bundle = build_support_bundle(
@@ -195,6 +200,11 @@ def test_live_combined_ingestion_plan_contract():
         sample_size=1,
         source_summary=plan.source_summary,
         target_summary=plan.target_summary,
+        write_summary=plan.write_summary,
+        configuration_status=plan.configuration_status,
     )
     assert bundle.source_summary["model_counts"]["devices"] >= 1
     assert bundle.target_summary["planned_counts"]["devices"] >= 1
+    assert bundle.write_summary["create"] >= 1
+    assert bundle.configuration_status["delete_policy"] == "ignore"
+    assert bundle.configuration_status["missing_defaults"] == []

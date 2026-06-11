@@ -13,8 +13,11 @@ class ForwardModelMapping:
     forward_query_file: str
     description: str
     identity_fields: tuple[str, ...] = ("name",)
+    contract_version: str = "v1"
     enabled_by_default: bool = True
     nautobot_scope: str = ""
+    write_mode: str = "upsert"
+    missing_row_policy: str = "ignore"
 
 
 CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
@@ -24,6 +27,7 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         description="Forward locations mapped to Nautobot locations/sites.",
         identity_fields=("name",),
         nautobot_scope="dcim.location",
+        missing_row_policy="mark_inactive",
     ),
     ForwardModelMapping(
         slug="platforms",
@@ -31,6 +35,7 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         description="Forward platforms mapped to Nautobot platforms.",
         identity_fields=("name",),
         nautobot_scope="dcim.platform",
+        missing_row_policy="ignore",
     ),
     ForwardModelMapping(
         slug="device_types",
@@ -38,6 +43,7 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         description="Forward device types mapped to Nautobot device types.",
         identity_fields=("name",),
         nautobot_scope="dcim.devicetype",
+        missing_row_policy="ignore",
     ),
     ForwardModelMapping(
         slug="devices",
@@ -45,6 +51,7 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         description="Forward devices mapped to Nautobot devices.",
         identity_fields=("name",),
         nautobot_scope="dcim.device",
+        missing_row_policy="mark_inactive",
     ),
     ForwardModelMapping(
         slug="interfaces",
@@ -53,6 +60,7 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         identity_fields=("device", "name"),
         nautobot_scope="dcim.interface",
         enabled_by_default=False,
+        missing_row_policy="mark_inactive",
     ),
     ForwardModelMapping(
         slug="vlans",
@@ -61,6 +69,7 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         identity_fields=("site", "vid"),
         nautobot_scope="ipam.vlan",
         enabled_by_default=False,
+        missing_row_policy="mark_inactive",
     ),
     ForwardModelMapping(
         slug="vrfs",
@@ -69,6 +78,7 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         identity_fields=("name",),
         nautobot_scope="ipam.vrf",
         enabled_by_default=False,
+        missing_row_policy="ignore",
     ),
     ForwardModelMapping(
         slug="ipv4_prefixes",
@@ -77,6 +87,7 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         identity_fields=("prefix", "vrf"),
         nautobot_scope="ipam.prefix",
         enabled_by_default=False,
+        missing_row_policy="ignore",
     ),
     ForwardModelMapping(
         slug="ipv6_prefixes",
@@ -85,6 +96,7 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         identity_fields=("prefix", "vrf"),
         nautobot_scope="ipam.prefix",
         enabled_by_default=False,
+        missing_row_policy="ignore",
     ),
     ForwardModelMapping(
         slug="ip_addresses",
@@ -93,6 +105,7 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         identity_fields=("device", "interface", "address", "vrf"),
         nautobot_scope="ipam.ipaddress",
         enabled_by_default=False,
+        missing_row_policy="ignore",
     ),
     ForwardModelMapping(
         slug="inventory_items",
@@ -101,6 +114,7 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         identity_fields=("device", "name"),
         nautobot_scope="dcim.inventoryitem",
         enabled_by_default=False,
+        missing_row_policy="mark_inactive",
     ),
     ForwardModelMapping(
         slug="modules",
@@ -109,8 +123,14 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         identity_fields=("device", "module_bay"),
         nautobot_scope="dcim.module",
         enabled_by_default=False,
+        missing_row_policy="mark_inactive",
     ),
 )
+
+CORE_MODEL_LOOKUP: dict[str, ForwardModelMapping] = {
+    mapping.slug: mapping for mapping in CORE_MODEL_MAPPINGS
+}
+CORE_MODEL_SLUGS: tuple[str, ...] = tuple(CORE_MODEL_LOOKUP)
 
 
 def get_default_model_mappings() -> tuple[ForwardModelMapping, ...]:
@@ -120,10 +140,14 @@ def get_default_model_mappings() -> tuple[ForwardModelMapping, ...]:
 def get_model_mappings(selected: tuple[str, ...] | list[str] | None = None):
     if not selected:
         return get_default_model_mappings()
-    lookup = {mapping.slug: mapping for mapping in CORE_MODEL_MAPPINGS}
-    unknown = sorted({name for name in selected if name not in lookup})
+    selected_names = tuple(
+        dict.fromkeys(
+            str(item).strip() for item in selected if str(item).strip()
+        )
+    )
+    unknown = sorted({name for name in selected_names if name not in CORE_MODEL_LOOKUP})
     if unknown:
         raise ForwardConfigurationError(
             f"Unknown Forward model slice(s): {', '.join(unknown)}"
         )
-    return tuple(lookup[name] for name in selected)
+    return tuple(CORE_MODEL_LOOKUP[name] for name in selected_names)

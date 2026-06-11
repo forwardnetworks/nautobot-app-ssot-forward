@@ -1,3 +1,41 @@
-// Forward query scaffold for Nautobot interfaces.
-// TODO: replace with the bundled Forward NQE that returns interface rows.
+/**
+ * @intent Forward interfaces
+ * @description Interface rows derived from Forward device interface state.
+ * @contract-version v1
+ */
 
+@query
+f() =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach interface in device.interfaces
+  let is_ethernet = interface.interfaceType == IfaceType.IF_ETHERNET
+  let speed_mbps = if is_ethernet then interface.ethernet.speedMbps else null : Integer
+  let interface_type =
+    if is_ethernet
+      then if isPresent(speed_mbps) && speed_mbps == 100000 then "100gbase-x-qsfp28"
+      else if isPresent(speed_mbps) && speed_mbps == 50000 then "50gbase-x-sfp56"
+      else if isPresent(speed_mbps) && speed_mbps == 40000 then "40gbase-x-qsfpp"
+      else if isPresent(speed_mbps) && speed_mbps == 25000 then "25gbase-x-sfp28"
+      else if isPresent(speed_mbps) && speed_mbps == 10000 then "10gbase-t"
+      else if isPresent(speed_mbps) && speed_mbps == 5000 then "5gbase-t"
+      else if isPresent(speed_mbps) && speed_mbps == 2500 then "2.5gbase-t"
+      else if isPresent(speed_mbps) && speed_mbps == 1000 then "1000base-t"
+      else if isPresent(speed_mbps) && speed_mbps == 100 then "100base-tx"
+      else "other"
+    else if interface.interfaceType == IfaceType.IF_LOOPBACK then "virtual"
+    else if interface.interfaceType == IfaceType.IF_AGGREGATE then "lag"
+    else "other"
+select distinct {
+  device: device.name,
+  name: interface.name,
+  type: interface_type,
+  lag: if is_ethernet && isPresent(interface.ethernet.aggregateId) then interface.ethernet.aggregateId else null : String,
+  mode: null : String,
+  untagged_vlan: null : Integer,
+  enabled: interface.operStatus == OperStatus.UP,
+  mtu: interface.mtu,
+  description: if isPresent(interface.description) then interface.description else "",
+  speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer
+};

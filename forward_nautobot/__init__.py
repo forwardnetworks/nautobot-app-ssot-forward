@@ -2,10 +2,16 @@
 
 try:
     from nautobot.apps import NautobotAppConfig
-except ModuleNotFoundError:  # pragma: no cover - local scaffold import path
+except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
     NautobotAppConfig = object
 
 from .navigation import menu
+from .forms import FORWARD_PROFILE_FORM_FIELDS
+from .forms import DELETE_POLICY_CHOICES
+from .forms import ForwardConnectionProfileForm
+from .models import ForwardConnectionProfile
+from .models import ForwardConnectionProfileRecord
+from .models import ForwardPluginConfiguration
 
 
 class ForwardNautobotConfig(NautobotAppConfig):
@@ -24,3 +30,15 @@ class ForwardNautobotConfig(NautobotAppConfig):
 
 
 config = ForwardNautobotConfig
+
+__all__ = [
+    "ForwardConnectionProfile",
+    "ForwardConnectionProfileRecord",
+    "ForwardConnectionProfileForm",
+    "ForwardNautobotConfig",
+    "ForwardPluginConfiguration",
+    "FORWARD_PROFILE_FORM_FIELDS",
+    "DELETE_POLICY_CHOICES",
+    "config",
+    "menu",
+]

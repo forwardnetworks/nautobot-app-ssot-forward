@@ -1,6 +1,8 @@
 """Forward API client for Nautobot sync jobs."""
 
 from dataclasses import dataclass
+from dataclasses import field
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -14,12 +16,32 @@ from .models import LATEST_PROCESSED_SNAPSHOT
 
 
 TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+
+
 @dataclass(slots=True)
 class ForwardClient:
     """Small, testable wrapper around the Forward REST API."""
 
     settings: ForwardConnectionSettings
     transport: httpx.BaseTransport | None = None
+    _resolved_query_cache: dict[tuple[str, str, str], dict[str, Any]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _resolved_snapshot_cache: dict[tuple[str, str], str] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _latest_processed_snapshot_cache: dict[str, dict[str, Any]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _snapshot_metrics_cache: dict[str, dict[str, Any]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _snapshots_cache: dict[tuple[str, bool, int], list[dict[str, Any]]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _last_request_completed_at: float | None = field(
+        default=None, init=False, repr=False
+    )
 
     @property
     def base_url(self) -> str:
@@ -63,6 +85,7 @@ class ForwardClient:
         last_error: Exception | None = None
         for attempt in range(self.settings.retries + 1):
             try:
+                self._respect_min_interval()
                 with httpx.Client(
                     timeout=self.timeout,
                     verify=self.verify,
@@ -83,8 +106,10 @@ class ForwardClient:
                         response=response,
                     )
                 response.raise_for_status()
+                self._last_request_completed_at = time.monotonic()
                 return response
             except httpx.HTTPStatusError as exc:
+                self._last_request_completed_at = time.monotonic()
                 status_code = exc.response.status_code
                 if status_code not in TRANSIENT_HTTP_STATUS_CODES or attempt >= self.settings.retries:
                     raise ForwardClientError(
@@ -93,6 +118,7 @@ class ForwardClient:
                     ) from exc
                 last_error = exc
             except (httpx.TimeoutException, httpx.RequestError) as exc:
+                self._last_request_completed_at = time.monotonic()
                 if attempt >= self.settings.retries:
                     raise ForwardClientError(
                         f"Forward API request failed: {exc}"
@@ -100,6 +126,18 @@ class ForwardClient:
                 last_error = exc
 
         raise ForwardClientError("Forward API request failed.") from last_error
+
+    def _respect_min_interval(self) -> None:
+        minimum_interval = float(self.settings.request_min_interval_seconds or 0.0)
+        if minimum_interval <= 0:
+            return
+        last_completed_at = self._last_request_completed_at
+        if last_completed_at is None:
+            return
+        elapsed = time.monotonic() - last_completed_at
+        remaining = minimum_interval - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
 
     def get_networks(self) -> list[dict[str, Any]]:
         data = self._request("GET", "/networks").json()
@@ -133,6 +171,10 @@ class ForwardClient:
         network_id = str(network_id or "").strip()
         if not network_id:
             raise ForwardConfigurationError("Forward network ID is required.")
+        cache_key = (network_id, bool(include_archived), int(limit))
+        cached_snapshots = self._snapshots_cache.get(cache_key)
+        if cached_snapshots is not None:
+            return [dict(snapshot) for snapshot in cached_snapshots]
         response = self._request(
             "GET",
             f"/networks/{quote(network_id, safe='')}/snapshots",
@@ -171,18 +213,25 @@ class ForwardClient:
                     "label": " | ".join(label_parts),
                 }
             )
+        self._snapshots_cache[cache_key] = [dict(snapshot) for snapshot in snapshots]
         return snapshots
 
     def get_latest_processed_snapshot(self, network_id: str) -> dict[str, Any]:
         network_id = str(network_id or "").strip()
         if not network_id:
             raise ForwardConfigurationError("Forward network ID is required.")
+        cached_snapshot = self._latest_processed_snapshot_cache.get(network_id)
+        if cached_snapshot is not None:
+            return dict(cached_snapshot)
         response = self._request(
             "GET",
             f"/networks/{quote(network_id, safe='')}/snapshots/latestProcessed",
         )
         snapshot = response.json() or {}
-        return snapshot if isinstance(snapshot, dict) else {}
+        if isinstance(snapshot, dict):
+            self._latest_processed_snapshot_cache[network_id] = dict(snapshot)
+            return snapshot
+        return {}
 
     def get_latest_processed_snapshot_id(self, network_id: str) -> str:
         snapshot = self.get_latest_processed_snapshot(network_id)
@@ -195,20 +244,33 @@ class ForwardClient:
 
     def resolve_snapshot_id(self, network_id: str, snapshot_id: str) -> str:
         snapshot_id = str(snapshot_id or "").strip()
+        cache_key = (network_id, snapshot_id or LATEST_PROCESSED_SNAPSHOT)
+        cached_snapshot_id = self._resolved_snapshot_cache.get(cache_key)
+        if cached_snapshot_id is not None:
+            return cached_snapshot_id
         if not snapshot_id or snapshot_id == LATEST_PROCESSED_SNAPSHOT:
-            return self.get_latest_processed_snapshot_id(network_id)
+            resolved_snapshot_id = self.get_latest_processed_snapshot_id(network_id)
+            self._resolved_snapshot_cache[cache_key] = resolved_snapshot_id
+            return resolved_snapshot_id
+        self._resolved_snapshot_cache[cache_key] = snapshot_id
         return snapshot_id
 
     def get_snapshot_metrics(self, snapshot_id: str) -> dict[str, Any]:
         snapshot_id = str(snapshot_id or "").strip()
         if not snapshot_id:
             return {}
+        cached_metrics = self._snapshot_metrics_cache.get(snapshot_id)
+        if cached_metrics is not None:
+            return dict(cached_metrics)
         response = self._request(
             "GET",
             f"/snapshots/{quote(snapshot_id, safe='')}/metrics",
         )
         metrics = response.json() or {}
-        return metrics if isinstance(metrics, dict) else {}
+        if isinstance(metrics, dict):
+            self._snapshot_metrics_cache[snapshot_id] = dict(metrics)
+            return metrics
+        return {}
 
     def get_committed_nqe_query(
         self,
@@ -222,6 +284,10 @@ class ForwardClient:
         commit_id = str(commit_id or "head").strip() or "head"
         if not query_path:
             raise ForwardConfigurationError("Forward NQE query path is required.")
+        cache_key = (repository, query_path, commit_id)
+        cached_query = self._resolved_query_cache.get(cache_key)
+        if cached_query is not None:
+            return dict(cached_query)
         response = self._request(
             "GET",
             f"/nqe/repos/{quote(repository, safe='')}/commits/{quote(commit_id, safe='')}/queries",
@@ -231,17 +297,21 @@ class ForwardClient:
         if isinstance(data, dict) and isinstance(data.get("queries"), list):
             for row in data["queries"]:
                 if isinstance(row, dict) and str(row.get("path") or "").strip() == query_path:
+                    self._resolved_query_cache[cache_key] = dict(row)
                     return row
             raise ForwardClientError(
                 f"Forward NQE repository lookup did not include `{query_path}`."
             )
         if isinstance(data, dict):
+            self._resolved_query_cache[cache_key] = dict(data)
             return data
         raise ForwardClientError(
             f"Forward NQE repository lookup for `{query_path}` returned an invalid response."
         )
 
     def resolve_query_spec(self, query_spec: ForwardQuerySpec) -> ForwardQuerySpec:
+        if query_spec.query_path and query_spec.resolved_query_id:
+            return query_spec
         if query_spec.query_path:
             query = self.get_committed_nqe_query(
                 repository=query_spec.query_repository or "org",

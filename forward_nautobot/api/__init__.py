@@ -1,2 +1,1 @@
-"""API namespace for the Forward Nautobot plugin scaffold."""
-
+"""API namespace for the Forward Nautobot plugin."""

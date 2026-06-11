@@ -1,3 +1,41 @@
-// Forward query scaffold for Nautobot inventory items.
-// TODO: replace with the bundled Forward NQE that returns inventory item rows.
+/**
+ * @intent Forward inventory items
+ * @description Inventory item rows derived from Forward platform components.
+ * @contract-version v1
+ */
 
+truncate(value: String, max_len: Integer) =
+  if length(value) <= max_len then value else substring(value, 0, max_len);
+
+isInventoryHardwareRole(role_name: String) =
+  role_name != "APPLICATION" &&
+  role_name != "UNMODELED BACKUP DEVICE";
+
+@query
+f() =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach component in device.platform.components
+let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
+where isInventoryHardwareRole(role_name)
+let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
+let component_part_id = if isPresent(component.partId) && component.partId != "" then component.partId else null : String
+let component_serial = if isPresent(component.serialNumber) && component.serialNumber != "" then component.serialNumber else null : String
+let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
+let component_version = if isPresent(component.versionId) && component.versionId != "" then component.versionId else null : String
+let inventory_name = if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name
+let inventory_description = if isPresent(component_description) && isPresent(component_version) then truncate(join(" | ", [component_description, join(": ", ["Version", component_version])]), 200) else if isPresent(component_description) then truncate(component_description, 200) else if isPresent(component_version) then truncate(join(": ", ["Version", component_version]), 200) else ""
+select distinct {
+  device: device.name,
+  manufacturer: toString(device.platform.vendor),
+  name: truncate(inventory_name, 64),
+  label: if isPresent(component_name) then truncate(component_name, 64) else "",
+  part_id: if isPresent(component_part_id) then truncate(component_part_id, 50) else "",
+  serial: if isPresent(component_serial) then truncate(component_serial, 50) else "",
+  asset_tag: null : String,
+  role: role_name,
+  status: "active",
+  discovered: true,
+  description: inventory_description
+};

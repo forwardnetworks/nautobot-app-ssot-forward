@@ -1,6 +1,7 @@
 /**
  * @intent Forward platforms
  * @description Platform rows for Nautobot ingestion testing and initial platform mapping.
+ * @contract-version v1
  */
 
 @query

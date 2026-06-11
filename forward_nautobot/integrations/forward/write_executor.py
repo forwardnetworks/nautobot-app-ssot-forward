@@ -1,0 +1,948 @@
+"""Nautobot write execution for Forward rows."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from dataclasses import field
+from typing import TYPE_CHECKING
+from typing import Any
+
+try:
+    from django.apps import apps as django_apps
+    from django.contrib.contenttypes.models import ContentType
+    from django.utils.text import slugify
+except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+    django_apps = None
+    ContentType = None
+    slugify = None
+
+from .support import classify_failure
+from .registry import CORE_MODEL_MAPPINGS
+from .write_path import ForwardWriteOperation
+from .write_path import ForwardWritePlan
+
+if TYPE_CHECKING:
+    from ...models import ForwardConnectionProfileRecord
+
+
+def _slugify(value: str) -> str:
+    if slugify is not None:
+        return slugify(value)
+    value = re.sub(r"[^a-zA-Z0-9]+", "-", str(value or "").strip().lower())
+    return re.sub(r"-+", "-", value).strip("-")
+
+
+@dataclass(slots=True)
+class ForwardWriteExecutionItem:
+    """A single Nautobot write attempt."""
+
+    model_slug: str
+    record_key: str
+    planned_action: str
+    status: str
+    object_label: str = ""
+    blocked_by: tuple[str, ...] = ()
+    message: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "model_slug": self.model_slug,
+            "record_key": self.record_key,
+            "planned_action": self.planned_action,
+            "status": self.status,
+            "object_label": self.object_label,
+            "blocked_by": list(self.blocked_by),
+            "message": self.message,
+            "details": dict(self.details),
+        }
+
+
+@dataclass(slots=True)
+class ForwardWriteExecution:
+    """Summary of a Nautobot write attempt."""
+
+    items: tuple[ForwardWriteExecutionItem, ...] = ()
+    summary: dict[str, int] = field(default_factory=dict)
+    configuration_status: dict[str, Any] = field(default_factory=dict)
+    failure_classification: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "items": [item.as_dict() for item in self.items],
+            "summary": dict(self.summary),
+            "configuration_status": dict(self.configuration_status),
+            "failure_classification": self.failure_classification,
+        }
+
+
+class ForwardNautobotWriteBackend:
+    """Nautobot ORM backend for the first Forward write slices."""
+
+    def __init__(self, model_resolver=None):
+        self.model_resolver = model_resolver or self._default_model_resolver
+
+    @staticmethod
+    def _default_model_resolver(app_label: str, model_name: str):
+        if django_apps is None:
+            return None
+        return django_apps.get_model(app_label, model_name)
+
+    @property
+    def available(self) -> bool:
+        return self.model_resolver is not None and django_apps is not None
+
+    def resolve_model(self, app_label: str, model_name: str):
+        model = self.model_resolver(app_label, model_name)
+        if model is None:
+            raise LookupError(f"Unable to resolve Nautobot model {app_label}.{model_name}.")
+        return model
+
+    def _get_or_create_named(
+        self,
+        app_label: str,
+        model_name: str,
+        value: str,
+        *,
+        content_type_target: tuple[str, str] | None = None,
+    ):
+        model = self.resolve_model(app_label, model_name)
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError(f"Nautobot model {app_label}.{model_name} has no manager.")
+        obj, _created = manager.get_or_create(name=value)
+        if content_type_target is not None and hasattr(obj, "content_types") and ContentType is not None:
+            target_model = self.resolve_model(*content_type_target)
+            content_type = ContentType.objects.get_for_model(target_model)
+            manager = getattr(obj, "content_types")
+            if hasattr(manager, "add"):
+                manager.add(content_type)
+        return obj
+
+    @staticmethod
+    def _sync_fields(instance, updates: dict[str, Any]) -> bool:
+        changed = False
+        for field_name, value in updates.items():
+            if getattr(instance, field_name, None) != value:
+                setattr(instance, field_name, value)
+                changed = True
+        if changed:
+            instance.save()
+        return changed
+
+    @staticmethod
+    def _instance_value(value: Any) -> Any:
+        if hasattr(value, "name"):
+            return getattr(value, "name")
+        return value
+
+    def _mapping_for_slug(self, model_slug: str):
+        for mapping in CORE_MODEL_MAPPINGS:
+            if mapping.slug == model_slug:
+                return mapping
+        return None
+
+    def _record_key_for_instance(self, model_slug: str, instance) -> str:
+        mapping = self._mapping_for_slug(model_slug)
+        if mapping is None:
+            return ""
+        key_parts: list[str] = []
+        for field_name in mapping.identity_fields:
+            value = self._instance_value(getattr(instance, field_name, None))
+            if value is None:
+                return ""
+            value_text = str(value).strip()
+            if not value_text:
+                return ""
+            key_parts.append(value_text)
+        return "|".join(key_parts)
+
+    def _iter_existing_instances(self, model_slug: str):
+        mapping = self._mapping_for_slug(model_slug)
+        if mapping is None:
+            return ()
+        model = self.resolve_model(*mapping.nautobot_scope.split(".", 1))
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            return ()
+        if hasattr(manager, "all"):
+            try:
+                return list(manager.all())
+            except Exception:
+                return ()
+        if hasattr(manager, "records"):
+            return list(getattr(manager, "records").values())
+        return ()
+
+    def _mark_inactive(self, instance):
+        if not hasattr(instance, "status"):
+            raise ValueError("Model does not expose a status field for mark_inactive.")
+        inactive = self._get_or_create_named("extras", "Status", "Inactive")
+        self._sync_fields(instance, {"status": inactive})
+        return inactive
+
+    def reconcile_missing(
+        self,
+        model_slug: str,
+        source_keys: set[str],
+        delete_policy: str,
+    ) -> tuple[ForwardWriteExecutionItem, ...]:
+        if delete_policy not in {"delete", "mark_inactive"}:
+            return ()
+        items: list[ForwardWriteExecutionItem] = []
+        for instance in self._iter_existing_instances(model_slug):
+            record_key = self._record_key_for_instance(model_slug, instance)
+            if not record_key or record_key in source_keys:
+                continue
+            try:
+                if delete_policy == "delete":
+                    if hasattr(instance, "delete"):
+                        instance.delete()
+                        items.append(
+                            ForwardWriteExecutionItem(
+                                model_slug=model_slug,
+                                record_key=record_key,
+                                planned_action="delete",
+                                status="deleted",
+                                object_label=str(getattr(instance, "name", "") or record_key),
+                            )
+                        )
+                    else:
+                        items.append(
+                            ForwardWriteExecutionItem(
+                                model_slug=model_slug,
+                                record_key=record_key,
+                                planned_action="delete",
+                                status="skipped",
+                                message="Model does not expose delete().",
+                            )
+                        )
+                else:
+                    self._mark_inactive(instance)
+                    items.append(
+                        ForwardWriteExecutionItem(
+                            model_slug=model_slug,
+                            record_key=record_key,
+                            planned_action="mark_inactive",
+                            status="deactivated",
+                            object_label=str(getattr(instance, "name", "") or record_key),
+                        )
+                    )
+            except Exception as exc:  # pragma: no cover - defensive
+                items.append(
+                    ForwardWriteExecutionItem(
+                        model_slug=model_slug,
+                        record_key=record_key,
+                        planned_action=delete_policy,
+                        status="error",
+                        message=str(exc),
+                    )
+                )
+        return tuple(items)
+
+    def _upsert_location(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+        row = dict(operation.fields)
+        name = str(row.get("name") or "").strip()
+        if not name:
+            raise ValueError("Location row is missing `name`.")
+        location_type = self._get_or_create_named(
+            "dcim",
+            "LocationType",
+            profile.default_location_type_name,
+            content_type_target=("dcim", "Location"),
+        )
+        status = self._get_or_create_named(
+            "extras",
+            "Status",
+            profile.default_location_status_name,
+            content_type_target=("dcim", "Location"),
+        )
+        model = self.resolve_model("dcim", "Location")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot Location model has no manager.")
+        obj, created = manager.get_or_create(
+            name=name,
+            defaults={
+                "location_type": location_type,
+                "status": status,
+            },
+        )
+        self._sync_fields(
+            obj,
+            {
+                "location_type": location_type,
+                "status": status,
+            },
+        )
+        return obj, created
+
+    def _upsert_platform(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+        row = dict(operation.fields)
+        name = str(row.get("name") or "").strip()
+        manufacturer_name = str(row.get("manufacturer") or row.get("vendor") or "").strip()
+        if not name:
+            raise ValueError("Platform row is missing `name`.")
+        if not manufacturer_name:
+            raise ValueError("Platform row is missing `manufacturer`.")
+        manufacturer = self._get_or_create_named("dcim", "Manufacturer", manufacturer_name)
+        model = self.resolve_model("dcim", "Platform")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot Platform model has no manager.")
+        obj, created = manager.get_or_create(
+            name=name,
+            defaults={"manufacturer": manufacturer},
+        )
+        self._sync_fields(obj, {"manufacturer": manufacturer})
+        return obj, created
+
+    def _upsert_device_type(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+        row = dict(operation.fields)
+        manufacturer_name = str(row.get("manufacturer") or row.get("vendor") or "").strip()
+        model_name = str(row.get("model") or row.get("name") or "").strip()
+        if not manufacturer_name:
+            raise ValueError("Device type row is missing `manufacturer`.")
+        if not model_name:
+            raise ValueError("Device type row is missing `model`.")
+        manufacturer = self._get_or_create_named("dcim", "Manufacturer", manufacturer_name)
+        device_type_model = self.resolve_model("dcim", "DeviceType")
+        manager = getattr(device_type_model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot DeviceType model has no manager.")
+        slug = str(row.get("slug") or _slugify(f"{manufacturer_name}-{model_name}"))
+        obj, created = manager.get_or_create(
+            manufacturer=manufacturer,
+            model=model_name,
+            defaults={"slug": slug},
+        )
+        self._sync_fields(obj, {"slug": slug})
+        return obj, created
+
+    def _upsert_device(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+        row = dict(operation.fields)
+        name = str(row.get("name") or "").strip()
+        location_name = str(row.get("location") or "").strip()
+        vendor_name = str(row.get("vendor") or row.get("manufacturer") or "").strip()
+        platform_name = str(row.get("model") or "").strip()
+        device_type_name = str(row.get("device_type") or row.get("model") or "").strip()
+        if not name:
+            raise ValueError("Device row is missing `name`.")
+        if not location_name:
+            raise ValueError("Device row is missing `location`.")
+        if not vendor_name:
+            raise ValueError("Device row is missing `vendor`.")
+        if not platform_name:
+            raise ValueError("Device row is missing `model`.")
+        if not device_type_name:
+            raise ValueError("Device row is missing `device_type`.")
+        location = self._get_or_create_named("dcim", "Location", location_name)
+        platform = self._get_or_create_named("dcim", "Platform", platform_name)
+        manufacturer = self._get_or_create_named("dcim", "Manufacturer", vendor_name)
+        device_type = self._lookup_device_type(manufacturer, device_type_name)
+        device_role = self._get_or_create_named(
+            "extras",
+            "Role",
+            profile.default_device_role_name,
+            content_type_target=("dcim", "Device"),
+        )
+        status = self._get_or_create_named(
+            "extras",
+            "Status",
+            profile.default_device_status_name,
+            content_type_target=("dcim", "Device"),
+        )
+        device_model = self.resolve_model("dcim", "Device")
+        manager = getattr(device_model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot Device model has no manager.")
+        obj, created = manager.get_or_create(
+            name=name,
+            defaults={
+                "location": location,
+                "platform": platform,
+                "device_type": device_type,
+                "device_role": device_role,
+                "status": status,
+            },
+        )
+        self._sync_fields(
+            obj,
+            {
+                "location": location,
+                "platform": platform,
+                "device_type": device_type,
+                "device_role": device_role,
+                "status": status,
+            },
+        )
+        return obj, created
+
+    def _lookup_device_type(self, manufacturer, device_type_name: str):
+        device_type_model = self.resolve_model("dcim", "DeviceType")
+        manager = getattr(device_type_model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot DeviceType model has no manager.")
+        try:
+            return manager.get(manufacturer=manufacturer, model=device_type_name)
+        except Exception:
+            return manager.get_or_create(
+                manufacturer=manufacturer,
+                model=device_type_name,
+                defaults={"slug": _slugify(device_type_name)},
+            )[0]
+
+    @staticmethod
+    def _status_name(value: Any) -> str:
+        text = str(value or "").strip()
+        return text.title() if text else "Active"
+
+    def _get_existing(self, app_label: str, model_name: str, **lookup):
+        model = self.resolve_model(app_label, model_name)
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            return None
+        try:
+            return manager.get(**lookup)
+        except Exception:
+            return None
+
+    def _resolve_status(self, name: str):
+        return self._get_or_create_named("extras", "Status", self._status_name(name))
+
+    def _resolve_device(self, device_name: str):
+        device = self._get_existing("dcim", "Device", name=device_name)
+        if device is None:
+            raise ValueError(f"Device `{device_name}` was not found.")
+        return device
+
+    def _resolve_interface(self, device, interface_name: str):
+        interface = self._get_existing("dcim", "Interface", device=device, name=interface_name)
+        if interface is None:
+            return None
+        return interface
+
+    def _resolve_vrf(self, vrf_name: str):
+        vrf_name = str(vrf_name or "").strip()
+        if not vrf_name:
+            return None
+        model = self.resolve_model("ipam", "VRF")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot VRF model has no manager.")
+        obj, _created = manager.get_or_create(
+            name=vrf_name,
+            defaults={
+                "rd": "",
+                "description": "",
+                "enforce_unique": False,
+            },
+        )
+        self._sync_fields(
+            obj,
+            {
+                "rd": "",
+                "description": "",
+                "enforce_unique": False,
+            },
+        )
+        return obj
+
+    def _resolve_location(self, location_name: str, profile: ForwardConnectionProfileRecord):
+        location_name = str(location_name or "").strip()
+        if not location_name:
+            return None
+        location_type_name = str(profile.default_location_type_name or "").strip()
+        location_status_name = str(profile.default_location_status_name or "").strip()
+        if not location_type_name or not location_status_name:
+            return self._get_existing("dcim", "Location", name=location_name)
+        location_type = self._get_or_create_named(
+            "dcim",
+            "LocationType",
+            location_type_name,
+            content_type_target=("dcim", "Location"),
+        )
+        status = self._resolve_status(location_status_name)
+        model = self.resolve_model("dcim", "Location")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot Location model has no manager.")
+        obj, _created = manager.get_or_create(
+            name=location_name,
+            defaults={
+                "location_type": location_type,
+                "status": status,
+            },
+        )
+        self._sync_fields(
+            obj,
+            {
+                "location_type": location_type,
+                "status": status,
+            },
+        )
+        return obj
+
+    def _resolve_vlan(self, row: dict[str, Any], profile: ForwardConnectionProfileRecord):
+        vid = int(row["vid"])
+        location = self._resolve_location(row.get("site"), profile)
+        status = self._resolve_status(row.get("status") or "active")
+        model = self.resolve_model("ipam", "VLAN")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot VLAN model has no manager.")
+        lookup = {"vid": vid}
+        if location is not None:
+            lookup["location"] = location
+        obj, _created = manager.get_or_create(
+            **lookup,
+            defaults={
+                "name": str(row.get("name") or ""),
+                "status": status,
+            },
+        )
+        self._sync_fields(
+            obj,
+            {
+                "name": str(row.get("name") or ""),
+                "status": status,
+                **({"location": location} if location is not None else {}),
+            },
+        )
+        return obj
+
+    def _resolve_prefix(self, row: dict[str, Any]):
+        prefix_value = str(row.get("prefix") or "").strip()
+        if not prefix_value:
+            raise ValueError("Prefix row is missing `prefix`.")
+        vrf = self._resolve_vrf(row.get("vrf") or "")
+        status = self._resolve_status(row.get("status") or "active")
+        model = self.resolve_model("ipam", "Prefix")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot Prefix model has no manager.")
+        lookup = {"prefix": prefix_value}
+        if vrf is not None:
+            lookup["vrf"] = vrf
+        obj, _created = manager.get_or_create(
+            **lookup,
+            defaults={"status": status},
+        )
+        self._sync_fields(
+            obj,
+            {
+                "status": status,
+                **({"vrf": vrf} if vrf is not None else {}),
+            },
+        )
+        return obj
+
+    def _resolve_ip_address(self, row: dict[str, Any]):
+        device = self._resolve_device(row["device"])
+        interface = self._resolve_interface(device, row["interface"])
+        if interface is None:
+            raise ValueError(
+                f"Interface `{row['interface']}` was not found on device `{device.name}`."
+            )
+        address_value = str(row.get("address") or "").strip()
+        if not address_value:
+            raise ValueError("IP address row is missing `address`.")
+        vrf = self._resolve_vrf(row.get("vrf") or "")
+        status = self._resolve_status(row.get("status") or "active")
+        model = self.resolve_model("ipam", "IPAddress")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot IPAddress model has no manager.")
+        lookup = {"address": address_value}
+        if vrf is not None:
+            lookup["vrf"] = vrf
+        obj, _created = manager.get_or_create(
+            **lookup,
+            defaults={
+                "status": status,
+                "assigned_object": interface,
+            },
+        )
+        self._sync_fields(
+            obj,
+            {
+                "status": status,
+                "assigned_object": interface,
+                **({"vrf": vrf} if vrf is not None else {}),
+            },
+        )
+        return obj
+
+    def _resolve_inventory_item(self, row: dict[str, Any]):
+        device = self._resolve_device(row["device"])
+        role = self._get_or_create_named(
+            "extras",
+            "Role",
+            str(row.get("role") or "").strip(),
+            content_type_target=("dcim", "InventoryItem"),
+        )
+        manufacturer_name = str(row.get("manufacturer") or "").strip()
+        manufacturer = (
+            self._get_or_create_named("dcim", "Manufacturer", manufacturer_name)
+            if manufacturer_name
+            else None
+        )
+        status = self._resolve_status(row.get("status") or "active")
+        model = self.resolve_model("dcim", "InventoryItem")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot InventoryItem model has no manager.")
+        lookup = {"device": device, "name": str(row.get("name") or "").strip()}
+        obj, created = manager.get_or_create(
+            **lookup,
+            defaults={
+                "label": str(row.get("label") or ""),
+                "part_id": str(row.get("part_id") or ""),
+                "serial": str(row.get("serial") or ""),
+                "asset_tag": row.get("asset_tag") or None,
+                "status": status,
+                "role": role,
+                "manufacturer": manufacturer,
+                "discovered": bool(row.get("discovered", True)),
+                "description": str(row.get("description") or ""),
+            },
+        )
+        self._sync_fields(
+            obj,
+            {
+                "label": str(row.get("label") or ""),
+                "part_id": str(row.get("part_id") or ""),
+                "serial": str(row.get("serial") or ""),
+                "asset_tag": row.get("asset_tag") or None,
+                "status": status,
+                "role": role,
+                "manufacturer": manufacturer,
+                "discovered": bool(row.get("discovered", True)),
+                "description": str(row.get("description") or ""),
+            },
+        )
+        return obj, created
+
+    def _resolve_module(self, row: dict[str, Any]):
+        device = self._resolve_device(row["device"])
+        module_bay_name = str(row.get("module_bay") or "").strip()
+        if not module_bay_name:
+            raise ValueError("Module row is missing `module_bay`.")
+        manufacturer_name = str(row.get("manufacturer") or "").strip()
+        if not manufacturer_name:
+            raise ValueError("Module row is missing `manufacturer`.")
+        manufacturer = self._get_or_create_named("dcim", "Manufacturer", manufacturer_name)
+        module_type_model = self.resolve_model("dcim", "ModuleType")
+        module_type_manager = getattr(module_type_model, "objects", None)
+        if module_type_manager is None:
+            raise LookupError("Nautobot ModuleType model has no manager.")
+        module_type, _created = module_type_manager.get_or_create(
+            manufacturer=manufacturer,
+            model=str(row.get("model") or module_bay_name),
+            defaults={"part_number": str(row.get("part_number") or "")},
+        )
+        self._sync_fields(
+            module_type,
+            {
+                "part_number": str(row.get("part_number") or ""),
+            },
+        )
+        module_bay_model = self.resolve_model("dcim", "ModuleBay")
+        module_bay_manager = getattr(module_bay_model, "objects", None)
+        if module_bay_manager is None:
+            raise LookupError("Nautobot ModuleBay model has no manager.")
+        module_bay, _created = module_bay_manager.get_or_create(
+            device=device,
+            position=module_bay_name,
+            defaults={},
+        )
+        status = self._resolve_status(row.get("status") or "active")
+        module_model = self.resolve_model("dcim", "Module")
+        module_manager = getattr(module_model, "objects", None)
+        if module_manager is None:
+            raise LookupError("Nautobot Module model has no manager.")
+        lookup = {"device": device, "module_bay": module_bay}
+        obj, created = module_manager.get_or_create(
+            **lookup,
+            defaults={
+                "module_type": module_type,
+                "status": status,
+                "serial": str(row.get("serial") or ""),
+                "asset_tag": row.get("asset_tag") or None,
+            },
+        )
+        self._sync_fields(
+            obj,
+            {
+                "module_type": module_type,
+                "status": status,
+                "serial": str(row.get("serial") or ""),
+                "asset_tag": row.get("asset_tag") or None,
+            },
+        )
+        return obj, created
+
+    def _upsert_interface(self, operation: ForwardWriteOperation):
+        row = dict(operation.fields)
+        device = self._resolve_device(row["device"])
+        name = str(row.get("name") or "").strip()
+        if not name:
+            raise ValueError("Interface row is missing `name`.")
+        model = self.resolve_model("dcim", "Interface")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot Interface model has no manager.")
+        defaults = {
+            "type": str(row.get("type") or "other"),
+            "enabled": bool(row.get("enabled", True)),
+            "mtu": row.get("mtu") or None,
+            "description": str(row.get("description") or ""),
+            "speed": row.get("speed") or None,
+        }
+        lag_name = str(row.get("lag") or "").strip()
+        if lag_name:
+            lag = self._resolve_interface(device, lag_name)
+            if lag is not None:
+                defaults["lag"] = lag
+        obj, created = manager.get_or_create(
+            device=device,
+            name=name,
+            defaults=defaults,
+        )
+        self._sync_fields(obj, defaults)
+        return obj, created
+
+    def _upsert_vlan(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+        row = dict(operation.fields)
+        vid = int(row.get("vid"))
+        location = self._resolve_location(row.get("site"), profile)
+        status = self._resolve_status(row.get("status") or "active")
+        model = self.resolve_model("ipam", "VLAN")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot VLAN model has no manager.")
+        lookup = {"vid": vid}
+        if location is not None:
+            lookup["location"] = location
+        defaults = {"name": str(row.get("name") or ""), "status": status}
+        obj, created = manager.get_or_create(**lookup, defaults=defaults)
+        updates = dict(defaults)
+        if location is not None:
+            updates["location"] = location
+        self._sync_fields(obj, updates)
+        return obj, created
+
+    def _upsert_vrf(self, operation: ForwardWriteOperation):
+        row = dict(operation.fields)
+        name = str(row.get("name") or "").strip()
+        if not name:
+            raise ValueError("VRF row is missing `name`.")
+        model = self.resolve_model("ipam", "VRF")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot VRF model has no manager.")
+        defaults = {
+            "rd": str(row.get("rd") or ""),
+            "description": str(row.get("description") or ""),
+            "enforce_unique": bool(row.get("enforce_unique", False)),
+        }
+        obj, created = manager.get_or_create(name=name, defaults=defaults)
+        self._sync_fields(obj, defaults)
+        return obj, created
+
+    def _upsert_prefix(self, operation: ForwardWriteOperation):
+        row = dict(operation.fields)
+        prefix_value = str(row.get("prefix") or "").strip()
+        if not prefix_value:
+            raise ValueError("Prefix row is missing `prefix`.")
+        vrf = self._resolve_vrf(row.get("vrf") or "")
+        status = self._resolve_status(row.get("status") or "active")
+        model = self.resolve_model("ipam", "Prefix")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot Prefix model has no manager.")
+        lookup = {"prefix": prefix_value}
+        if vrf is not None:
+            lookup["vrf"] = vrf
+        defaults = {"status": status}
+        obj, created = manager.get_or_create(**lookup, defaults=defaults)
+        updates = {"status": status}
+        if vrf is not None:
+            updates["vrf"] = vrf
+        self._sync_fields(obj, updates)
+        return obj, created
+
+    def _upsert_ip_address(self, operation: ForwardWriteOperation):
+        row = dict(operation.fields)
+        device = self._resolve_device(row["device"])
+        interface = self._resolve_interface(device, row["interface"])
+        if interface is None:
+            raise ValueError(
+                f"Interface `{row['interface']}` was not found on device `{device.name}`."
+            )
+        address_value = str(row.get("address") or "").strip()
+        if not address_value:
+            raise ValueError("IP address row is missing `address`.")
+        vrf = self._resolve_vrf(row.get("vrf") or "")
+        status = self._resolve_status(row.get("status") or "active")
+        model = self.resolve_model("ipam", "IPAddress")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot IPAddress model has no manager.")
+        lookup = {"address": address_value}
+        if vrf is not None:
+            lookup["vrf"] = vrf
+        defaults = {"status": status, "assigned_object": interface}
+        obj, created = manager.get_or_create(**lookup, defaults=defaults)
+        updates = {"status": status, "assigned_object": interface}
+        if vrf is not None:
+            updates["vrf"] = vrf
+        self._sync_fields(obj, updates)
+        return obj, created
+
+    def apply_operation(
+        self,
+        operation: ForwardWriteOperation,
+        profile: ForwardConnectionProfileRecord,
+    ) -> ForwardWriteExecutionItem:
+        if operation.blocked_by:
+            return ForwardWriteExecutionItem(
+                model_slug=operation.model_slug,
+                record_key=operation.record_key,
+                planned_action=operation.action,
+                status="blocked",
+                blocked_by=operation.blocked_by,
+                message="Operation blocked by write readiness constraints.",
+            )
+        if not self.available:
+            return ForwardWriteExecutionItem(
+                model_slug=operation.model_slug,
+                record_key=operation.record_key,
+                planned_action=operation.action,
+                status="skipped",
+                message="Nautobot ORM is unavailable in the current environment.",
+            )
+        try:
+            if operation.model_slug == "locations":
+                obj, created = self._upsert_location(operation, profile)
+            elif operation.model_slug == "platforms":
+                obj, created = self._upsert_platform(operation, profile)
+            elif operation.model_slug == "device_types":
+                obj, created = self._upsert_device_type(operation, profile)
+            elif operation.model_slug == "devices":
+                obj, created = self._upsert_device(operation, profile)
+            elif operation.model_slug == "interfaces":
+                obj, created = self._upsert_interface(operation)
+            elif operation.model_slug == "vlans":
+                obj, created = self._upsert_vlan(operation, profile)
+            elif operation.model_slug == "vrfs":
+                obj, created = self._upsert_vrf(operation)
+            elif operation.model_slug in {"ipv4_prefixes", "ipv6_prefixes"}:
+                obj, created = self._upsert_prefix(operation)
+            elif operation.model_slug == "ip_addresses":
+                obj, created = self._upsert_ip_address(operation)
+            elif operation.model_slug == "inventory_items":
+                obj, created = self._resolve_inventory_item(operation.fields)
+            elif operation.model_slug == "modules":
+                obj, created = self._resolve_module(operation.fields)
+            else:
+                return ForwardWriteExecutionItem(
+                    model_slug=operation.model_slug,
+                    record_key=operation.record_key,
+                    planned_action=operation.action,
+                    status="skipped",
+                    message="No Nautobot writer is registered for this slice yet.",
+                )
+        except Exception as exc:  # pragma: no cover - exercised via targeted tests
+            return ForwardWriteExecutionItem(
+                model_slug=operation.model_slug,
+                record_key=operation.record_key,
+                planned_action=operation.action,
+                status="error",
+                message=str(exc),
+            )
+        status = "created" if created else "updated"
+        if operation.action == "no-change":
+            status = "no-change"
+        return ForwardWriteExecutionItem(
+            model_slug=operation.model_slug,
+            record_key=operation.record_key,
+            planned_action=operation.action,
+            status=status,
+            object_label=getattr(obj, "name", "") or str(getattr(obj, "pk", "")),
+            details={"id": str(getattr(obj, "pk", ""))},
+        )
+
+
+class ForwardNautobotWriteExecutor:
+    """Execute a planned write against Nautobot."""
+
+    def __init__(self, backend: ForwardNautobotWriteBackend | None = None):
+        self.backend = backend or ForwardNautobotWriteBackend()
+
+    def execute(
+        self,
+        plan: ForwardWritePlan,
+        profile: ForwardConnectionProfileRecord | None,
+    ) -> ForwardWriteExecution:
+        summary = {
+            "created": 0,
+            "updated": 0,
+            "no-change": 0,
+            "blocked": 0,
+            "skipped": 0,
+            "deleted": 0,
+            "deactivated": 0,
+            "error": 0,
+            "errors": 0,
+        }
+        items: list[ForwardWriteExecutionItem] = []
+        resolved_profile = profile or ForwardConnectionProfileRecord(name="runtime")
+        source_keys_by_slug: dict[str, set[str]] = {}
+        for operation in plan.operations:
+            source_keys_by_slug.setdefault(operation.model_slug, set()).add(
+                operation.record_key
+            )
+            item = self.backend.apply_operation(operation, resolved_profile)
+            if item.status == "error":
+                summary["error"] += 1
+                summary["errors"] += 1
+            else:
+                summary[item.status] = summary.get(item.status, 0) + 1
+            items.append(item)
+        delete_policy = getattr(resolved_profile, "effective_delete_policy", "ignore")
+        if delete_policy in {"delete", "mark_inactive"}:
+            for model_slug, source_keys in source_keys_by_slug.items():
+                reconciled_items = self.backend.reconcile_missing(
+                    model_slug,
+                    source_keys,
+                    delete_policy,
+                )
+                for item in reconciled_items:
+                    if item.status == "error":
+                        summary["error"] += 1
+                        summary["errors"] += 1
+                    else:
+                        summary[item.status] = summary.get(item.status, 0) + 1
+                    items.append(item)
+        failure_classification = (
+            "clean"
+            if summary["error"] == 0 and summary["blocked"] == 0
+            else "row-blocked" if summary["blocked"] else "error"
+        )
+        if profile is not None and not profile.write_ready:
+            failure_classification = classify_failure(
+                write_summary=plan.summary,
+                configuration_status=plan.configuration_status,
+            )
+        return ForwardWriteExecution(
+            items=tuple(items),
+            summary=summary,
+            configuration_status=dict(plan.configuration_status),
+            failure_classification=failure_classification,
+        )
+
+
+ForwardNautobotWriteExecutionItem = ForwardWriteExecutionItem
+ForwardNautobotWriteExecution = ForwardWriteExecution
