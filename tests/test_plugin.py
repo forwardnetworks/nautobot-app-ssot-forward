@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from forward_nautobot import config
 from forward_nautobot import menu
 from forward_nautobot.integrations.forward import CORE_MODEL_SLUGS
@@ -44,6 +46,50 @@ def test_ssot_data_source_metadata():
     )
     assert mappings[0].source_name == "Forward locations"
     assert mappings[0].target_name == "dcim.location"
+
+
+def test_ssot_lookup_object_resolves_real_objects(monkeypatch):
+    class _FakeManager:
+        def __init__(self, *records):
+            self.records = list(records)
+
+        def get(self, **lookup):
+            for record in self.records:
+                if all(getattr(record, key) == value for key, value in lookup.items()):
+                    return record
+            raise LookupError(lookup)
+
+    class _FakeApps:
+        def __init__(self, models):
+            self.models = models
+
+        def get_model(self, app_label, model_name):
+            return self.models[(app_label, model_name)]
+
+    location = SimpleNamespace(name="SITE-ALPHA")
+    device = SimpleNamespace(name="device-alpha-01")
+    interface = SimpleNamespace(device=device, name="Ethernet1/1")
+    vrf = SimpleNamespace(name="BLUE")
+    ip_address = SimpleNamespace(address="10.10.10.1/24", vrf=vrf)
+
+    models = {
+        ("dcim", "Location"): SimpleNamespace(objects=_FakeManager(location)),
+        ("dcim", "Device"): SimpleNamespace(objects=_FakeManager(device)),
+        ("dcim", "Interface"): SimpleNamespace(objects=_FakeManager(interface)),
+        ("ipam", "VRF"): SimpleNamespace(objects=_FakeManager(vrf)),
+        ("ipam", "IPAddress"): SimpleNamespace(objects=_FakeManager(ip_address)),
+    }
+    monkeypatch.setattr(jobs_module, "django_apps", _FakeApps(models))
+
+    job = ForwardInventoryDataSource()
+
+    assert job.lookup_object("locations", "SITE-ALPHA") is location
+    assert job.lookup_object("devices", "device-alpha-01") is device
+    assert job.lookup_object("interfaces", "device-alpha-01|Ethernet1/1") is interface
+    assert (
+        job.lookup_object("ip_addresses", "device-alpha-01|Ethernet1/1|10.10.10.1/24|BLUE")
+        is ip_address
+    )
 
 
 def test_ssot_data_source_dryrun_uses_bundled_contracts_and_persists_diff(monkeypatch):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections import namedtuple
 from datetime import datetime
 from types import SimpleNamespace
@@ -18,6 +17,11 @@ from .registry import CORE_MODEL_MAPPINGS
 from .support import build_support_bundle_pair
 from .support import classify_failure
 from .write_executor import ForwardNautobotWriteExecutor
+
+try:
+    from django.apps import apps as django_apps
+except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+    django_apps = None
 
 try:
     from nautobot.apps.jobs import BooleanVar
@@ -104,6 +108,10 @@ def _has_meaningful_profile_inputs(data) -> bool:
             return True
     delete_policy = str(data.get("delete_policy") or "ignore").strip()
     return delete_policy != "ignore"
+
+
+def _split_unique_id(unique_id: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in str(unique_id or "").split("|") if part.strip())
 
 
 def _build_connection_settings(**data):
@@ -327,6 +335,104 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
             "Query input": "Bundled Forward NQE contracts only.",
             "Write behavior": "SSoT dry run plans only; non-dry-run applies supported Nautobot writes.",
         }
+
+    @staticmethod
+    def _lookup_model_object(app_label: str, model_name: str, **lookup):
+        if django_apps is None:
+            return None
+        try:
+            model = django_apps.get_model(app_label, model_name)
+        except Exception:
+            return None
+        if model is None:
+            return None
+        manager = getattr(model, "objects", None)
+        if manager is None or not hasattr(manager, "get"):
+            return None
+        try:
+            return manager.get(**lookup)
+        except Exception:
+            return None
+
+    def lookup_object(self, model_name, unique_id):
+        """Resolve a Nautobot object for SSoT log attribution when possible."""
+        model_slug = str(model_name or "").strip()
+        unique_id = str(unique_id or "").strip()
+        if not model_slug or not unique_id:
+            return None
+        if model_slug == "locations":
+            return self._lookup_model_object("dcim", "Location", name=unique_id)
+        if model_slug == "platforms":
+            return self._lookup_model_object("dcim", "Platform", name=unique_id)
+        if model_slug == "device_types":
+            found = self._lookup_model_object("dcim", "DeviceType", model=unique_id)
+            if found is None:
+                found = self._lookup_model_object("dcim", "DeviceType", name=unique_id)
+            return found
+        if model_slug == "devices":
+            return self._lookup_model_object("dcim", "Device", name=unique_id)
+        if model_slug == "interfaces":
+            parts = _split_unique_id(unique_id)
+            if len(parts) != 2:
+                return None
+            device = self.lookup_object("devices", parts[0])
+            if device is None:
+                return None
+            return self._lookup_model_object("dcim", "Interface", device=device, name=parts[1])
+        if model_slug == "vlans":
+            parts = _split_unique_id(unique_id)
+            if len(parts) != 2:
+                return None
+            location = self.lookup_object("locations", parts[0])
+            lookup = {"vid": int(parts[1])}
+            if location is not None:
+                lookup["location"] = location
+            return self._lookup_model_object("ipam", "VLAN", **lookup)
+        if model_slug == "vrfs":
+            return self._lookup_model_object("ipam", "VRF", name=unique_id)
+        if model_slug in {"ipv4_prefixes", "ipv6_prefixes"}:
+            parts = _split_unique_id(unique_id)
+            if not parts:
+                return None
+            lookup = {"prefix": parts[0]}
+            if len(parts) > 1 and parts[1]:
+                vrf = self.lookup_object("vrfs", parts[1])
+                if vrf is not None:
+                    lookup["vrf"] = vrf
+            return self._lookup_model_object("ipam", "Prefix", **lookup)
+        if model_slug == "ip_addresses":
+            parts = _split_unique_id(unique_id)
+            if len(parts) != 4:
+                return None
+            device = self.lookup_object("devices", parts[0])
+            if device is None:
+                return None
+            interface = self._lookup_model_object("dcim", "Interface", device=device, name=parts[1])
+            if interface is None:
+                return None
+            lookup = {"address": parts[2]}
+            if parts[3]:
+                vrf = self.lookup_object("vrfs", parts[3])
+                if vrf is not None:
+                    lookup["vrf"] = vrf
+            return self._lookup_model_object("ipam", "IPAddress", **lookup)
+        if model_slug == "inventory_items":
+            parts = _split_unique_id(unique_id)
+            if len(parts) != 2:
+                return None
+            device = self.lookup_object("devices", parts[0])
+            if device is None:
+                return None
+            return self._lookup_model_object("dcim", "InventoryItem", device=device, name=parts[1])
+        if model_slug == "modules":
+            parts = _split_unique_id(unique_id)
+            if len(parts) != 2:
+                return None
+            device = self.lookup_object("devices", parts[0])
+            if device is None:
+                return None
+            return self._lookup_model_object("dcim", "Module", device=device, module_bay__position=parts[1])
+        return None
 
     def run(self, *args, **kwargs):
         """Capture Forward-specific job inputs, then let SSoT own the run lifecycle."""

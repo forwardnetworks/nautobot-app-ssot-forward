@@ -28,17 +28,15 @@ reach full production quality.
 | Query contract drift checks | `scripts/check_query_contracts.py`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` | done |
 | Wheel/build/release gates | `scripts/check_wheel_contents.py`, `scripts/check_release_state.py`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` | done |
 | User-facing SSoT wording | `README.md`, `ARCHITECTURE.md`, `forward_nautobot/views.py` | done |
-| Sync log object linkage | `forward_nautobot/integrations/forward/jobs.py` | pending |
+| Sync log object linkage | `forward_nautobot/integrations/forward/jobs.py`, `tests/test_plugin.py` | done |
 | Persistent SSoT profile selection | `forward_nautobot/forms.py`, `forward_nautobot/models.py`, `forward_nautobot/views.py` | pending |
 | Deeper NautobotAdapter integration | `forward_nautobot/integrations/forward/adapters.py`, `forward_nautobot/integrations/forward/write_executor.py` | pending |
 
 ## Remaining Gaps
 
-1. Implement `lookup_object()` so SSoT sync logs can link to real Nautobot objects instead of
-   plain text identifiers.
-2. Move runtime configuration closer to an explicit SSoT profile selection flow so credentials and
+1. Move runtime configuration closer to an explicit SSoT profile selection flow so credentials and
    defaults are not only job arguments.
-3. Replace the current planned-target adapter path with deeper Nautobot-adapter integration where it
+2. Replace the current planned-target adapter path with deeper Nautobot-adapter integration where it
    improves write fidelity and log attribution.
 
 ## Exit Criteria
