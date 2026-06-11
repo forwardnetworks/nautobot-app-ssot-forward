@@ -36,8 +36,12 @@ reach full production quality.
 
 1. Expand object lookup coverage for any additional Nautobot object types introduced by future slices.
 2. Expand ingestion tests around the SSoT job surface.
+3. Use [`2026-06-11-forward-nautobot-future-improvements.md`](./2026-06-11-forward-nautobot-future-improvements.md) as the canonical ordering for later hardening work.
 
 ## Exit Criteria
 
 Current scope is production-ready once the repo gates pass and the SSoT sync path has
 fixture-based regression coverage for the supported slice set.
+
+For post-baseline hardening, follow the roadmap in
+[`2026-06-11-forward-nautobot-future-improvements.md`](./2026-06-11-forward-nautobot-future-improvements.md).

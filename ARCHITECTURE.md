@@ -80,3 +80,4 @@ remains available for diagnostics and replay.
 
 1. Expand object lookup coverage for any additional Nautobot object types introduced by future slices.
 2. Expand ingestion tests around the SSoT job surface.
+3. Follow the tranche order in [`docs/03_Plans/active/2026-06-11-forward-nautobot-future-improvements.md`](docs/03_Plans/active/2026-06-11-forward-nautobot-future-improvements.md).

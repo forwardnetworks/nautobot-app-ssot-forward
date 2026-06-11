@@ -40,8 +40,10 @@ Target platform: Nautobot 3.1.
 
 ## Future Enhancements
 
-- deeper use of `nautobot_ssot.contrib.adapter.NautobotAdapter` once the write model matures
-- broader replay tooling for future slice drift
+- [`docs/03_Plans/active/2026-06-11-forward-nautobot-future-improvements.md`](docs/03_Plans/active/2026-06-11-forward-nautobot-future-improvements.md)
+- future slice/object lookup expansion
+- broader replay tooling and support-bundle ergonomics
+- continued query-load reduction and target-state fidelity improvements
 
 ## Repo Map
 

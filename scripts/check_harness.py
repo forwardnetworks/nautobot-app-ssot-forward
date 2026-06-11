@@ -12,6 +12,7 @@ REQUIRED_PATHS = [
     "README.md",
     "docs/00_Project_Knowledge/README.md",
     "docs/03_Plans/active/2026-06-11-forward-nautobot-production-readiness-checklist.md",
+    "docs/03_Plans/active/2026-06-11-forward-nautobot-future-improvements.md",
     "forward_nautobot/migrations/0001_initial.py",
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
@@ -28,6 +29,15 @@ PLAN_REQUIRED_HEADINGS = [
     "## Checklist",
     "## Next Tranche",
     "## Exit Criteria",
+]
+
+ROADMAP_REQUIRED_HEADINGS = [
+    "## Goal",
+    "## Baseline",
+    "## Roadmap",
+    "## 100% Production Quality",
+    "## Out of Scope",
+    "## Next Step",
 ]
 
 REQUIRED_TEXT = {
@@ -90,11 +100,22 @@ def _check_plan_headings(failures: list[str]) -> None:
             failures.append(f"{plan_path.relative_to(REPO_ROOT)} must include heading: {heading}")
 
 
+def _check_roadmap_headings(failures: list[str]) -> None:
+    roadmap_path = REPO_ROOT / "docs/03_Plans/active/2026-06-11-forward-nautobot-future-improvements.md"
+    if not roadmap_path.exists():
+        return
+    text = roadmap_path.read_text(encoding="utf-8")
+    for heading in ROADMAP_REQUIRED_HEADINGS:
+        if heading not in text:
+            failures.append(f"{roadmap_path.relative_to(REPO_ROOT)} must include heading: {heading}")
+
+
 def main() -> int:
     failures: list[str] = []
     _check_required_paths(failures)
     _check_required_text(failures)
     _check_plan_headings(failures)
+    _check_roadmap_headings(failures)
 
     if failures:
         print("Harness check failed:")
