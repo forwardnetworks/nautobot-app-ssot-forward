@@ -30,15 +30,14 @@ reach full production quality.
 | User-facing SSoT wording | `README.md`, `ARCHITECTURE.md`, `forward_nautobot/views.py` | done |
 | Sync log object linkage | `forward_nautobot/integrations/forward/jobs.py`, `tests/test_plugin.py` | done |
 | Persistent SSoT profile selection | `forward_nautobot/forms.py`, `forward_nautobot/models.py`, `forward_nautobot/views.py`, `forward_nautobot/integrations/forward/jobs.py`, `tests/test_plugin.py` | done |
-| Deeper NautobotAdapter integration | `forward_nautobot/integrations/forward/adapters.py`, `forward_nautobot/integrations/forward/write_executor.py` | future |
+| Deeper NautobotAdapter integration | `forward_nautobot/integrations/forward/adapters.py`, `forward_nautobot/integrations/forward/planner.py`, `tests/test_target_adapter.py`, `tests/test_planner.py` | done |
 
 ## Next Tranche
 
-1. Replace the current planned-target adapter path with deeper Nautobot-adapter integration where it
-   improves write fidelity and log attribution.
+1. Expand object lookup coverage for any additional Nautobot object types introduced by future slices.
+2. Expand ingestion tests around the SSoT job surface.
 
 ## Exit Criteria
 
 Current scope is production-ready once the repo gates pass and the SSoT sync path has
-fixture-based regression coverage for the supported slice set. The deeper Nautobot-adapter
-integration remains the next optional tranche.
+fixture-based regression coverage for the supported slice set.

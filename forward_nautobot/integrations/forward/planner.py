@@ -79,6 +79,7 @@ class ForwardIngestionPlanner:
             raise ValueError("Forward network ID is required.")
         source = ForwardSourceAdapter(model_names=request.model_names)
         target = NautobotTargetAdapter(model_names=request.model_names)
+        target.load()
         writer = ForwardWritePlanner()
         reports: list[ForwardSyncReport] = []
         for mapping in get_model_mappings(request.model_names):

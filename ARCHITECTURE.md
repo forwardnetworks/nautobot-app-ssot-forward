@@ -78,6 +78,5 @@ remains available for diagnostics and replay.
 
 ## Next Tranche
 
-1. Replace the planned target adapter with a deeper Nautobot adapter where it improves SSoT logs and object lookup.
-2. Expand object lookup coverage for any additional Nautobot object types introduced by future slices.
-3. Expand ingestion tests around the SSoT job surface.
+1. Expand object lookup coverage for any additional Nautobot object types introduced by future slices.
+2. Expand ingestion tests around the SSoT job surface.
