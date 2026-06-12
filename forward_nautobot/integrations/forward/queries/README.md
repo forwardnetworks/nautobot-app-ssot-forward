@@ -20,3 +20,6 @@ Current files:
 
 All bundled files now carry contract-shaped query bodies and explicit contract-version headers.
 The registry and executor use the same slice order so the Python layer stays thin and raw.
+Several dependent slices also accept optional scope parameters so the planner can pass already
+loaded parent keys into child queries and avoid broad Forward scans when the run has a narrower
+scope.

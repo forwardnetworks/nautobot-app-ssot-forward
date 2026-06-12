@@ -12,10 +12,11 @@ isInventoryHardwareRole(role_name: String) =
   role_name != "UNMODELED BACKUP DEVICE";
 
 @query
-f() =
+f(forward_device_names: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_device_names) || device.name in forward_device_names
 foreach component in device.platform.components
 let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
 where isInventoryHardwareRole(role_name)
@@ -33,7 +34,7 @@ select distinct {
   label: if isPresent(component_name) then truncate(component_name, 64) else "",
   part_id: if isPresent(component_part_id) then truncate(component_part_id, 50) else "",
   serial: if isPresent(component_serial) then truncate(component_serial, 50) else "",
-  asset_tag: null : String,
+  asset_tag: "",
   role: role_name,
   status: "active",
   discovered: true,

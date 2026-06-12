@@ -5,10 +5,11 @@
  */
 
 @query
-f() =
+f(forward_device_names: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_device_names) || device.name in forward_device_names
 foreach interface in device.interfaces
   let is_ethernet = interface.interfaceType == IfaceType.IF_ETHERNET
   let speed_mbps = if is_ethernet then interface.ethernet.speedMbps else null : Integer
@@ -31,8 +32,8 @@ select distinct {
   device: device.name,
   name: interface.name,
   type: interface_type,
-  lag: if is_ethernet && isPresent(interface.ethernet.aggregateId) then interface.ethernet.aggregateId else null : String,
-  mode: null : String,
+  lag: if is_ethernet && isPresent(interface.ethernet.aggregateId) then interface.ethernet.aggregateId else "",
+  mode: "",
   untagged_vlan: null : Integer,
   enabled: interface.operStatus == OperStatus.UP,
   mtu: interface.mtu,

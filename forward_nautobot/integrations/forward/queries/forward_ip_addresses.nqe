@@ -4,10 +4,11 @@
  * @contract-version v1
  */
 
-subinterface_ipv4() =
+subinterface_ipv4(forward_device_names: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_device_names) || device.name in forward_device_names
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   foreach address in subinterface.ipv4.addresses
@@ -18,18 +19,19 @@ subinterface_ipv4() =
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(subinterface.networkInstanceName)
-      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
-      else null : String,
+      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else "default"
+      else "default",
     address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
   };
 
-subinterface_ipv6() =
+subinterface_ipv6(forward_device_names: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_device_names) || device.name in forward_device_names
   foreach interface in device.interfaces
   foreach subinterface in interface.subinterfaces
   foreach address in subinterface.ipv6.addresses
@@ -39,18 +41,19 @@ subinterface_ipv6() =
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(subinterface.networkInstanceName)
-      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
-      else null : String,
+      then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else "default"
+      else "default",
     address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
   };
 
-bridge_ipv4() =
+bridge_ipv4(forward_device_names: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_device_names) || device.name in forward_device_names
   foreach interface in device.interfaces
   where isPresent(interface.bridge?.ipv4?.addresses)
   foreach address in interface.bridge.ipv4.addresses
@@ -61,18 +64,19 @@ bridge_ipv4() =
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.bridge.networkInstanceName)
-      then if interface.bridge.networkInstanceName != "default" then interface.bridge.networkInstanceName else null : String
-      else null : String,
+      then if interface.bridge.networkInstanceName != "default" then interface.bridge.networkInstanceName else "default"
+      else "default",
     address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
   };
 
-bridge_ipv6() =
+bridge_ipv6(forward_device_names: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_device_names) || device.name in forward_device_names
   foreach interface in device.interfaces
   where isPresent(interface.bridge?.ipv6?.addresses)
   foreach address in interface.bridge.ipv6.addresses
@@ -82,18 +86,19 @@ bridge_ipv6() =
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.bridge.networkInstanceName)
-      then if interface.bridge.networkInstanceName != "default" then interface.bridge.networkInstanceName else null : String
-      else null : String,
+      then if interface.bridge.networkInstanceName != "default" then interface.bridge.networkInstanceName else "default"
+      else "default",
     address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
   };
 
-tunnel_ipv4() =
+tunnel_ipv4(forward_device_names: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_device_names) || device.name in forward_device_names
   foreach interface in device.interfaces
   where isPresent(interface.tunnel?.ipv4?.addresses)
   foreach address in interface.tunnel.ipv4.addresses
@@ -104,18 +109,19 @@ tunnel_ipv4() =
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.tunnel.networkInstanceName)
-      then if interface.tunnel.networkInstanceName != "default" then interface.tunnel.networkInstanceName else null : String
-      else null : String,
+      then if interface.tunnel.networkInstanceName != "default" then interface.tunnel.networkInstanceName else "default"
+      else "default",
     address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
   };
 
-tunnel_ipv6() =
+tunnel_ipv6(forward_device_names: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_device_names) || device.name in forward_device_names
   foreach interface in device.interfaces
   where isPresent(interface.tunnel?.ipv6?.addresses)
   foreach address in interface.tunnel.ipv6.addresses
@@ -125,18 +131,19 @@ tunnel_ipv6() =
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.tunnel.networkInstanceName)
-      then if interface.tunnel.networkInstanceName != "default" then interface.tunnel.networkInstanceName else null : String
-      else null : String,
+      then if interface.tunnel.networkInstanceName != "default" then interface.tunnel.networkInstanceName else "default"
+      else "default",
     address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
   };
 
-routed_vlan_ipv4() =
+routed_vlan_ipv4(forward_device_names: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_device_names) || device.name in forward_device_names
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv4?.addresses)
   foreach address in interface.routedVlan.ipv4.addresses
@@ -147,18 +154,19 @@ routed_vlan_ipv4() =
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.routedVlan.networkInstanceName)
-      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
-      else null : String,
+      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else "default"
+      else "default",
     address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
     status: "active"
   };
 
-routed_vlan_ipv6() =
+routed_vlan_ipv6(forward_device_names: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_device_names) || device.name in forward_device_names
   foreach interface in device.interfaces
   where isPresent(interface.routedVlan?.ipv6?.addresses)
   foreach address in interface.routedVlan.ipv6.addresses
@@ -168,8 +176,8 @@ routed_vlan_ipv6() =
     device: device.name,
     interface: interface.name,
     vrf: if isPresent(interface.routedVlan.networkInstanceName)
-      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
-      else null : String,
+      then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else "default"
+      else "default",
     address: subnet,
     host_ip: address.ip,
     prefix_length: address.prefixLength,
@@ -177,9 +185,9 @@ routed_vlan_ipv6() =
   };
 
 @query
-f() =
+f(forward_device_names: List<String>) =
 foreach row in (
-  subinterface_ipv4() + subinterface_ipv6() + bridge_ipv4() + bridge_ipv6() + tunnel_ipv4() + tunnel_ipv6()
-    + routed_vlan_ipv4() + routed_vlan_ipv6()
+  subinterface_ipv4(forward_device_names) + subinterface_ipv6(forward_device_names) + bridge_ipv4(forward_device_names) + bridge_ipv6(forward_device_names) + tunnel_ipv4(forward_device_names) + tunnel_ipv6(forward_device_names)
+    + routed_vlan_ipv4(forward_device_names) + routed_vlan_ipv6(forward_device_names)
 )
 select distinct row;
