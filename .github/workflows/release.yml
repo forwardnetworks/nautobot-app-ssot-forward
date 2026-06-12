@@ -31,6 +31,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install build httpx pytest
 
+      - name: Run sensitive-content gate
+        run: python scripts/check_sensitive_content.py --all-history
+
+      - name: Run repo harness gate
+        run: python scripts/check_harness.py
+
       - name: Run release-state gate
         run: python scripts/check_release_state.py
 

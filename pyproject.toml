@@ -9,6 +9,7 @@ packages = [{ include = "forward_nautobot" }]
 include = [
     { path = "forward_nautobot/integrations/forward/queries/*.nqe", format = ["sdist", "wheel"] },
     { path = "forward_nautobot/integrations/forward/queries/README.md", format = ["sdist", "wheel"] },
+    { path = "forward_nautobot/fixtures/*.json", format = ["sdist", "wheel"] },
 ]
 
 [tool.poetry.dependencies]

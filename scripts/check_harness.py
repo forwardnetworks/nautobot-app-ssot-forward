@@ -64,6 +64,8 @@ REQUIRED_TEXT = {
         "build",
     ],
     ".github/workflows/release.yml": [
+        "check_sensitive_content.py",
+        "check_harness.py",
         "check_release_state.py",
         "check_query_contracts.py",
         "generate_contract_diff_report.py",

@@ -41,7 +41,7 @@ def _coerce_models(value: Any) -> tuple[str, ...]:
 try:
     from django.db import models
     from nautobot.apps.models import BaseModel
-except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+except Exception:  # pragma: no cover - local compatibility import path
     models = None
 
     class BaseModel:  # type: ignore[too-many-ancestors]
@@ -65,6 +65,9 @@ class ForwardProfileStatus:
     last_run_at: str = ""
     last_failure: str = ""
     last_support_bundle: str = ""
+    last_query_reference: str = ""
+    last_query_mode: str = ""
+    last_snapshot_id: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +84,9 @@ class ForwardProfileStatus:
             "last_run_at": self.last_run_at,
             "last_failure": self.last_failure,
             "last_support_bundle": self.last_support_bundle,
+            "last_query_reference": self.last_query_reference,
+            "last_query_mode": self.last_query_mode,
+            "last_snapshot_id": self.last_snapshot_id,
         }
 
 
@@ -105,6 +111,9 @@ class ForwardConnectionProfileRecord:
     last_run_at: str = ""
     last_failure: str = ""
     last_support_bundle: str = ""
+    last_query_reference: str = ""
+    last_query_mode: str = ""
+    last_snapshot_id: str = ""
 
     @classmethod
     def from_mapping(
@@ -167,9 +176,23 @@ class ForwardConnectionProfileRecord:
             default_device_status_name=default_device_status_name,
             delete_policy=delete_policy,
             is_default=is_default,
-            last_run_at=str(base.get("last_run_at") or ""),
-            last_failure=str(base.get("last_failure") or ""),
-            last_support_bundle=str(base.get("last_support_bundle") or ""),
+            last_run_at=str(data.get("last_run_at") or base.get("last_run_at") or ""),
+            last_failure=str(data.get("last_failure") or base.get("last_failure") or ""),
+            last_support_bundle=str(
+                data.get("last_support_bundle") or base.get("last_support_bundle") or ""
+            ),
+            last_query_reference=str(
+                data.get("last_query_reference")
+                or base.get("last_query_reference")
+                or base.get("last_support_bundle")
+                or ""
+            ),
+            last_query_mode=str(
+                data.get("last_query_mode")
+                or base.get("last_query_mode")
+                or ""
+            ),
+            last_snapshot_id=str(data.get("last_snapshot_id") or base.get("last_snapshot_id") or ""),
         )
 
     def to_connection_settings(self) -> ForwardConnectionSettings:
@@ -210,6 +233,9 @@ class ForwardConnectionProfileRecord:
             "last_run_at": self.last_run_at,
             "last_failure": self.last_failure,
             "last_support_bundle": self.last_support_bundle,
+            "last_query_reference": self.last_query_reference,
+            "last_query_mode": self.last_query_mode,
+            "last_snapshot_id": self.last_snapshot_id,
         }
 
     def missing_write_defaults(self) -> tuple[str, ...]:
@@ -243,6 +269,9 @@ class ForwardConnectionProfileRecord:
             last_run_at=self.last_run_at,
             last_failure=self.last_failure,
             last_support_bundle=self.last_support_bundle,
+            last_query_reference=self.last_query_reference,
+            last_query_mode=self.last_query_mode,
+            last_snapshot_id=self.last_snapshot_id,
         )
 
     def with_run_history(
@@ -251,12 +280,18 @@ class ForwardConnectionProfileRecord:
         last_run_at: str = "",
         last_failure: str = "",
         last_support_bundle: str = "",
+        last_query_reference: str = "",
+        last_query_mode: str = "",
+        last_snapshot_id: str = "",
     ) -> "ForwardConnectionProfileRecord":
         return replace(
             self,
             last_run_at=last_run_at,
             last_failure=last_failure,
             last_support_bundle=last_support_bundle,
+            last_query_reference=last_query_reference,
+            last_query_mode=last_query_mode,
+            last_snapshot_id=last_snapshot_id or self.last_snapshot_id,
         )
 
 
@@ -270,6 +305,9 @@ class ForwardPluginConfiguration:
     last_run_at: str = ""
     last_failure: str = ""
     last_support_bundle: str = ""
+    last_query_reference: str = ""
+    last_query_mode: str = ""
+    last_snapshot_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def get_profile(self, name: str) -> ForwardConnectionProfileRecord | None:
@@ -297,6 +335,9 @@ class ForwardPluginConfiguration:
             "last_run_at": self.last_run_at,
             "last_failure": self.last_failure,
             "last_support_bundle": self.last_support_bundle,
+            "last_query_reference": self.last_query_reference,
+            "last_query_mode": self.last_query_mode,
+            "last_snapshot_id": self.last_snapshot_id,
             "metadata": dict(self.metadata),
         }
 
@@ -321,6 +362,24 @@ class ForwardPluginConfiguration:
                 or self.metadata.get("last_support_bundle")
                 or ""
             ),
+            "last_query_reference": str(
+                self.last_query_reference
+                or self.metadata.get("last_query_reference")
+                or self.last_support_bundle
+                or self.metadata.get("last_support_bundle")
+                or (default_profile.last_query_reference if default_profile is not None else "")
+                or ""
+            ),
+            "last_query_mode": str(
+                self.last_query_mode
+                or self.metadata.get("last_query_mode")
+                or (default_profile.last_query_mode if default_profile is not None else "")
+            ),
+            "last_snapshot_id": str(
+                self.last_snapshot_id
+                or self.metadata.get("last_snapshot_id")
+                or (default_profile.last_snapshot_id if default_profile is not None else "")
+            ),
             "current_policy": str(
                 self.metadata.get("current_policy")
                 or (default_profile.effective_delete_policy if default_profile is not None else "ignore")
@@ -333,12 +392,18 @@ class ForwardPluginConfiguration:
         last_run_at: str = "",
         last_failure: str = "",
         last_support_bundle: str = "",
+        last_query_reference: str = "",
+        last_query_mode: str = "",
+        last_snapshot_id: str = "",
     ) -> "ForwardPluginConfiguration":
         updated_profiles = tuple(
             profile.with_run_history(
                 last_run_at=last_run_at,
                 last_failure=last_failure,
                 last_support_bundle=last_support_bundle,
+                last_query_reference=last_query_reference,
+                last_query_mode=last_query_mode,
+                last_snapshot_id=last_snapshot_id,
             )
             if profile.is_default
             else profile
@@ -350,11 +415,17 @@ class ForwardPluginConfiguration:
             last_run_at=last_run_at,
             last_failure=last_failure,
             last_support_bundle=last_support_bundle,
+            last_query_reference=last_query_reference,
+            last_query_mode=last_query_mode,
+            last_snapshot_id=last_snapshot_id or self.last_snapshot_id,
             metadata={
                 **self.metadata,
                 "last_run": last_run_at,
                 "last_failure": last_failure,
                 "last_support_bundle": last_support_bundle,
+                "last_query_reference": last_query_reference,
+                "last_query_mode": last_query_mode,
+                "last_snapshot_id": last_snapshot_id or self.last_snapshot_id,
             },
         )
 
@@ -385,6 +456,9 @@ if models is not None:
         last_run_at = models.CharField(max_length=128, blank=True, default="")
         last_failure = models.TextField(blank=True, default="")
         last_support_bundle = models.CharField(max_length=255, blank=True, default="")
+        last_query_reference = models.CharField(max_length=255, blank=True, default="")
+        last_query_mode = models.CharField(max_length=64, blank=True, default="")
+        last_snapshot_id = models.CharField(max_length=128, blank=True, default="")
 
         class Meta:
             ordering = ["name"]
@@ -412,6 +486,9 @@ if models is not None:
                 last_run_at=self.last_run_at,
                 last_failure=self.last_failure,
                 last_support_bundle=self.last_support_bundle,
+                last_query_reference=self.last_query_reference,
+                last_query_mode=self.last_query_mode,
+                last_snapshot_id=self.last_snapshot_id,
             )
 
         def to_connection_settings(self) -> ForwardConnectionSettings:

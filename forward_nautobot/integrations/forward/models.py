@@ -122,6 +122,7 @@ class ForwardSyncReport:
     query_mode: str
     query_reference: str
     row_count: int
+    baseline_snapshot_id: str = ""
     query_contract_version: str = ""
     rows: tuple[dict[str, Any], ...] = ()
     snapshot_metrics: dict[str, Any] = field(default_factory=dict)
@@ -139,6 +140,7 @@ class ForwardSyncReport:
             "query_reference": self.query_reference,
             "query_contract_version": self.query_contract_version,
             "row_count": self.row_count,
+            "baseline_snapshot_id": self.baseline_snapshot_id,
             "rows": [dict(row) for row in self.rows],
             "snapshot_metrics": dict(self.snapshot_metrics),
             "available_snapshots": [

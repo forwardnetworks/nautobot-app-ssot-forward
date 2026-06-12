@@ -53,6 +53,18 @@ class Command(BaseCommand):
             default="external",
             help="Redaction profile for the shared support bundle output.",
         )
+        parser.add_argument(
+            "--output",
+            type=Path,
+            default=None,
+            help="Optional path for the full JSON replay artifact.",
+        )
+        parser.add_argument(
+            "--shared-output",
+            type=Path,
+            default=None,
+            help="Optional path for the redacted shareable support artifact.",
+        )
 
     def handle(self, *args, **options):
         fixture = options["fixture"]
@@ -67,4 +79,18 @@ class Command(BaseCommand):
             sample_size=options["sample_size"],
             sharing_profile=options["sharing_profile"],
         )
-        self.stdout.write(json.dumps(result.as_dict(), indent=2, sort_keys=True))
+        payload = json.dumps(result.as_dict(), indent=2, sort_keys=True)
+        self.stdout.write(payload)
+        output_path = options.get("output")
+        if output_path is not None:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(payload + "\n", encoding="utf-8")
+        shared_output_path = options.get("shared_output")
+        if shared_output_path is not None:
+            shared_output_path = Path(shared_output_path)
+            shared_output_path.parent.mkdir(parents=True, exist_ok=True)
+            shared_payload = json.dumps(
+                result.support_bundle_shared, indent=2, sort_keys=True
+            )
+            shared_output_path.write_text(shared_payload + "\n", encoding="utf-8")

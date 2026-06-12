@@ -27,6 +27,8 @@ def test_write_planner_surfaces_create_intent_for_raw_rows():
     write_plan = ForwardWritePlanner().plan(source, target)
 
     assert write_plan.summary["create"] == 2
+    assert write_plan.diff_summary["create"] == 2
+    assert write_plan.diff_detail["models"]["devices"]["create"] == 2
     assert [operation.action for operation in write_plan.operations] == ["create", "create"]
     assert write_plan.operations[0].fields == rows[0]
     assert write_plan.slice_policies["devices"]["missing_row_policy"] == "mark_inactive"

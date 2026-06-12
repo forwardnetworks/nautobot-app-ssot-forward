@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from ipaddress import ip_interface
 
 try:
     from django.apps import apps as django_apps
@@ -237,6 +238,16 @@ class ForwardSourceAdapter(Adapter):
             loaded.append(record)
         return tuple(loaded)
 
+    def slice_for_model(self, model_slug: str) -> "ForwardSourceAdapter":
+        mapping = self._get_mapping(model_slug)
+        slice_adapter = ForwardSourceAdapter(model_names=(mapping.slug,))
+        slice_rows = tuple(
+            dict(record.fields) for record in self.records.get(mapping.slug, {}).values()
+        )
+        if slice_rows:
+            slice_adapter.load_rows(mapping.slug, slice_rows)
+        return slice_adapter
+
     def count(self, model_slug: str) -> int:
         mapping = self._get_mapping(model_slug)
         return max(
@@ -332,6 +343,28 @@ class NautobotTargetAdapter(Adapter):
             planned.append(write)
         return tuple(planned)
 
+    def load_rows(
+        self, model_slug: str, rows: list[dict[str, Any]] | tuple[dict[str, Any], ...]
+    ):
+        mapping = self._get_mapping(model_slug)
+        loaded: list[ForwardPlannedWrite] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            record_key = self._row_key(mapping, row)
+            model_class = getattr(self, mapping.slug, None)
+            if model_class is not None:
+                self.add(model_class(**dict(row)))
+            loaded_record = ForwardPlannedWrite(
+                model_slug=mapping.slug,
+                record_key=record_key,
+                fields=dict(row),
+                nautobot_scope=mapping.nautobot_scope,
+            )
+            self.loaded_records[mapping.slug][record_key] = loaded_record
+            loaded.append(loaded_record)
+        return tuple(loaded)
+
     @staticmethod
     def _cf_value(instance: Any, key: str) -> Any:
         custom_fields = getattr(instance, "cf", None)
@@ -418,7 +451,7 @@ class NautobotTargetAdapter(Adapter):
         status = getattr(instance, "status", None)
         return {
             "prefix": _string_value(getattr(instance, "prefix", "")),
-            "vrf": _string_value(vrf, "name"),
+            "vrf": _string_value(vrf, "name") or "default",
             "status": _string_value(status, "name") or "active",
         }
 
@@ -427,11 +460,24 @@ class NautobotTargetAdapter(Adapter):
         device = getattr(assigned_object, "device", None)
         vrf = getattr(instance, "vrf", None)
         status = getattr(instance, "status", None)
+        address = _string_value(getattr(instance, "address", ""))
+        host_ip = ""
+        prefix_length = None
+        if address:
+            try:
+                parsed = ip_interface(address)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                host_ip = str(parsed.ip)
+                prefix_length = int(parsed.network.prefixlen)
         return {
             "device": _string_value(device, "name"),
             "interface": _string_value(assigned_object, "name"),
-            "address": _string_value(getattr(instance, "address", "")),
-            "vrf": _string_value(vrf, "name"),
+            "address": address,
+            "host_ip": host_ip,
+            "prefix_length": prefix_length,
+            "vrf": _string_value(vrf, "name") or "default",
             "status": _string_value(status, "name") or "active",
         }
 
@@ -518,16 +564,20 @@ class NautobotTargetAdapter(Adapter):
             row = self._serialize_orm_row(mapping, instance)
             if not row:
                 continue
-            record_key = self._row_key(mapping, row)
-            self.loaded_records[mapping.slug][record_key] = ForwardPlannedWrite(
-                model_slug=mapping.slug,
-                record_key=record_key,
-                fields=dict(row),
-                nautobot_scope=mapping.nautobot_scope,
-            )
-            self.add(model_class(**dict(row)))
-            loaded += 1
+            loaded_rows = self.load_rows(mapping.slug, (row,))
+            loaded += len(loaded_rows)
         return loaded
+
+    def slice_for_model(self, model_slug: str) -> "NautobotTargetAdapter":
+        mapping = self._get_mapping(model_slug)
+        slice_adapter = NautobotTargetAdapter(model_names=(mapping.slug,))
+        slice_rows = tuple(
+            dict(record.fields)
+            for record in self.loaded_records.get(mapping.slug, {}).values()
+        )
+        if slice_rows:
+            slice_adapter.load_rows(mapping.slug, slice_rows)
+        return slice_adapter
 
     def load(self):
         """Load current Nautobot ORM state into the adapter when available."""

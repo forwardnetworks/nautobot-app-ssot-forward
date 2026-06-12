@@ -5,16 +5,26 @@ from importlib import resources
 
 import pytest
 
-from forward_nautobot.integrations.forward.client import ForwardClient
 from forward_nautobot.integrations.forward.adapters import ForwardSourceAdapter
 from forward_nautobot.integrations.forward.adapters import NautobotTargetAdapter
 from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
 from forward_nautobot.integrations.forward.models import ForwardQuerySpec
 from forward_nautobot.integrations.forward.models import ForwardSyncSpec
-from forward_nautobot.integrations.forward.planner import ForwardIngestionPlanner
-from forward_nautobot.integrations.forward.planner import ForwardIngestionRequest
 from forward_nautobot.integrations.forward.support import build_support_bundle
-from forward_nautobot.integrations.forward.runner import ForwardSyncRunner
+
+try:
+    from forward_nautobot.integrations.forward.client import ForwardClient
+except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
+    ForwardClient = None
+
+try:
+    from forward_nautobot.integrations.forward.planner import ForwardIngestionPlanner
+    from forward_nautobot.integrations.forward.planner import ForwardIngestionRequest
+    from forward_nautobot.integrations.forward.runner import ForwardSyncRunner
+except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
+    ForwardIngestionPlanner = None
+    ForwardIngestionRequest = None
+    ForwardSyncRunner = None
 
 
 def _live_settings() -> ForwardConnectionSettings | None:
@@ -38,6 +48,8 @@ def _load_query_text(filename: str) -> str:
 
 
 def _run_live_query(settings: ForwardConnectionSettings, filename: str):
+    if ForwardClient is None:  # pragma: no cover - local shell without test deps
+        pytest.skip("live Forward ingestion tests require the full dependency set")
     client = ForwardClient(settings)
     query_text = _load_query_text(filename)
     rows = client.run_nqe_query(
@@ -50,8 +62,34 @@ def _run_live_query(settings: ForwardConnectionSettings, filename: str):
     return client, query_text, rows
 
 
+def _assert_contract_row(rows, expected_keys):
+    assert rows, "live query returned no rows"
+    first_row = rows[0]
+    assert set(first_row) == set(expected_keys)
+    return first_row
+
+
+def _require_live_planner():
+    if (
+        ForwardClient is None
+        or ForwardIngestionPlanner is None
+        or ForwardIngestionRequest is None
+        or ForwardSyncRunner is None
+    ):  # pragma: no cover - local shell without test deps
+        pytest.skip("live Forward ingestion tests require the full dependency set")
+
+
+def _counting_request_wrapper(original_request, calls):
+    def wrapped_request(self, method, path, **kwargs):
+        calls[(method, path)] = calls.get((method, path), 0) + 1
+        return original_request(self, method, path, **kwargs)
+
+    return wrapped_request
+
+
 @pytest.mark.integration
 def test_live_device_ingestion_contract():
+    _require_live_planner()
     settings = _live_settings()
     if settings is None:
         pytest.skip("live Forward credentials not configured")
@@ -168,7 +206,74 @@ def test_live_device_type_ingestion_contract():
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    ("filename", "model_slug", "expected_keys"),
+    (
+        ("forward_vlans.nqe", "vlans", ("site", "vid", "name", "status")),
+        ("forward_vrfs.nqe", "vrfs", ("name", "rd", "description", "enforce_unique")),
+        ("forward_prefixes_ipv4.nqe", "ipv4_prefixes", ("vrf", "prefix", "status")),
+        ("forward_prefixes_ipv6.nqe", "ipv6_prefixes", ("vrf", "prefix", "status")),
+        (
+            "forward_ip_addresses.nqe",
+            "ip_addresses",
+            ("device", "interface", "vrf", "address", "host_ip", "prefix_length", "status"),
+        ),
+        (
+            "forward_inventory_items.nqe",
+            "inventory_items",
+            (
+                "device",
+                "manufacturer",
+                "name",
+                "label",
+                "part_id",
+                "serial",
+                "asset_tag",
+                "role",
+                "status",
+                "discovered",
+                "description",
+            ),
+        ),
+        (
+            "forward_modules.nqe",
+            "modules",
+            (
+                "device",
+                "module_bay",
+                "manufacturer",
+                "model",
+                "part_number",
+                "status",
+                "serial",
+                "asset_tag",
+                "description",
+            ),
+        ),
+    ),
+)
+def test_live_additional_ingestion_contracts(filename, model_slug, expected_keys):
+    settings = _live_settings()
+    if settings is None:
+        pytest.skip("live Forward credentials not configured")
+
+    _, _, rows = _run_live_query(settings, filename)
+    first_row = _assert_contract_row(rows, expected_keys)
+
+    source = ForwardSourceAdapter(model_names=(model_slug,))
+    loaded = source.load_rows(model_slug, rows)
+    assert source.count(model_slug) == len(rows)
+    assert loaded[0].fields == first_row
+
+    target = NautobotTargetAdapter(model_names=(model_slug,))
+    planned = target.plan_rows(model_slug, rows)
+    assert target.count(model_slug) == len(rows)
+    assert planned[0].fields == first_row
+
+
+@pytest.mark.integration
 def test_live_combined_ingestion_plan_contract():
+    _require_live_planner()
     settings = _live_settings()
     if settings is None:
         pytest.skip("live Forward credentials not configured")
@@ -208,3 +313,131 @@ def test_live_combined_ingestion_plan_contract():
     assert bundle.write_summary["create"] >= 1
     assert bundle.configuration_status["delete_policy"] == "ignore"
     assert bundle.configuration_status["missing_defaults"] == []
+
+
+@pytest.mark.integration
+def test_live_subset_ingestion_plan_contract():
+    _require_live_planner()
+    settings = _live_settings()
+    if settings is None:
+        pytest.skip("live Forward credentials not configured")
+
+    client = ForwardClient(settings)
+    planner = ForwardIngestionPlanner(client)
+    plan = planner.run(
+        ForwardIngestionRequest(
+            connection=settings,
+            model_names=("locations", "devices", "interfaces"),
+            fetch_all=False,
+            limit=3,
+        )
+    )
+
+    assert [report.query_reference for report in plan.reports] == [
+        "forward_locations.nqe",
+        "forward_devices.nqe",
+        "forward_interfaces.nqe",
+    ]
+    assert [report.planned_models for report in plan.reports] == [
+        ("locations",),
+        ("devices",),
+        ("interfaces",),
+    ]
+    assert plan.reports[0].query_contract_version == "v1"
+    assert plan.reports[1].query_contract_version == "v1"
+    assert plan.reports[2].query_contract_version == "v1"
+    assert plan.reports[0].row_count >= 1
+    assert plan.reports[1].row_count >= 1
+    assert plan.write_summary["create"] == sum(report.row_count for report in plan.reports)
+    assert plan.diff_summary["create"] == plan.write_summary["create"]
+    assert plan.configuration_status["profile_provided"] is False
+    assert plan.configuration_status["delete_policy"] == "ignore"
+
+
+@pytest.mark.integration
+def test_live_preview_sync_smoke_is_bounded(monkeypatch):
+    _require_live_planner()
+    settings = _live_settings()
+    if settings is None:
+        pytest.skip("live Forward credentials not configured")
+
+    client = ForwardClient(settings)
+    calls: dict[tuple[str, str], int] = {}
+    monkeypatch.setattr(
+        ForwardClient,
+        "_request",
+        _counting_request_wrapper(ForwardClient._request, calls),
+    )
+
+    runner = ForwardSyncRunner(client)
+    query_text = _load_query_text("forward_locations.nqe")
+    spec = ForwardSyncSpec(
+        mode="preview",
+        connection=settings,
+        query=ForwardQuerySpec(query_text=query_text),
+        fetch_all=False,
+        limit=1,
+        model_names=("locations",),
+    )
+
+    preview_report = runner.preview(spec)
+    sync_report = runner.sync(spec)
+
+    assert preview_report.row_count >= 1
+    assert preview_report.row_count == sync_report.row_count
+    assert preview_report.query_reference == sync_report.query_reference
+    assert preview_report.planned_models == ("locations",)
+    assert sync_report.planned_models == ("locations",)
+    assert calls.get(("GET", "/nqe/repos/org/commits/head/queries"), 0) == 0
+    assert calls[("GET", "/networks/%s/snapshots/latestProcessed" % settings.network_id)] == 1
+    assert calls[("GET", "/snapshots/%s/metrics" % preview_report.snapshot_id)] == 1
+    assert calls[("GET", "/networks/%s/snapshots" % settings.network_id)] == 1
+    assert calls[("POST", "/nqe")] == 2
+
+
+@pytest.mark.integration
+def test_live_preview_sync_smoke_for_devices_is_bounded(monkeypatch):
+    _require_live_planner()
+    settings = _live_settings()
+    if settings is None:
+        pytest.skip("live Forward credentials not configured")
+
+    _, _, location_rows = _run_live_query(settings, "forward_locations.nqe")
+    assert location_rows, "live location query returned no rows"
+    location_name = location_rows[0]["name"]
+
+    client = ForwardClient(settings)
+    calls: dict[tuple[str, str], int] = {}
+    monkeypatch.setattr(
+        ForwardClient,
+        "_request",
+        _counting_request_wrapper(ForwardClient._request, calls),
+    )
+
+    runner = ForwardSyncRunner(client)
+    query_text = _load_query_text("forward_devices.nqe")
+    spec = ForwardSyncSpec(
+        mode="preview",
+        connection=settings,
+        query=ForwardQuerySpec(
+            query_text=query_text,
+            parameters={"forward_location_names": [location_name]},
+        ),
+        fetch_all=False,
+        limit=1,
+        model_names=("devices",),
+    )
+
+    preview_report = runner.preview(spec)
+    sync_report = runner.sync(spec)
+
+    assert preview_report.row_count >= 1
+    assert preview_report.row_count == sync_report.row_count
+    assert preview_report.query_reference == sync_report.query_reference
+    assert preview_report.planned_models == ("devices",)
+    assert sync_report.planned_models == ("devices",)
+    assert calls.get(("GET", "/nqe/repos/org/commits/head/queries"), 0) == 0
+    assert calls[("GET", "/networks/%s/snapshots/latestProcessed" % settings.network_id)] == 1
+    assert calls[("GET", "/snapshots/%s/metrics" % preview_report.snapshot_id)] == 1
+    assert calls[("GET", "/networks/%s/snapshots" % settings.network_id)] == 1
+    assert calls[("POST", "/nqe")] == 2

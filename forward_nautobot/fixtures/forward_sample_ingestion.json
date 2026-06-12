@@ -1,0 +1,140 @@
+{
+  "device_types": [
+    {
+      "color": "9e9e9e",
+      "name": "DeviceType.CONTROLLER"
+    }
+  ],
+  "devices": [
+    {
+      "device_type": "DeviceType.CONTROLLER",
+      "location": "DC01_ModernDC-CDL",
+      "model": "APIC",
+      "name": "cdl1alfabbcn001",
+      "vendor": "Vendor.CISCO"
+    }
+  ],
+  "interfaces": [
+    {
+      "description": "",
+      "device": "cdl1alfabbcn001",
+      "enabled": true,
+      "lag": "",
+      "mode": "",
+      "mtu": 1500,
+      "name": "tep5",
+      "speed": null,
+      "type": "other",
+      "untagged_vlan": null
+    },
+    {
+      "description": "",
+      "device": "cdl1alfabbcn001",
+      "enabled": true,
+      "lag": "",
+      "mode": "",
+      "mtu": 1500,
+      "name": "tep6",
+      "speed": null,
+      "type": "other",
+      "untagged_vlan": null
+    }
+  ],
+  "inventory_items": [
+    {
+      "asset_tag": "",
+      "description": "",
+      "device": "cdl1alfabbcn001",
+      "discovered": true,
+      "label": "Chassis",
+      "manufacturer": "Vendor.CISCO",
+      "name": "Chassis",
+      "part_id": "APIC 5.2(4e)",
+      "role": "CHASSIS",
+      "serial": "WMP260400UX",
+      "status": "active"
+    }
+  ],
+  "ip_addresses": [
+    {
+      "address": "127.0.0.1/8",
+      "device": "cdl1alfabbcn001",
+      "host_ip": "127.0.0.1",
+      "interface": "lo",
+      "prefix_length": 8,
+      "status": "active",
+      "vrf": "default"
+    },
+    {
+      "address": "169.254.1.1/24",
+      "device": "cdl1alfabbcn001",
+      "host_ip": "169.254.1.1",
+      "interface": "teplo-1",
+      "prefix_length": 24,
+      "status": "active",
+      "vrf": "default"
+    }
+  ],
+  "ipv4_prefixes": [
+    {
+      "prefix": "10.0.0.0/24",
+      "status": "active",
+      "vrf": "BLUE"
+    }
+  ],
+  "ipv6_prefixes": [
+    {
+      "prefix": "2001:db8:1::/64",
+      "status": "active",
+      "vrf": "BLUE"
+    }
+  ],
+  "locations": [
+    {
+      "city": "Roseland",
+      "country": "United States",
+      "name": "CDL0_DC00-Roseland NJ (NJRSL)"
+    },
+    {
+      "city": "Alpharetta",
+      "country": "United States",
+      "name": "CDL0_Alpharetta_GA"
+    }
+  ],
+  "modules": [
+    {
+      "asset_tag": "",
+      "description": "Line card",
+      "device": "cdl1alfabbcn001",
+      "manufacturer": "Vendor.CISCO",
+      "model": "Line Card",
+      "module_bay": "Bay 1",
+      "part_number": "LC1",
+      "serial": "M-1",
+      "status": "active"
+    }
+  ],
+  "platforms": [
+    {
+      "device_type": "DeviceType.CONTROLLER",
+      "manufacturer": "Vendor.CISCO",
+      "name": "APIC"
+    }
+  ],
+  "vlans": [
+    {
+      "name": "Users",
+      "site": "CDL0_Alpharetta_GA",
+      "status": "active",
+      "vid": 100
+    }
+  ],
+  "vrfs": [
+    {
+      "description": "",
+      "enforce_unique": false,
+      "name": "BLUE",
+      "rd": ""
+    }
+  ]
+}

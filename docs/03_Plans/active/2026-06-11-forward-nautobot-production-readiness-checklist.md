@@ -24,6 +24,7 @@ reach full production quality.
 | Non-dry-run write execution | `forward_nautobot/integrations/forward/jobs.py`, `forward_nautobot/integrations/forward/write_executor.py`, `tests/test_plugin.py` | done |
 | Sync diff persistence | `forward_nautobot/integrations/forward/jobs.py`, `tests/test_plugin.py` | done |
 | Support-bundle capture and redaction | `forward_nautobot/integrations/forward/support.py`, `tests/test_support.py` | done |
+| Resolved query identity and commit pinning | `forward_nautobot/integrations/forward/client.py`, `forward_nautobot/integrations/forward/models.py`, `tests/test_client.py` | done |
 | Sanitized fixture coverage | `tests/fixtures/forward_ingestion_sample.json`, `tests/test_fixture_ingestion.py`, `tests/test_dry_run.py` | done |
 | Query contract drift checks | `scripts/check_query_contracts.py`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` | done |
 | Wheel/build/release gates | `scripts/check_wheel_contents.py`, `scripts/check_release_state.py`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` | done |
@@ -34,8 +35,8 @@ reach full production quality.
 
 ## Next Tranche
 
-1. Expand object lookup coverage for any additional Nautobot object types introduced by future slices.
-2. Expand ingestion tests around the SSoT job surface.
+1. Increase target-state fidelity as additional write-model slices are enabled.
+2. Expand ingestion tests around the SSoT job surface as new Nautobot object types are introduced.
 3. Use [`2026-06-11-forward-nautobot-future-improvements.md`](./2026-06-11-forward-nautobot-future-improvements.md) as the canonical ordering for later hardening work.
 
 ## Exit Criteria

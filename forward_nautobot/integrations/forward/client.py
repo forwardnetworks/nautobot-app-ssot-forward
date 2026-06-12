@@ -27,6 +27,9 @@ class ForwardClient:
     _resolved_query_cache: dict[tuple[str, str, str], dict[str, Any]] = field(
         default_factory=dict, init=False, repr=False
     )
+    _resolved_query_index_cache: dict[tuple[str, str], dict[str, Any]] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _resolved_snapshot_cache: dict[tuple[str, str], str] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -288,6 +291,16 @@ class ForwardClient:
         cached_query = self._resolved_query_cache.get(cache_key)
         if cached_query is not None:
             return dict(cached_query)
+        query_index = self.get_nqe_repository_query_index(
+            repository=repository, commit_id=commit_id
+        )
+        indexed_query = query_index.get("by_path", {}).get(query_path)
+        if isinstance(indexed_query, dict) and indexed_query.get("queryId"):
+            query = dict(indexed_query)
+            if commit_id == "head":
+                query.setdefault("lastCommitId", "")
+            self._resolved_query_cache[cache_key] = dict(query)
+            return query
         response = self._request(
             "GET",
             f"/nqe/repos/{quote(repository, safe='')}/commits/{quote(commit_id, safe='')}/queries",
@@ -309,15 +322,60 @@ class ForwardClient:
             f"Forward NQE repository lookup for `{query_path}` returned an invalid response."
         )
 
+    def get_nqe_repository_query_index(
+        self,
+        *,
+        repository: str = "org",
+        commit_id: str = "head",
+    ) -> dict[str, Any]:
+        repository = str(repository or "org").strip() or "org"
+        commit_id = str(commit_id or "head").strip() or "head"
+        cache_key = (repository, commit_id)
+        cached_index = self._resolved_query_index_cache.get(cache_key)
+        if cached_index is not None:
+            return dict(cached_index)
+        response = self._request(
+            "GET",
+            f"/nqe/repos/{quote(repository, safe='')}/commits/{quote(commit_id, safe='')}/queries",
+        )
+        data = response.json() or {}
+        if not isinstance(data, dict):
+            raise ForwardClientError(
+                f"Forward NQE repository query index for `{repository}:{commit_id}` returned an invalid response."
+            )
+        queries = data.get("queries")
+        if not isinstance(queries, list):
+            self._resolved_query_index_cache[cache_key] = {"by_path": {}}
+            return {"by_path": {}}
+        by_path: dict[str, dict[str, Any]] = {}
+        for row in queries:
+            if not isinstance(row, dict):
+                continue
+            path = str(row.get("path") or "").strip()
+            query_id = str(row.get("queryId") or "").strip()
+            if not path or not query_id:
+                continue
+            normalized = dict(row)
+            by_path[path] = normalized
+        index = {"by_path": by_path}
+        self._resolved_query_index_cache[cache_key] = dict(index)
+        return index
+
     def resolve_query_spec(self, query_spec: ForwardQuerySpec) -> ForwardQuerySpec:
         if query_spec.query_path and query_spec.resolved_query_id:
             return query_spec
         if query_spec.query_path:
-            query = self.get_committed_nqe_query(
+            query_index = self.get_nqe_repository_query_index(
                 repository=query_spec.query_repository or "org",
-                query_path=query_spec.query_path,
                 commit_id=query_spec.commit_id or "head",
             )
+            query = query_index.get("by_path", {}).get(query_spec.query_path)
+            if not isinstance(query, dict) or not query.get("queryId"):
+                query = self.get_committed_nqe_query(
+                    repository=query_spec.query_repository or "org",
+                    query_path=query_spec.query_path,
+                    commit_id=query_spec.commit_id or "head",
+                )
             query_id = str(query.get("queryId") or "").strip()
             commit_id = str(
                 query_spec.commit_id

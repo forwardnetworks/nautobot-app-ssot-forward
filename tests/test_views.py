@@ -2,30 +2,76 @@ from types import SimpleNamespace
 
 from forward_nautobot.models import ForwardConnectionProfileRecord
 import forward_nautobot.views as views
+from forward_nautobot.views import ForwardDiagnosticsView
 from forward_nautobot.views import ForwardConfigurationView
 from forward_nautobot.views import ForwardHomeView
+from forward_nautobot.views import ForwardSliceDetailView
+from forward_nautobot.views import ForwardStatusView
+
+
+def _content_text(response):
+    content = response.content
+    return content.decode() if isinstance(content, bytes) else content
 
 
 def test_home_view_mentions_forward_plugin():
     response = ForwardHomeView().get()
+    text = _content_text(response)
 
     assert response.status_code == 200
-    assert "Use the SSoT job page to sync a Forward network." in response.content
+    assert "Forward Nautobot Dashboard" in text
+    assert "Ingestion coverage" in text
+    assert "Query-ID diffs" in text
+    assert 'href="/plugins/forward_nautobot/diagnostics/"' in text
+
+
+def test_status_view_shows_operational_summary():
+    response = ForwardStatusView().get()
+    text = _content_text(response)
+
+    assert response.status_code == 200
+    assert "Forward Status" in text
+    assert "Profile Status" in text
+    assert "Operational status" in text
+
+
+def test_diagnostics_view_summarizes_coverage_and_readiness():
+    response = ForwardDiagnosticsView().get()
+    text = _content_text(response)
+
+    assert response.status_code == 200
+    assert "Forward Diagnostics" in text
+    assert "Ingestion coverage" in text
+    assert "Coverage and readiness" in text
+    assert "Raw packaged rows" in text
+
+
+def test_slice_detail_view_renders_raw_packaged_rows():
+    response = ForwardSliceDetailView().get(model_slug="devices")
+    text = _content_text(response)
+
+    assert response.status_code == 200
+    assert "Forward Slice Detail" in text
+    assert "devices" in text
+    assert "Raw packaged rows" in text
+    assert "cdl1alfabbcn001" in text
+    assert "Contract version" in text
 
 
 def test_configuration_view_mentions_profile_fields():
     response = ForwardConfigurationView().get()
+    text = _content_text(response)
 
     assert response.status_code == 200
-    assert "Persistent connection profiles" in response.content
-    assert "query_contract_version" in response.content
-    assert "default_device_role_name" in response.content
-    assert "delete_policy" in response.content
-    assert "Editable form fields" in response.content
-    assert "Profile Editor" in response.content
-    assert "<form" in response.content
-    assert 'name="delete_policy"' in response.content
-    assert "Save profile" in response.content
+    assert "Persistent connection profiles" in text
+    assert "query_contract_version" in text
+    assert "default_device_role_name" in text
+    assert "delete_policy" in text
+    assert "Editable form fields" in text
+    assert "Profile Editor" in text
+    assert "<form" in text
+    assert 'name="delete_policy"' in text
+    assert "Save profile" in text
 
 
 def test_configuration_view_renders_profile_status(monkeypatch):
@@ -44,6 +90,8 @@ def test_configuration_view_renders_profile_status(monkeypatch):
                         last_run_at="2026-06-10T12:00:00Z",
                         last_failure="none",
                         last_support_bundle="bundle-1",
+                        last_query_reference="forward_devices.nqe",
+                        last_query_mode="bundled_nqe_query_id_diff",
                     )
                 )
             ]
@@ -51,15 +99,18 @@ def test_configuration_view_renders_profile_status(monkeypatch):
     monkeypatch.setattr(views, "ForwardConnectionProfile", SimpleNamespace(objects=_FakeManager()))
 
     response = ForwardConfigurationView().get()
+    text = _content_text(response)
 
     assert response.status_code == 200
-    assert "Profile Status" in response.content
-    assert "primary" in response.content
-    assert "Ready profiles" in response.content
-    assert "mark_inactive" in response.content
-    assert "Last run" in response.content
-    assert "Last failure" in response.content
-    assert "Last support bundle" in response.content
+    assert "Profile Status" in text
+    assert "primary" in text
+    assert "Ready profiles" in text
+    assert "mark_inactive" in text
+    assert "Last run" in text
+    assert "Last failure" in text
+    assert "Last support bundle" in text
+    assert "Last query reference" in text
+    assert "Last query mode" in text
 
 
 def test_configuration_view_can_persist_profile(monkeypatch):
@@ -115,13 +166,14 @@ def test_configuration_view_can_persist_profile(monkeypatch):
             }
         )
     )
+    text = _content_text(response)
 
     assert response.status_code == 200
-    assert "Saved profile primary." in response.content
-    assert "primary" in response.content
-    assert "mark_inactive" in response.content
-    assert "Ready profiles" in response.content
-    assert "secret" not in response.content
+    assert "Saved profile primary." in text
+    assert "primary" in text
+    assert "mark_inactive" in text
+    assert "Ready profiles" in text
+    assert "secret" not in text
     assert manager.rows["primary"].enabled_models == ["devices", "interfaces"]
     assert manager.rows["primary"].is_default is True
 
@@ -160,7 +212,8 @@ def test_configuration_view_rejects_invalid_profile(monkeypatch):
             }
         )
     )
+    text = _content_text(response)
 
     assert response.status_code == 200
-    assert "Saved profile" not in response.content
+    assert "Saved profile" not in text
     assert manager.rows == {}

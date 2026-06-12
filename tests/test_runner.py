@@ -1,14 +1,42 @@
+from __future__ import annotations
+
 import json
 
-import httpx
+import pytest
 
-from forward_nautobot.integrations.forward.client import ForwardClient
-from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
-from forward_nautobot.integrations.forward.models import ForwardQuerySpec
-from forward_nautobot.integrations.forward.models import ForwardSyncSpec
-from forward_nautobot.integrations.forward.runner import ForwardSyncRunner
+try:
+    import httpx
+except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
+    httpx = None
 
-from .test_client import _mock_transport
+try:
+    from forward_nautobot.integrations.forward.client import ForwardClient
+    from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
+    from forward_nautobot.integrations.forward.models import ForwardQuerySpec
+    from forward_nautobot.integrations.forward.models import ForwardSyncSpec
+    from forward_nautobot.integrations.forward.runner import ForwardSyncRunner
+
+    from .test_client import _mock_transport
+except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
+    ForwardClient = None
+    ForwardConnectionSettings = None
+    ForwardQuerySpec = None
+    ForwardSyncSpec = None
+    ForwardSyncRunner = None
+    _mock_transport = None
+
+
+def _require_runner():
+    if (
+        httpx is None
+        or ForwardClient is None
+        or ForwardConnectionSettings is None
+        or ForwardQuerySpec is None
+        or ForwardSyncSpec is None
+        or ForwardSyncRunner is None
+        or _mock_transport is None
+    ):
+        pytest.skip("Forward runner tests require the full dependency set.")
 
 
 def _counting_transport(calls):
@@ -36,15 +64,22 @@ def _counting_transport(calls):
             return httpx.Response(200, json={"snapshotState": "processed"})
         if path == "/api/nqe/repos/org/commits/head/queries":
             calls["query_lookups"] += 1
-            assert request.url.params.get("path") == "/queries/devices.nqe"
+            path_param = request.url.params.get("path")
+            if path_param is not None:
+                assert path_param == "/forward_nautobot_validation/forward_devices"
             return httpx.Response(
                 200,
                 json={
                     "queries": [
                         {
-                            "path": "/queries/devices.nqe",
+                            "path": "/forward_nautobot_validation/forward_devices",
                             "queryId": "query-123",
                             "lastCommit": {"id": "commit-abc"},
+                        },
+                        {
+                            "path": "/forward_nautobot_validation/forward_locations",
+                            "queryId": "query-456",
+                            "lastCommit": {"id": "commit-def"},
                         }
                     ]
                 },
@@ -71,6 +106,7 @@ def _counting_transport(calls):
 
 
 def test_runner_preview_report():
+    _require_runner()
     client = ForwardClient(
         ForwardConnectionSettings(
             base_url="https://fwd.example",
@@ -90,7 +126,7 @@ def test_runner_preview_report():
                 password="secret",
                 network_id="net-1",
             ),
-            query=ForwardQuerySpec(query_path="/queries/devices.nqe"),
+            query=ForwardQuerySpec(query_path="/forward_nautobot_validation/forward_devices"),
             model_names=("locations", "devices"),
         )
     )
@@ -101,6 +137,7 @@ def test_runner_preview_report():
 
 
 def test_runner_preview_uses_query_parameters_once():
+    _require_runner()
     calls = {"query_lookups": 0, "nqe_payloads": []}
     client = ForwardClient(
         ForwardConnectionSettings(
@@ -124,7 +161,7 @@ def test_runner_preview_uses_query_parameters_once():
                 snapshot_id="snap-2",
             ),
             query=ForwardQuerySpec(
-                query_path="/queries/devices.nqe",
+                query_path="/forward_nautobot_validation/forward_devices",
                 parameters={"limit": 2},
             ),
             model_names=("locations", "devices"),
@@ -134,3 +171,72 @@ def test_runner_preview_uses_query_parameters_once():
     assert calls["query_lookups"] == 1
     assert calls["nqe_payloads"][0]["parameters"] == {"limit": 2}
     assert report.row_count == 2
+
+
+def test_runner_preview_and_sync_reuse_query_resolution_cache():
+    _require_runner()
+    calls = {"query_lookups": 0, "nqe_payloads": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/snapshots":
+            return httpx.Response(200, json={"snapshots": []})
+        if path == "/api/snapshots/snap-2/metrics":
+            return httpx.Response(200, json={"snapshotState": "processed"})
+        if path == "/api/nqe/repos/org/commits/head/queries":
+            calls["query_lookups"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "queries": [
+                        {
+                            "path": "/forward_nautobot_validation/forward_devices",
+                            "queryId": "query-123",
+                            "lastCommit": {"id": "commit-abc"},
+                        }
+                    ]
+                },
+            )
+        if path == "/api/nqe":
+            payload = json.loads(request.content.decode("utf-8"))
+            calls["nqe_payloads"].append(payload)
+            return httpx.Response(
+                200,
+                json={
+                    "items": [{"fields": {"id": "r1"}}],
+                    "totalNumItems": 1,
+                },
+            )
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            snapshot_id="snap-2",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    runner = ForwardSyncRunner(client)
+    spec = ForwardSyncSpec(
+        mode="preview",
+        connection=ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            snapshot_id="snap-2",
+        ),
+        query=ForwardQuerySpec(query_path="/forward_nautobot_validation/forward_devices"),
+        model_names=("locations", "devices"),
+    )
+
+    preview_report = runner.preview(spec)
+    sync_report = runner.sync(spec)
+
+    assert preview_report.row_count == sync_report.row_count == 1
+    assert calls["query_lookups"] == 1
+    assert len(calls["nqe_payloads"]) == 2
+    assert all(payload["queryId"] == "query-123" for payload in calls["nqe_payloads"])

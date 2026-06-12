@@ -80,7 +80,6 @@ def run_fixture_dry_run(
     for model_name in selected_models:
         source.load_rows(model_name, rows_by_model.get(model_name, []))
     write_plan = ForwardWritePlanner().plan(source, target)
-    diff = source.sync_to(target)
     row_count = sum(len(rows_by_model.get(model_name, [])) for model_name in selected_models)
     report = ForwardSyncReport(
         mode="dry-run",
@@ -113,16 +112,16 @@ def run_fixture_dry_run(
         source_summary=source.as_support_summary(),
         target_summary=target.as_support_summary(),
         write_summary=write_plan.summary,
-        diff_summary=diff.summary(),
+        diff_summary=write_plan.diff_summary,
         write_policy=write_plan.slice_policies,
         configuration_status=write_plan.configuration_status,
         failure_classification=failure_classification,
         diagnostics={
             "write_summary": write_plan.summary,
             "configuration_status": write_plan.configuration_status,
-            "diff_summary": diff.summary(),
+            "diff_summary": write_plan.diff_summary,
             "write_policy": write_plan.slice_policies,
-            "diff_detail": diff.dict(),
+            "diff_detail": write_plan.diff_detail,
             "fixture_path": str(fixture_path),
         },
         sharing_profile=sharing_profile,
@@ -134,7 +133,7 @@ def run_fixture_dry_run(
         write_summary=write_plan.summary,
         configuration_status=write_plan.configuration_status,
         failure_classification=failure_classification,
-        diff_summary=diff.summary(),
+        diff_summary=write_plan.diff_summary,
         report=report,
         support_bundle=support_bundle,
         support_bundle_shared=support_bundle_shared,

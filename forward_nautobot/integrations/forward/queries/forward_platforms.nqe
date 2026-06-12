@@ -5,10 +5,13 @@
  */
 
 @query
-f() =
+f(forward_location_names: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_location_names)
+  || !isPresent(device.locationName)
+  || device.locationName in forward_location_names
 select distinct {
   name: if isPresent(device.platform.model) then device.platform.model else "",
   manufacturer: toString(device.platform.vendor),

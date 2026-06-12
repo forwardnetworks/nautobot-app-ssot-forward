@@ -38,8 +38,9 @@ class _FakeRecord(SimpleNamespace):
 
 
 class _FakeManager:
-    def __init__(self):
+    def __init__(self, allowed_fields: tuple[str, ...] | None = None):
         self.records: dict[tuple[tuple[str, object], ...], _FakeRecord] = {}
+        self.allowed_fields = set(allowed_fields or ())
 
     @staticmethod
     def _key(lookup: dict[str, object]) -> tuple[tuple[str, object], ...]:
@@ -53,7 +54,16 @@ class _FakeManager:
                 normalized.append((key, value))
         return tuple(sorted(normalized))
 
+    def _validate(self, values: dict[str, object] | None):
+        if not self.allowed_fields or not values:
+            return
+        unknown = sorted(set(values) - self.allowed_fields)
+        if unknown:
+            raise AssertionError(f"unexpected field(s): {', '.join(unknown)}")
+
     def get_or_create(self, defaults=None, **lookup):
+        self._validate(lookup)
+        self._validate(defaults)
         key = self._key(lookup)
         if key in self.records:
             return self.records[key], False
@@ -63,6 +73,7 @@ class _FakeManager:
         return record, True
 
     def get(self, **lookup):
+        self._validate(lookup)
         key = self._key(lookup)
         if key not in self.records:
             raise LookupError(key)
@@ -70,29 +81,51 @@ class _FakeManager:
 
 
 class _FakeModel:
-    def __init__(self):
-        self.objects = _FakeManager()
+    def __init__(
+        self,
+        *,
+        field_names: tuple[str, ...] | None = None,
+        allowed_fields: tuple[str, ...] | None = None,
+    ):
+        self.objects = _FakeManager(allowed_fields=allowed_fields)
+        if field_names:
+            self._meta = _MetaStub(*field_names)
+
+
+class _FieldStub:
+    def __init__(self, name: str):
+        self.name = name
+
+
+class _MetaStub:
+    def __init__(self, *field_names: str):
+        self.fields = tuple(_FieldStub(name) for name in field_names)
+
+
+class _SchemaModel:
+    def __init__(self, *field_names: str):
+        self._meta = _MetaStub(*field_names)
 
 
 def _fake_model_resolver():
     models = {
-        ("dcim", "LocationType"): _FakeModel(),
-        ("extras", "Status"): _FakeModel(),
-        ("dcim", "Location"): _FakeModel(),
-        ("dcim", "Manufacturer"): _FakeModel(),
-        ("dcim", "Platform"): _FakeModel(),
-        ("dcim", "DeviceType"): _FakeModel(),
-        ("extras", "Role"): _FakeModel(),
-        ("dcim", "Device"): _FakeModel(),
-        ("dcim", "Interface"): _FakeModel(),
-        ("ipam", "VLAN"): _FakeModel(),
-        ("ipam", "VRF"): _FakeModel(),
-        ("ipam", "Prefix"): _FakeModel(),
-        ("ipam", "IPAddress"): _FakeModel(),
-        ("dcim", "InventoryItem"): _FakeModel(),
-        ("dcim", "ModuleBay"): _FakeModel(),
-        ("dcim", "ModuleType"): _FakeModel(),
-        ("dcim", "Module"): _FakeModel(),
+        ("dcim", "LocationType"): _FakeModel(field_names=("name",), allowed_fields=("name",)),
+        ("extras", "Status"): _FakeModel(field_names=("name",), allowed_fields=("name",)),
+        ("dcim", "Location"): _FakeModel(field_names=("name", "location_type", "status"), allowed_fields=("name", "location_type", "status")),
+        ("dcim", "Manufacturer"): _FakeModel(field_names=("name",), allowed_fields=("name",)),
+        ("dcim", "Platform"): _FakeModel(field_names=("name", "manufacturer"), allowed_fields=("name", "manufacturer")),
+        ("dcim", "DeviceType"): _FakeModel(field_names=("manufacturer", "model"), allowed_fields=("manufacturer", "model")),
+        ("extras", "Role"): _FakeModel(field_names=("name",), allowed_fields=("name",)),
+        ("dcim", "Device"): _FakeModel(field_names=("name", "location", "platform", "device_type", "role", "status"), allowed_fields=("name", "location", "platform", "device_type", "role", "status")),
+        ("dcim", "Interface"): _FakeModel(field_names=("device", "name", "type", "enabled", "mtu", "description", "speed", "lag"), allowed_fields=("device", "name", "type", "enabled", "mtu", "description", "speed", "lag")),
+        ("ipam", "VLAN"): _FakeModel(field_names=("vid", "location", "name", "status"), allowed_fields=("vid", "location", "name", "status")),
+        ("ipam", "VRF"): _FakeModel(field_names=("name", "rd", "description", "enforce_unique"), allowed_fields=("name", "rd", "description", "enforce_unique")),
+        ("ipam", "Prefix"): _FakeModel(field_names=("prefix", "vrf", "status"), allowed_fields=("prefix", "vrf", "status")),
+        ("ipam", "IPAddress"): _FakeModel(field_names=("address", "vrf", "status", "assigned_object"), allowed_fields=("address", "vrf", "status", "assigned_object")),
+        ("dcim", "InventoryItem"): _FakeModel(field_names=("device", "name", "label", "part_id", "serial", "asset_tag", "status", "role", "manufacturer", "discovered", "description"), allowed_fields=("device", "name", "label", "part_id", "serial", "asset_tag", "status", "role", "manufacturer", "discovered", "description")),
+        ("dcim", "ModuleBay"): _FakeModel(field_names=("device", "position"), allowed_fields=("device", "position")),
+        ("dcim", "ModuleType"): _FakeModel(field_names=("manufacturer", "model", "part_number"), allowed_fields=("manufacturer", "model", "part_number")),
+        ("dcim", "Module"): _FakeModel(field_names=("device", "module_bay", "module_type", "status", "serial", "asset_tag"), allowed_fields=("device", "module_bay", "module_type", "status", "serial", "asset_tag")),
     }
 
     def resolve(app_label: str, model_name: str):
@@ -193,6 +226,44 @@ def test_write_executor_applies_core_slices_with_fake_backend(monkeypatch):
     assert execution.items[3].status == "created"
     assert models[("dcim", "Location")].objects.records
     assert models[("dcim", "Device")].objects.records
+
+
+def test_write_executor_routes_via_registry_metadata(monkeypatch):
+    models, resolve = _fake_model_resolver()
+    monkeypatch.setattr(write_executor, "django_apps", object())
+    monkeypatch.setattr(write_executor, "ContentType", None)
+
+    backend = ForwardNautobotWriteBackend(model_resolver=resolve)
+    captured = {}
+
+    def _fake_upsert_location(operation, profile):
+        captured["handler"] = "location"
+        captured["operation"] = operation
+        captured["profile"] = profile
+        return _FakeRecord(name=operation.fields["name"]), True
+
+    monkeypatch.setattr(backend, "_upsert_location", _fake_upsert_location)
+    monkeypatch.setattr(
+        write_executor,
+        "get_model_mapping",
+        lambda slug: SimpleNamespace(write_handler="_upsert_location"),
+    )
+
+    item = backend.apply_operation(
+        ForwardWriteOperation(
+            model_slug="locations",
+            record_key="SITE-ALPHA",
+            nautobot_scope="dcim.location",
+            action="create",
+            fields={"name": "SITE-ALPHA"},
+            contract_version="v1",
+        ),
+        ForwardConnectionProfileRecord(name="profile"),
+    )
+
+    assert captured["handler"] == "location"
+    assert item.status == "created"
+    assert item.object_label == "SITE-ALPHA"
 
 
 def test_write_executor_honors_delete_policy(monkeypatch):

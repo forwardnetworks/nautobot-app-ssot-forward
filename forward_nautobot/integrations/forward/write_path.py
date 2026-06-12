@@ -43,15 +43,23 @@ class ForwardWritePlan:
 
     operations: tuple[ForwardWriteOperation, ...] = ()
     summary: dict[str, int] = field(default_factory=dict)
+    diff_summary: dict[str, int] = field(default_factory=dict)
+    diff_detail: dict[str, Any] = field(default_factory=dict)
     configuration_status: dict[str, Any] = field(default_factory=dict)
     slice_policies: dict[str, dict[str, str]] = field(default_factory=dict)
+    delta_mode: bool = False
+    delta_models: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "operations": [operation.as_dict() for operation in self.operations],
             "summary": dict(self.summary),
+            "diff_summary": dict(self.diff_summary),
+            "diff_detail": dict(self.diff_detail),
             "configuration_status": dict(self.configuration_status),
             "slice_policies": {slug: dict(policy) for slug, policy in self.slice_policies.items()},
+            "delta_mode": self.delta_mode,
+            "delta_models": list(self.delta_models),
         }
 
 
@@ -79,6 +87,8 @@ class ForwardWritePlanner:
     ) -> ForwardWritePlan:
         operations: list[ForwardWriteOperation] = []
         summary = {"create": 0, "update": 0, "no-change": 0, "blocked": 0}
+        diff_summary = {"create": 0, "update": 0, "no-change": 0}
+        diff_detail: dict[str, Any] = {"models": {}}
         configuration_status: dict[str, Any] = {
             "profile_provided": profile is not None,
             "write_ready": bool(profile.write_ready) if profile is not None else False,
@@ -98,6 +108,7 @@ class ForwardWritePlanner:
                 self._target_key(mapping, dict(item.dict())): dict(item.dict())
                 for item in target.get_all(mapping.slug)
             }
+            model_diff_summary = {"create": 0, "update": 0, "no-change": 0}
             for record_key, record in source.records.get(mapping.slug, {}).items():
                 readiness = advisor.readiness_for(
                     mapping,
@@ -112,6 +123,8 @@ class ForwardWritePlanner:
                 else:
                     action = "no-change"
                 summary[action] += 1
+                diff_summary[action] += 1
+                model_diff_summary[action] += 1
                 if readiness.blocked_by:
                     summary["blocked"] += 1
                 operations.append(
@@ -125,9 +138,12 @@ class ForwardWritePlanner:
                         blocked_by=readiness.blocked_by,
                     )
                 )
+            diff_detail["models"][mapping.slug] = model_diff_summary
         return ForwardWritePlan(
             operations=tuple(operations),
             summary=summary,
+            diff_summary=diff_summary,
+            diff_detail=diff_detail,
             configuration_status=configuration_status,
             slice_policies={
                 mapping.slug: {

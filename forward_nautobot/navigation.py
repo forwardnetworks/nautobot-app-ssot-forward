@@ -1,7 +1,7 @@
 """Navigation for the Forward Networks SSoT integration."""
 
 try:
-    from django.utils.translation import gettext as _
+    from django.utils.translation import gettext_lazy as _
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
     def _(value):
         return value
@@ -10,7 +10,7 @@ try:
     from nautobot.apps.ui import PluginMenu
     from nautobot.apps.ui import PluginMenuButton
     from nautobot.apps.ui import PluginMenuItem
-except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+except Exception:  # pragma: no cover - local compatibility import path
     from dataclasses import dataclass
 
     @dataclass(slots=True)
@@ -39,6 +39,16 @@ overview = PluginMenuItem(
     link_text=_("Overview"),
 )
 
+diagnostics = PluginMenuItem(
+    link="plugins:forward_nautobot:diagnostics",
+    link_text=_("Diagnostics"),
+)
+
+status = PluginMenuItem(
+    link="plugins:forward_nautobot:status",
+    link_text=_("Status"),
+)
+
 configuration = PluginMenuItem(
     link="plugins:forward_nautobot:configuration",
     link_text=_("Configuration"),
@@ -48,7 +58,7 @@ menu = PluginMenu(
     label="Forward Networks",
     icon_class="mdi mdi-cloud-sync",
     groups=(
-        ("SSoT", (overview,)),
+        ("SSoT", (overview, diagnostics, status)),
         ("Configuration", (configuration,)),
     ),
 )

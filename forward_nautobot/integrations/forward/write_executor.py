@@ -12,13 +12,13 @@ try:
     from django.apps import apps as django_apps
     from django.contrib.contenttypes.models import ContentType
     from django.utils.text import slugify
-except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+except Exception:  # pragma: no cover - local compatibility import path
     django_apps = None
     ContentType = None
     slugify = None
 
 from .support import classify_failure
-from .registry import CORE_MODEL_MAPPINGS
+from .registry import get_model_mapping
 from .write_path import ForwardWriteOperation
 from .write_path import ForwardWritePlan
 
@@ -121,9 +121,46 @@ class ForwardNautobotWriteBackend:
         return obj
 
     @staticmethod
+    def _model_field_names(model) -> set[str]:
+        meta = getattr(model, "_meta", None)
+        fields = getattr(meta, "fields", None)
+        if not fields:
+            return set()
+        names: set[str] = set()
+        for field in fields:
+            name = getattr(field, "name", "")
+            if name:
+                names.add(str(name))
+        return names
+
+    @classmethod
+    def _filtered_updates(cls, model, updates: dict[str, Any]) -> dict[str, Any]:
+        field_names = cls._model_field_names(model)
+        if not field_names:
+            return dict(updates)
+        return {
+            field_name: value
+            for field_name, value in updates.items()
+            if field_name in field_names
+        }
+
+    @classmethod
+    def _first_existing_field(cls, model, *field_names: str) -> str | None:
+        available = cls._model_field_names(model)
+        if not available:
+            return next((name for name in field_names if name), None)
+        for field_name in field_names:
+            if field_name in available:
+                return field_name
+        return None
+
+    @staticmethod
     def _sync_fields(instance, updates: dict[str, Any]) -> bool:
+        allowed_fields = ForwardNautobotWriteBackend._model_field_names(instance)
         changed = False
         for field_name, value in updates.items():
+            if allowed_fields and field_name not in allowed_fields:
+                continue
             if getattr(instance, field_name, None) != value:
                 setattr(instance, field_name, value)
                 changed = True
@@ -138,10 +175,10 @@ class ForwardNautobotWriteBackend:
         return value
 
     def _mapping_for_slug(self, model_slug: str):
-        for mapping in CORE_MODEL_MAPPINGS:
-            if mapping.slug == model_slug:
-                return mapping
-        return None
+        try:
+            return get_model_mapping(model_slug)
+        except Exception:
+            return None
 
     def _record_key_for_instance(self, model_slug: str, instance) -> str:
         mapping = self._mapping_for_slug(model_slug)
@@ -237,9 +274,89 @@ class ForwardNautobotWriteBackend:
                         planned_action=delete_policy,
                         status="error",
                         message=str(exc),
-                    )
+                )
                 )
         return tuple(items)
+
+    def _apply_delete_policy(
+        self,
+        *,
+        model_slug: str,
+        record_key: str,
+        instance: Any,
+        delete_policy: str,
+        planned_action: str = "delete",
+    ) -> ForwardWriteExecutionItem:
+        if delete_policy not in {"delete", "mark_inactive"}:
+            return ForwardWriteExecutionItem(
+                model_slug=model_slug,
+                record_key=record_key,
+                planned_action=planned_action,
+                status="skipped",
+                object_label=str(getattr(instance, "name", "") or record_key),
+                message="Delete policy is ignore; explicit delete was skipped.",
+            )
+        try:
+            if delete_policy == "delete":
+                if hasattr(instance, "delete"):
+                    instance.delete()
+                    return ForwardWriteExecutionItem(
+                        model_slug=model_slug,
+                        record_key=record_key,
+                        planned_action=planned_action,
+                        status="deleted",
+                        object_label=str(getattr(instance, "name", "") or record_key),
+                    )
+                return ForwardWriteExecutionItem(
+                    model_slug=model_slug,
+                    record_key=record_key,
+                    planned_action=planned_action,
+                    status="skipped",
+                    object_label=str(getattr(instance, "name", "") or record_key),
+                    message="Model does not expose delete().",
+                )
+            self._mark_inactive(instance)
+            return ForwardWriteExecutionItem(
+                model_slug=model_slug,
+                record_key=record_key,
+                planned_action=planned_action,
+                status="deactivated",
+                object_label=str(getattr(instance, "name", "") or record_key),
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            return ForwardWriteExecutionItem(
+                model_slug=model_slug,
+                record_key=record_key,
+                planned_action=planned_action,
+                status="error",
+                object_label=str(getattr(instance, "name", "") or record_key),
+                message=str(exc),
+            )
+
+    def _delete_instance_by_record_key(
+        self,
+        model_slug: str,
+        record_key: str,
+        delete_policy: str,
+        *,
+        planned_action: str = "delete",
+    ) -> ForwardWriteExecutionItem:
+        for instance in self._iter_existing_instances(model_slug):
+            if self._record_key_for_instance(model_slug, instance) == record_key:
+                return self._apply_delete_policy(
+                    model_slug=model_slug,
+                    record_key=record_key,
+                    instance=instance,
+                    delete_policy=delete_policy,
+                    planned_action=planned_action,
+                )
+        return ForwardWriteExecutionItem(
+            model_slug=model_slug,
+            record_key=record_key,
+            planned_action=planned_action,
+            status="skipped",
+            message="No matching Nautobot object exists for the delete operation.",
+        )
 
     def _upsert_location(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
         row = dict(operation.fields)
@@ -312,12 +429,13 @@ class ForwardNautobotWriteBackend:
         if manager is None:
             raise LookupError("Nautobot DeviceType model has no manager.")
         slug = str(row.get("slug") or _slugify(f"{manufacturer_name}-{model_name}"))
+        defaults = self._filtered_updates(device_type_model, {"slug": slug})
         obj, created = manager.get_or_create(
             manufacturer=manufacturer,
             model=model_name,
-            defaults={"slug": slug},
+            defaults=defaults,
         )
-        self._sync_fields(obj, {"slug": slug})
+        self._sync_fields(obj, defaults)
         return obj, created
 
     def _upsert_device(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
@@ -357,26 +475,24 @@ class ForwardNautobotWriteBackend:
         manager = getattr(device_model, "objects", None)
         if manager is None:
             raise LookupError("Nautobot Device model has no manager.")
-        obj, created = manager.get_or_create(
-            name=name,
-            defaults={
-                "location": location,
-                "platform": platform,
-                "device_type": device_type,
-                "device_role": device_role,
-                "status": status,
-            },
-        )
-        self._sync_fields(
-            obj,
+        role_field_name = self._first_existing_field(device_model, "role", "device_role")
+        if role_field_name is None:
+            raise LookupError("Nautobot Device model has no role field.")
+        defaults = self._filtered_updates(
+            device_model,
             {
                 "location": location,
                 "platform": platform,
                 "device_type": device_type,
-                "device_role": device_role,
+                role_field_name: device_role,
                 "status": status,
             },
         )
+        obj, created = manager.get_or_create(
+            name=name,
+            defaults=defaults,
+        )
+        self._sync_fields(obj, defaults)
         return obj, created
 
     def _lookup_device_type(self, manufacturer, device_type_name: str):
@@ -384,13 +500,17 @@ class ForwardNautobotWriteBackend:
         manager = getattr(device_type_model, "objects", None)
         if manager is None:
             raise LookupError("Nautobot DeviceType model has no manager.")
+        defaults = self._filtered_updates(
+            device_type_model,
+            {"slug": _slugify(device_type_name)},
+        )
         try:
             return manager.get(manufacturer=manufacturer, model=device_type_name)
         except Exception:
             return manager.get_or_create(
                 manufacturer=manufacturer,
                 model=device_type_name,
-                defaults={"slug": _slugify(device_type_name)},
+                defaults=defaults,
             )[0]
 
     @staticmethod
@@ -425,7 +545,7 @@ class ForwardNautobotWriteBackend:
 
     def _resolve_vrf(self, vrf_name: str):
         vrf_name = str(vrf_name or "").strip()
-        if not vrf_name:
+        if not vrf_name or vrf_name == "default":
             return None
         model = self.resolve_model("ipam", "VRF")
         manager = getattr(model, "objects", None)
@@ -574,7 +694,8 @@ class ForwardNautobotWriteBackend:
         )
         return obj
 
-    def _resolve_inventory_item(self, row: dict[str, Any]):
+    def _resolve_inventory_item(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+        row = dict(operation.fields)
         device = self._resolve_device(row["device"])
         role = self._get_or_create_named(
             "extras",
@@ -624,7 +745,8 @@ class ForwardNautobotWriteBackend:
         )
         return obj, created
 
-    def _resolve_module(self, row: dict[str, Any]):
+    def _resolve_module(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+        row = dict(operation.fields)
         device = self._resolve_device(row["device"])
         module_bay_name = str(row.get("module_bay") or "").strip()
         if not module_bay_name:
@@ -683,7 +805,7 @@ class ForwardNautobotWriteBackend:
         )
         return obj, created
 
-    def _upsert_interface(self, operation: ForwardWriteOperation):
+    def _upsert_interface(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
         row = dict(operation.fields)
         device = self._resolve_device(row["device"])
         name = str(row.get("name") or "").strip()
@@ -733,7 +855,7 @@ class ForwardNautobotWriteBackend:
         self._sync_fields(obj, updates)
         return obj, created
 
-    def _upsert_vrf(self, operation: ForwardWriteOperation):
+    def _upsert_vrf(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
         row = dict(operation.fields)
         name = str(row.get("name") or "").strip()
         if not name:
@@ -751,7 +873,7 @@ class ForwardNautobotWriteBackend:
         self._sync_fields(obj, defaults)
         return obj, created
 
-    def _upsert_prefix(self, operation: ForwardWriteOperation):
+    def _upsert_prefix(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
         row = dict(operation.fields)
         prefix_value = str(row.get("prefix") or "").strip()
         if not prefix_value:
@@ -773,7 +895,7 @@ class ForwardNautobotWriteBackend:
         self._sync_fields(obj, updates)
         return obj, created
 
-    def _upsert_ip_address(self, operation: ForwardWriteOperation):
+    def _upsert_ip_address(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
         row = dict(operation.fields)
         device = self._resolve_device(row["device"])
         interface = self._resolve_interface(device, row["interface"])
@@ -823,30 +945,18 @@ class ForwardNautobotWriteBackend:
                 status="skipped",
                 message="Nautobot ORM is unavailable in the current environment.",
             )
+        if operation.action == "delete":
+            return self._delete_instance_by_record_key(
+                operation.model_slug,
+                operation.record_key,
+                getattr(profile, "effective_delete_policy", "ignore"),
+                planned_action=operation.action,
+            )
         try:
-            if operation.model_slug == "locations":
-                obj, created = self._upsert_location(operation, profile)
-            elif operation.model_slug == "platforms":
-                obj, created = self._upsert_platform(operation, profile)
-            elif operation.model_slug == "device_types":
-                obj, created = self._upsert_device_type(operation, profile)
-            elif operation.model_slug == "devices":
-                obj, created = self._upsert_device(operation, profile)
-            elif operation.model_slug == "interfaces":
-                obj, created = self._upsert_interface(operation)
-            elif operation.model_slug == "vlans":
-                obj, created = self._upsert_vlan(operation, profile)
-            elif operation.model_slug == "vrfs":
-                obj, created = self._upsert_vrf(operation)
-            elif operation.model_slug in {"ipv4_prefixes", "ipv6_prefixes"}:
-                obj, created = self._upsert_prefix(operation)
-            elif operation.model_slug == "ip_addresses":
-                obj, created = self._upsert_ip_address(operation)
-            elif operation.model_slug == "inventory_items":
-                obj, created = self._resolve_inventory_item(operation.fields)
-            elif operation.model_slug == "modules":
-                obj, created = self._resolve_module(operation.fields)
-            else:
+            mapping = self._mapping_for_slug(operation.model_slug)
+            handler_name = getattr(mapping, "write_handler", "") if mapping is not None else ""
+            handler = getattr(self, handler_name, None) if handler_name else None
+            if handler is None:
                 return ForwardWriteExecutionItem(
                     model_slug=operation.model_slug,
                     record_key=operation.record_key,
@@ -854,6 +964,7 @@ class ForwardNautobotWriteBackend:
                     status="skipped",
                     message="No Nautobot writer is registered for this slice yet.",
                 )
+            obj, created = handler(operation, profile)
         except Exception as exc:  # pragma: no cover - exercised via targeted tests
             return ForwardWriteExecutionItem(
                 model_slug=operation.model_slug,
@@ -901,9 +1012,10 @@ class ForwardNautobotWriteExecutor:
         resolved_profile = profile or ForwardConnectionProfileRecord(name="runtime")
         source_keys_by_slug: dict[str, set[str]] = {}
         for operation in plan.operations:
-            source_keys_by_slug.setdefault(operation.model_slug, set()).add(
-                operation.record_key
-            )
+            if operation.action != "delete":
+                source_keys_by_slug.setdefault(operation.model_slug, set()).add(
+                    operation.record_key
+                )
             item = self.backend.apply_operation(operation, resolved_profile)
             if item.status == "error":
                 summary["error"] += 1
@@ -912,8 +1024,13 @@ class ForwardNautobotWriteExecutor:
                 summary[item.status] = summary.get(item.status, 0) + 1
             items.append(item)
         delete_policy = getattr(resolved_profile, "effective_delete_policy", "ignore")
+        delta_models = set(getattr(plan, "delta_models", ()) or ())
+        if plan.delta_mode and not delta_models:
+            delta_models = set(source_keys_by_slug)
         if delete_policy in {"delete", "mark_inactive"}:
             for model_slug, source_keys in source_keys_by_slug.items():
+                if model_slug in delta_models:
+                    continue
                 reconciled_items = self.backend.reconcile_missing(
                     model_slug,
                     source_keys,

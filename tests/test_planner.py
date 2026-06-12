@@ -2,16 +2,38 @@ from __future__ import annotations
 
 import forward_nautobot.integrations.forward.adapters as adapters
 
-from forward_nautobot.integrations.forward.client import ForwardClient
-from forward_nautobot.integrations.forward.adapters import NautobotTargetAdapter
 from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
-from forward_nautobot.integrations.forward.planner import ForwardIngestionPlanner
-from forward_nautobot.integrations.forward.planner import ForwardIngestionRequest
+from forward_nautobot.models import ForwardConnectionProfileRecord
 
-from .test_client import _mock_transport
+try:
+    from forward_nautobot.integrations.forward.client import ForwardClient
+    from forward_nautobot.integrations.forward.adapters import NautobotTargetAdapter
+    from forward_nautobot.integrations.forward.planner import ForwardIngestionPlanner
+    from forward_nautobot.integrations.forward.planner import ForwardIngestionRequest
+    from .test_client import _mock_transport
+except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
+    ForwardClient = None
+    NautobotTargetAdapter = None
+    ForwardIngestionPlanner = None
+    ForwardIngestionRequest = None
+    _mock_transport = None
+
+
+def _require_planner():
+    if (
+        ForwardClient is None
+        or NautobotTargetAdapter is None
+        or ForwardIngestionPlanner is None
+        or ForwardIngestionRequest is None
+        or _mock_transport is None
+    ):
+        import pytest
+
+        pytest.skip("Forward planner tests require the full dependency set.")
 
 
 def test_planner_syncs_rows_with_diffsync():
+    _require_planner()
     client = ForwardClient(
         ForwardConnectionSettings(
             base_url="https://fwd.example",
@@ -37,17 +59,18 @@ def test_planner_syncs_rows_with_diffsync():
     )
 
     assert plan.source.count("devices") == 2
-    assert plan.target.count("devices") == 2
+    assert plan.target.count("devices") == 0
     assert plan.write_summary["create"] == 2
     assert plan.diff_summary["create"] == 2
     assert plan.reports[0].query_reference == "forward_devices.nqe"
     assert plan.reports[0].query_contract_version == "v1"
     assert plan.source_summary["model_counts"]["devices"] == 2
-    assert plan.target_summary["planned_counts"]["devices"] == 2
+    assert plan.target_summary["planned_counts"]["devices"] == 0
     assert plan.write_plan.slice_policies["devices"]["missing_row_policy"] == "mark_inactive"
 
 
 def test_planner_loads_existing_target_state_before_diff(monkeypatch):
+    _require_planner()
     location = adapters.ForwardLocation(name="SITE-ALPHA", city="Austin", country="US")
 
     class _FakeManager:
@@ -105,3 +128,360 @@ def test_planner_loads_existing_target_state_before_diff(monkeypatch):
 
     assert plan.target_summary["loaded_counts"]["locations"] == 1
     assert plan.target.count("locations") == 1
+
+
+def test_planner_uses_diff_rows_for_query_id_backed_slices(monkeypatch):
+    _require_planner()
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=_mock_transport(),
+    )
+    planner = ForwardIngestionPlanner(client)
+
+    diff_rows = [
+        {
+            "type": "updated",
+            "before": {
+                "name": "device-1",
+                "location": "Site A",
+                "vendor": "Vendor.CISCO",
+                "model": "N9K",
+                "device_type": "DeviceType.SWITCH",
+            },
+            "after": {
+                "name": "device-1",
+                "location": "Site B",
+                "vendor": "Vendor.CISCO",
+                "model": "N9K",
+                "device_type": "DeviceType.SWITCH",
+            },
+        },
+        {
+            "type": "deleted",
+            "before": {
+                "name": "device-2",
+                "location": "Site B",
+                "vendor": "Vendor.CISCO",
+                "model": "N9K",
+                "device_type": "DeviceType.SWITCH",
+            },
+            "after": {},
+        },
+    ]
+
+    def _run_nqe_diff(self, **kwargs):
+        assert kwargs["before_snapshot_id"] == "snap-1"
+        assert kwargs["after_snapshot_id"] == "snap-2"
+        assert kwargs["query_id"] == "query-123"
+        return diff_rows
+
+    def _run_nqe_query(self, **kwargs):
+        raise AssertionError("run_nqe_query should not be used when diff mode is available")
+
+    monkeypatch.setattr(ForwardClient, "run_nqe_diff", _run_nqe_diff)
+    monkeypatch.setattr(ForwardClient, "run_nqe_query", _run_nqe_query)
+
+    plan = planner.run(
+        ForwardIngestionRequest(
+            connection=ForwardConnectionSettings(
+                base_url="https://fwd.example",
+                username="alice",
+                password="secret",
+                network_id="net-1",
+            ),
+            model_names=("devices",),
+            fetch_all=False,
+            limit=2,
+            connection_profile=ForwardConnectionProfileRecord(
+                name="primary",
+                network_id="net-1",
+                last_snapshot_id="snap-1",
+            ),
+        )
+    )
+
+    assert plan.reports[0].query_mode == "bundled_nqe_query_id_diff"
+    assert plan.write_plan.delta_mode is True
+    assert plan.write_plan.delta_models == ("devices",)
+    assert plan.write_summary["update"] == 1
+    assert plan.write_summary["deleted"] == 1
+    assert [operation.action for operation in plan.write_plan.operations] == [
+        "update",
+        "delete",
+    ]
+    assert plan.diff_detail["mode"] == "delta"
+    assert plan.diff_detail["slices"]["devices"]["mode"] == "delta"
+
+
+def test_planner_passes_dependent_scope_parameters(monkeypatch):
+    _require_planner()
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=_mock_transport(),
+    )
+    planner = ForwardIngestionPlanner(client)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _resolve_query_spec(self, query_spec):
+        reference = query_spec.reference
+        if reference.endswith("/forward_locations"):
+            return query_spec.with_query_id("query-locations", "commit-abc")
+        if reference.endswith("/forward_devices"):
+            return query_spec.with_query_id("query-devices", "commit-abc")
+        if reference.endswith("/forward_interfaces"):
+            return query_spec.with_query_id("query-interfaces", "commit-abc")
+        raise AssertionError(f"unexpected query reference: {reference}")
+
+    def _run_nqe_query(self, **kwargs):
+        query_spec = kwargs["query_spec"]
+        calls.append((query_spec.reference, dict(query_spec.parameters)))
+        if query_spec.reference.endswith("/forward_locations"):
+            return [
+                {
+                    "name": "SITE-ALPHA",
+                    "city": "Austin",
+                    "country": "US",
+                }
+            ]
+        if query_spec.reference.endswith("/forward_devices"):
+            assert query_spec.parameters == {"forward_location_names": ["SITE-ALPHA"]}
+            return [
+                {
+                    "name": "device-1",
+                    "location": "SITE-ALPHA",
+                    "vendor": "Vendor.CISCO",
+                    "model": "N9K",
+                    "device_type": "DeviceType.SWITCH",
+                }
+            ]
+        if query_spec.reference.endswith("/forward_interfaces"):
+            assert query_spec.parameters == {"forward_device_names": ["device-1"]}
+            return [
+                {
+                    "device": "device-1",
+                    "name": "eth0",
+                    "type": "1000base-t",
+                    "lag": "",
+                    "mode": "",
+                    "untagged_vlan": None,
+                    "enabled": True,
+                    "mtu": 1500,
+                    "description": "",
+                    "speed": 1000000000,
+                }
+            ]
+        raise AssertionError(f"unexpected query reference: {query_spec.reference}")
+
+    monkeypatch.setattr(ForwardClient, "resolve_query_spec", _resolve_query_spec)
+    monkeypatch.setattr(ForwardClient, "run_nqe_query", _run_nqe_query)
+    monkeypatch.setattr(
+        ForwardClient,
+        "resolve_snapshot_id",
+        lambda self, network_id, snapshot_id: "snap-2",
+    )
+
+    plan = planner.run(
+        ForwardIngestionRequest(
+            connection=ForwardConnectionSettings(
+                base_url="https://fwd.example",
+                username="alice",
+                password="secret",
+                network_id="net-1",
+            ),
+            model_names=("locations", "devices", "interfaces"),
+            fetch_all=False,
+            limit=1,
+        )
+    )
+
+    assert plan.reports[0].query_reference == "forward_locations.nqe"
+    assert calls[0][1] == {}
+    assert calls[1][1] == {"forward_location_names": ["SITE-ALPHA"]}
+    assert calls[2][1] == {"forward_device_names": ["device-1"]}
+
+
+def test_planner_scopes_platform_and_device_type_queries_by_location(monkeypatch):
+    _require_planner()
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=_mock_transport(),
+    )
+    planner = ForwardIngestionPlanner(client)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _resolve_query_spec(self, query_spec):
+        reference = query_spec.reference
+        if reference.endswith("/forward_locations"):
+            return query_spec.with_query_id("query-locations", "commit-abc")
+        if reference.endswith("/forward_platforms"):
+            return query_spec.with_query_id("query-platforms", "commit-abc")
+        if reference.endswith("/forward_device_types"):
+            return query_spec.with_query_id("query-device-types", "commit-abc")
+        if reference.endswith("/forward_devices"):
+            return query_spec.with_query_id("query-devices", "commit-abc")
+        raise AssertionError(f"unexpected query reference: {reference}")
+
+    def _run_nqe_query(self, **kwargs):
+        query_spec = kwargs["query_spec"]
+        calls.append((query_spec.reference, dict(query_spec.parameters)))
+        if query_spec.reference.endswith("/forward_locations"):
+            return [
+                {
+                    "name": "SITE-ALPHA",
+                    "city": "Austin",
+                    "country": "US",
+                }
+            ]
+        if query_spec.reference.endswith("/forward_platforms"):
+            assert query_spec.parameters == {"forward_location_names": ["SITE-ALPHA"]}
+            return [
+                {
+                    "name": "NX-9000",
+                    "manufacturer": "Cisco",
+                    "device_type": "NX-9000",
+                }
+            ]
+        if query_spec.reference.endswith("/forward_device_types"):
+            assert query_spec.parameters == {"forward_location_names": ["SITE-ALPHA"]}
+            return [
+                {
+                    "name": "NX-9000",
+                    "color": "9e9e9e",
+                }
+            ]
+        if query_spec.reference.endswith("/forward_devices"):
+            assert query_spec.parameters == {"forward_location_names": ["SITE-ALPHA"]}
+            return [
+                {
+                    "name": "device-1",
+                    "location": "SITE-ALPHA",
+                    "vendor": "Vendor.CISCO",
+                    "model": "N9K",
+                    "device_type": "DeviceType.SWITCH",
+                }
+            ]
+        raise AssertionError(f"unexpected query reference: {query_spec.reference}")
+
+    monkeypatch.setattr(ForwardClient, "resolve_query_spec", _resolve_query_spec)
+    monkeypatch.setattr(ForwardClient, "run_nqe_query", _run_nqe_query)
+    monkeypatch.setattr(
+        ForwardClient,
+        "resolve_snapshot_id",
+        lambda self, network_id, snapshot_id: "snap-2",
+    )
+
+    plan = planner.run(
+        ForwardIngestionRequest(
+            connection=ForwardConnectionSettings(
+                base_url="https://fwd.example",
+                username="alice",
+                password="secret",
+                network_id="net-1",
+            ),
+            model_names=("locations", "platforms", "device_types", "devices"),
+            fetch_all=False,
+            limit=1,
+        )
+    )
+
+    assert [report.query_reference for report in plan.reports] == [
+        "forward_locations.nqe",
+        "forward_platforms.nqe",
+        "forward_device_types.nqe",
+        "forward_devices.nqe",
+    ]
+    assert calls[0][1] == {}
+    assert calls[1][1] == {"forward_location_names": ["SITE-ALPHA"]}
+    assert calls[2][1] == {"forward_location_names": ["SITE-ALPHA"]}
+    assert calls[3][1] == {"forward_location_names": ["SITE-ALPHA"]}
+
+
+def test_planner_reuses_loaded_target_state_for_each_slice(monkeypatch):
+    _require_planner()
+    load_calls = {"count": 0}
+    run_calls = {"count": 0}
+    original_load = NautobotTargetAdapter.load
+
+    def _tracked_load(self):
+        load_calls["count"] += 1
+        return original_load(self)
+
+    def _resolve_query_spec(self, query_spec):
+        return query_spec.with_query_id("query-123", "commit-abc")
+
+    def _run_nqe_query(self, **kwargs):
+        run_calls["count"] += 1
+        if run_calls["count"] == 1:
+            return [
+                {
+                    "name": "SITE-ALPHA",
+                    "city": "Austin",
+                    "country": "US",
+                }
+            ]
+        if run_calls["count"] == 2:
+            return [
+                {
+                    "name": "device-1",
+                    "location": "SITE-ALPHA",
+                    "vendor": "Vendor.CISCO",
+                    "model": "N9K",
+                    "device_type": "DeviceType.SWITCH",
+                }
+            ]
+        raise AssertionError(f"unexpected query call: {run_calls['count']}")
+
+    monkeypatch.setattr(NautobotTargetAdapter, "load", _tracked_load)
+    monkeypatch.setattr(ForwardClient, "resolve_query_spec", _resolve_query_spec)
+    monkeypatch.setattr(ForwardClient, "run_nqe_query", _run_nqe_query)
+    monkeypatch.setattr(
+        adapters.ForwardSourceAdapter,
+        "sync_to",
+        lambda self, target: (_ for _ in ()).throw(
+            AssertionError("sync_to should not be used in the full-plan path")
+        ),
+    )
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=_mock_transport(),
+    )
+    planner = ForwardIngestionPlanner(client)
+    plan = planner.run(
+        ForwardIngestionRequest(
+            connection=ForwardConnectionSettings(
+                base_url="https://fwd.example",
+                username="alice",
+                password="secret",
+                network_id="net-1",
+            ),
+            model_names=("locations", "devices"),
+            fetch_all=False,
+            limit=1,
+        )
+    )
+
+    assert load_calls["count"] == 1
+    assert plan.write_summary["create"] == 2
+    assert plan.source.count("locations") == 1
+    assert plan.source.count("devices") == 1

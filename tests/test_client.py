@@ -1,13 +1,42 @@
 import json
 
-import httpx
 import pytest
 
-from forward_nautobot.integrations.forward.client import ForwardClient
-import forward_nautobot.integrations.forward.client as client_module
-from forward_nautobot.integrations.forward.exceptions import ForwardClientError
-from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
-from forward_nautobot.integrations.forward.models import ForwardQuerySpec
+try:
+    import httpx
+    from forward_nautobot.integrations.forward.client import ForwardClient
+    import forward_nautobot.integrations.forward.client as client_module
+    from forward_nautobot.integrations.forward.exceptions import ForwardClientError
+    from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
+    from forward_nautobot.integrations.forward.models import ForwardQuerySpec
+except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
+    class _HttpxStub:
+        class Request:  # pragma: no cover - import-time placeholder only
+            pass
+
+        class Response:  # pragma: no cover - import-time placeholder only
+            pass
+
+        class MockTransport:  # pragma: no cover - import-time placeholder only
+            pass
+
+    httpx = _HttpxStub()
+    ForwardClient = None
+    client_module = None
+    ForwardClientError = None
+    ForwardConnectionSettings = None
+    ForwardQuerySpec = None
+
+
+def _require_client():
+    if (
+        ForwardClient is None
+        or client_module is None
+        or ForwardClientError is None
+        or ForwardConnectionSettings is None
+        or ForwardQuerySpec is None
+    ):
+        pytest.skip("Forward client tests require the full dependency set.")
 
 
 def _mock_transport():
@@ -39,16 +68,23 @@ def _mock_transport():
                 },
             )
         if path == "/api/nqe/repos/org/commits/head/queries":
-            assert request.url.params.get("path") == "/queries/devices.nqe"
+            path_param = request.url.params.get("path")
+            if path_param is not None:
+                assert path_param == "/forward_nautobot_validation/forward_devices"
             return httpx.Response(
                 200,
                 json={
                     "queries": [
                         {
-                            "path": "/queries/devices.nqe",
+                            "path": "/forward_nautobot_validation/forward_devices",
                             "queryId": "query-123",
                             "lastCommit": {"id": "commit-abc"},
-                        }
+                        },
+                        {
+                            "path": "/forward_nautobot_validation/forward_locations",
+                            "queryId": "query-456",
+                            "lastCommit": {"id": "commit-def"},
+                        },
                     ]
                 },
             )
@@ -101,6 +137,7 @@ def _mock_transport():
 
 
 def test_client_network_snapshot_and_query_flow():
+    _require_client()
     client = ForwardClient(
         ForwardConnectionSettings(
             base_url="https://fwd.example",
@@ -118,12 +155,12 @@ def test_client_network_snapshot_and_query_flow():
     assert snapshots[1]["label"].startswith("snap-2 | processed")
 
     resolved = client.resolve_query_spec(
-        ForwardQuerySpec(query_path="/queries/devices.nqe")
+        ForwardQuerySpec(query_path="/forward_nautobot_validation/forward_devices")
     )
     assert resolved.resolved_query_id == "query-123"
 
     rows = client.run_nqe_query(
-        query_spec=ForwardQuerySpec(query_path="/queries/devices.nqe"),
+        query_spec=ForwardQuerySpec(query_path="/forward_nautobot_validation/forward_devices"),
         fetch_all=True,
     )
     assert [row["id"] for row in rows] == ["r1", "r2"]
@@ -132,6 +169,7 @@ def test_client_network_snapshot_and_query_flow():
 
 
 def test_client_caches_query_resolution_for_repeated_runs():
+    _require_client()
     calls = {"snapshot_lookups": 0, "query_lookups": 0, "nqe_runs": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -146,9 +184,14 @@ def test_client_caches_query_resolution_for_repeated_runs():
                 json={
                     "queries": [
                         {
-                            "path": "/queries/devices.nqe",
+                            "path": "/forward_nautobot_validation/forward_devices",
                             "queryId": "query-123",
                             "lastCommit": {"id": "commit-abc"},
+                        },
+                        {
+                            "path": "/forward_nautobot_validation/forward_locations",
+                            "queryId": "query-456",
+                            "lastCommit": {"id": "commit-def"},
                         }
                     ]
                 },
@@ -170,21 +213,133 @@ def test_client_caches_query_resolution_for_repeated_runs():
             username="alice",
             password="secret",
             network_id="net-1",
+            snapshot_id="snap-2",
         ),
         transport=httpx.MockTransport(handler),
     )
 
-    spec = ForwardQuerySpec(query_path="/queries/devices.nqe")
+    spec = ForwardQuerySpec(query_path="/forward_nautobot_validation/forward_devices")
     rows1 = client.run_nqe_query(query_spec=spec, fetch_all=False)
     rows2 = client.run_nqe_query(query_spec=spec, fetch_all=False)
 
     assert rows1 == rows2 == [{"id": "r1"}]
-    assert calls["snapshot_lookups"] == 1
+    assert calls["snapshot_lookups"] == 0
     assert calls["query_lookups"] == 1
     assert calls["nqe_runs"] == 2
 
 
+def test_client_resolve_query_spec_reuses_repository_index_cache():
+    _require_client()
+    calls = {"query_lookups": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/nqe/repos/org/commits/head/queries":
+            calls["query_lookups"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "queries": [
+                        {
+                            "path": "/forward_nautobot_validation/forward_devices",
+                            "queryId": "query-123",
+                            "lastCommit": {"id": "commit-abc"},
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    spec = ForwardQuerySpec(query_path="/forward_nautobot_validation/forward_devices")
+    resolved_1 = client.resolve_query_spec(spec)
+    resolved_2 = client.resolve_query_spec(spec)
+
+    assert resolved_1.resolved_query_id == "query-123"
+    assert resolved_2.resolved_query_id == "query-123"
+    assert calls["query_lookups"] == 1
+
+
+def test_client_binds_multiple_query_paths_from_one_repository_index():
+    _require_client()
+    calls = {"query_lookups": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/nqe/repos/org/commits/head/queries":
+            calls["query_lookups"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "queries": [
+                        {
+                            "path": "/forward_nautobot_validation/forward_devices",
+                            "queryId": "query-devices",
+                            "lastCommit": {"id": "commit-abc"},
+                        },
+                        {
+                            "path": "/forward_nautobot_validation/forward_locations",
+                            "queryId": "query-locations",
+                            "lastCommit": {"id": "commit-def"},
+                        },
+                    ]
+                },
+            )
+        if path == "/api/nqe":
+            payload = json.loads(request.content.decode("utf-8"))
+            if payload.get("queryId") == "query-devices":
+                return httpx.Response(
+                    200,
+                    json={"items": [{"fields": {"id": "device-row"}}], "totalNumItems": 1},
+                )
+            if payload.get("queryId") == "query-locations":
+                return httpx.Response(
+                    200,
+                    json={"items": [{"fields": {"id": "location-row"}}], "totalNumItems": 1},
+                )
+            raise AssertionError(f"unexpected query payload: {payload}")
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            snapshot_id="snap-2",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    devices = client.run_nqe_query(
+        query_spec=ForwardQuerySpec(
+            query_path="/forward_nautobot_validation/forward_devices"
+        ),
+        fetch_all=False,
+    )
+    locations = client.run_nqe_query(
+        query_spec=ForwardQuerySpec(
+            query_path="/forward_nautobot_validation/forward_locations"
+        ),
+        fetch_all=False,
+    )
+
+    assert devices == [{"id": "device-row"}]
+    assert locations == [{"id": "location-row"}]
+    assert calls["query_lookups"] == 1
+
+
 def test_client_respects_request_min_interval(monkeypatch):
+    _require_client()
     slept = []
     timestamps = iter([10.0, 10.1, 10.2])
 
@@ -210,6 +365,7 @@ def test_client_respects_request_min_interval(monkeypatch):
 
 
 def test_client_caches_snapshot_listing_and_latest_processed_snapshot():
+    _require_client()
     calls = {"snapshot_listings": 0, "latest_processed": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -255,6 +411,7 @@ def test_client_caches_snapshot_listing_and_latest_processed_snapshot():
 
 
 def test_client_retries_transient_http_errors_before_succeeding():
+    _require_client()
     calls = {"nqe_runs": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -295,6 +452,7 @@ def test_client_retries_transient_http_errors_before_succeeding():
 
 
 def test_client_rejects_auth_failures_without_retry():
+    _require_client()
     calls = {"nqe_runs": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -327,6 +485,7 @@ def test_client_rejects_auth_failures_without_retry():
 
 
 def test_client_detects_stalled_full_page_pagination():
+    _require_client()
     calls = {"nqe_runs": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:

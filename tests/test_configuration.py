@@ -20,6 +20,9 @@ def test_connection_profile_record_round_trips_connection_settings():
         last_run_at="2026-06-10T12:00:00Z",
         last_failure="",
         last_support_bundle="bundle-1",
+        last_query_reference="forward_devices.nqe",
+        last_query_mode="bundled_nqe_query_id_diff",
+        last_snapshot_id="snap-1",
     )
 
     settings = profile.to_connection_settings()
@@ -34,6 +37,9 @@ def test_connection_profile_record_round_trips_connection_settings():
     assert profile.effective_delete_policy == "mark_inactive"
     assert profile.as_dict()["last_run_at"] == "2026-06-10T12:00:00Z"
     assert profile.status_record().as_dict()["last_support_bundle"] == "bundle-1"
+    assert profile.status_record().as_dict()["last_query_reference"] == "forward_devices.nqe"
+    assert profile.status_record().as_dict()["last_query_mode"] == "bundled_nqe_query_id_diff"
+    assert profile.status_record().as_dict()["last_snapshot_id"] == "snap-1"
 
 
 def test_connection_profile_record_invalid_delete_policy_defaults_to_ignore():
@@ -78,10 +84,13 @@ def test_plugin_configuration_surfaces_status_summary():
         default_device_status_name="Active",
         delete_policy="mark_inactive",
         is_default=True,
+        last_query_reference="forward_devices.nqe",
+        last_query_mode="bundled_nqe_query_id_diff",
     )
     configuration = ForwardPluginConfiguration(
         default_profile_name="primary",
         profiles=(primary,),
+        last_snapshot_id="snap-2",
         metadata={"last_run": "2026-06-10T12:00:00Z", "current_policy": "mark_inactive"},
     )
 
@@ -94,5 +103,8 @@ def test_plugin_configuration_surfaces_status_summary():
     assert status["last_run"] == "2026-06-10T12:00:00Z"
     assert status["last_failure"] == ""
     assert status["last_support_bundle"] == ""
+    assert status["last_query_reference"] == "forward_devices.nqe"
+    assert status["last_query_mode"] == "bundled_nqe_query_id_diff"
+    assert status["last_snapshot_id"] == "snap-2"
     assert status["current_policy"] == "mark_inactive"
     assert primary.status_record().as_dict()["delete_policy"] == "mark_inactive"
