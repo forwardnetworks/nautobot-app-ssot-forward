@@ -164,11 +164,22 @@ def test_live_async_execution_smoke():
     if settings is None:
         pytest.skip("live Forward credentials not configured")
 
-    # This query is published on the current Skyforge host and proves the async transport.
-    query_path = "/Devices/EoL - Software"
+    query_path = (
+        os.environ.get(
+            "FORWARD_LIVE_ASYNC_QUERY_PATH",
+            get_model_mapping("devices").forward_query_path,
+        )
+    ).strip()
+    if not query_path:
+        query_path = get_model_mapping("devices").forward_query_path
+    _require_live_query_path(settings, query_path)
+
     client = ForwardClient(settings)
     resolved = client.resolve_query_spec(
-        ForwardQuerySpec(query_path=query_path, query_repository="org")
+        ForwardQuerySpec(
+            query_path=query_path,
+            query_repository="org",
+        )
     )
     rows = client.run_nqe_query_async(
         query_spec=ForwardQuerySpec(

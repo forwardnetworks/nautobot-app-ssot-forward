@@ -29,6 +29,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install build httpx pytest
+          python -m pip install .
 
       - name: Run sensitive-content gate
         run: python scripts/check_sensitive_content.py --all-history
@@ -46,7 +47,7 @@ jobs:
         run: python scripts/generate_contract_diff_report.py --baseline-ref HEAD~1 --output dist/contract-diff-report.json
 
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest -q -m "not integration"
 
       - name: Build distribution artifacts
         run: python -m build

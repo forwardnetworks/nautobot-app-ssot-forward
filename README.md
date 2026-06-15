@@ -168,6 +168,7 @@ Run live integration tests only when these are set:
 - `FORWARD_LIVE_NETWORK_ID`
 - optional `FORWARD_LIVE_VERIFY_TLS`
 - optional `FORWARD_LIVE_SNAPSHOT_ID` (defaults to `latestProcessed`)
+- optional `FORWARD_LIVE_ASYNC_QUERY_PATH` (defaults to `/forward_nautobot_validation/forward_devices`)
 
 Release-style validation:
 
@@ -192,7 +193,7 @@ python scripts/check_release_state.py
 
 Run before tag/release:
 
-- `python -m pytest -q`
+- `python -m pytest -q -m "not integration"`
 - `python -m build`
 - `python scripts/check_sensitive_content.py --all-history`
 - `python scripts/check_harness.py`
