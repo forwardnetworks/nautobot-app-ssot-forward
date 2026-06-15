@@ -103,7 +103,7 @@ def _render_profile_editor(
                     f'<option value="{escape(option_value)}"{selected}>{escape(option_label)}</option>'
                 )
             control = f'<select name="{escape(field_name)}">{"".join(options)}</select>'
-        elif field_name == "is_default":
+        elif field_name in {"is_default", "verify_tls"}:
             checked = " checked" if bool(value) else ""
             control = (
                 f'<input type="checkbox" name="{escape(field_name)}" value="1"{checked}>'
@@ -662,7 +662,7 @@ class ForwardConfigurationView(View):
                 "<p class=\"subtle\">Persistent connection profiles are modeled in forward_nautobot.models.</p>"
                 '<div class="forward-section forward-panel">'
                 "<h3>Profile Editor</h3>"
-                f"<p class=\"subtle\">Profile fields: name, base_url, username, password, network_id, snapshot_id, enabled_models, query_contract_version, delete_policy, last_snapshot_id.</p>"
+                f"<p class=\"subtle\">Profile fields: name, base_url, username, password, verify_tls, network_id, snapshot_id, enabled_models, query_contract_version, delete_policy, last_snapshot_id.</p>"
                 f"<p class=\"subtle\">Write prerequisites: {', '.join(WRITE_DEFAULT_FIELD_NAMES)}.</p>"
                 f"<p class=\"subtle\">Editable form fields: {', '.join(FORWARD_PROFILE_FORM_FIELDS)}</p>"
                 f"{_render_profile_editor(default_profile)}"

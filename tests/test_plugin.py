@@ -276,6 +276,7 @@ def test_build_ingestion_request_uses_profile_models_and_selected_overrides(monk
     assert request.model_names == ("devices", "interfaces")
     assert request.connection.base_url == "https://fwd.example"
     assert request.connection.snapshot_id == "latestProcessed"
+    assert request.connection.verify_tls is True
 
     override_request = _build_ingestion_request(
         dryrun=True,
@@ -289,6 +290,20 @@ def test_build_ingestion_request_uses_profile_models_and_selected_overrides(monk
     )
 
     assert override_request.model_names == ("locations", "devices")
+    assert override_request.connection.verify_tls is True
+
+    direct_connection_request = _build_ingestion_request(
+        dryrun=True,
+        profile_name="",
+        selected_models="",
+        snapshot_id="latestProcessed",
+        base_url="https://fwd.example",
+        username="alice",
+        password="secret",
+        network_id="net-1",
+        verify_tls="false",
+    )
+    assert direct_connection_request.connection.verify_tls is False
 
 
 def test_ssot_lookup_object_resolves_real_objects(monkeypatch):

@@ -219,6 +219,34 @@ def test_client_network_snapshot_and_query_flow():
     snapshots = client.get_snapshots("net-1")
     assert snapshots[1]["label"].startswith("snap-2 | processed")
 
+
+def test_httpx_client_uses_verify_and_trust_env_settings(monkeypatch):
+    _require_client()
+    captured = {}
+    real_client = client_module.httpx.Client
+
+    def _client_factory(*args, **kwargs):
+        captured.update(kwargs)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(client_module.httpx, "Client", _client_factory)
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            verify_tls=False,
+        ),
+        transport=_mock_transport(),
+    )
+
+    snapshots = client.get_networks()
+    assert snapshots == [{"id": "net-1", "name": "Primary", "label": "Primary (net-1)"}]
+    assert captured["verify"] is False
+    assert captured["trust_env"] is True
+
     resolved = client.resolve_query_spec(
         ForwardQuerySpec(query_path="/forward_nautobot_validation/forward_devices")
     )

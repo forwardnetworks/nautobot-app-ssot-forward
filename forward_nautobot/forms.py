@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
+from typing import Any
 
 from .models import WRITE_DEFAULT_FIELD_NAMES
 
@@ -13,6 +14,7 @@ FORWARD_PROFILE_FORM_FIELDS: tuple[str, ...] = (
     "username",
     "password",
     "network_id",
+    "verify_tls",
     "snapshot_id",
     "enabled_models",
     "query_contract_version",
@@ -40,8 +42,18 @@ DELETE_POLICY_CHOICES: tuple[tuple[str, str], ...] = (
     ("delete", "Delete missing rows"),
 )
 
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    return normalized in {"1", "true", "t", "yes", "on", "y"}
+
+
 try:
     from django import forms
+    from django.apps import apps as _django_apps
+    if not _django_apps.ready:
+        raise ModuleNotFoundError("Django app registry is not ready")
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
     forms = None
 
@@ -76,6 +88,7 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
 
             for field_name in FORWARD_PROFILE_PREREQUISITE_FIELDS:
                 self.cleaned_data[field_name] = str(self.data.get(field_name) or "").strip()
+            self.cleaned_data["verify_tls"] = _coerce_bool(self.data.get("verify_tls"))
             if not self.cleaned_data["snapshot_id"]:
                 self.cleaned_data["snapshot_id"] = "latestProcessed"
             if not self.cleaned_data["query_contract_version"]:
@@ -109,6 +122,7 @@ else:
         username = forms.CharField(required=False)
         password = forms.CharField(required=False, widget=forms.PasswordInput)
         network_id = forms.CharField(required=False)
+        verify_tls = forms.BooleanField(required=False, initial=True)
         snapshot_id = forms.CharField(required=False, initial="latestProcessed")
         enabled_models = forms.CharField(
             required=False,
@@ -134,8 +148,12 @@ else:
                     for item in raw_value
                     if str(item).strip()
                 )
-            return tuple(
-                part.strip()
-                for part in str(raw_value or "").split(",")
-                if part.strip()
-            )
+                return tuple(
+                    part.strip()
+                    for part in str(raw_value or "").split(",")
+                    if part.strip()
+                )
+
+        def clean_verify_tls(self):
+            raw_value = self.data.get("verify_tls", "")
+            return _coerce_bool(raw_value)

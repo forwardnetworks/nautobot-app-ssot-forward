@@ -95,6 +95,7 @@ class ForwardClient:
                     timeout=self.timeout,
                     verify=self.verify,
                     transport=self.transport,
+                    trust_env=True,
                 ) as client:
                     response = client.request(
                         method,

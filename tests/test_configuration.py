@@ -30,6 +30,7 @@ def test_connection_profile_record_round_trips_connection_settings():
     assert settings.base_url == "https://fwd.example"
     assert settings.username == "alice"
     assert settings.network_id == "net-fixture-1"
+    assert settings.verify_tls is True
     assert profile.as_dict()["enabled_models"] == ["devices", "locations"]
     assert profile.write_ready
     assert profile.as_dict()["default_device_role_name"] == "Access Switch"

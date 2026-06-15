@@ -99,6 +99,7 @@ class ForwardConnectionProfileRecord:
     username: str = ""
     password: str = ""
     network_id: str = ""
+    verify_tls: bool = True
     snapshot_id: str = LATEST_PROCESSED_SNAPSHOT
     enabled_models: tuple[str, ...] = ()
     query_contract_version: str = "v1"
@@ -130,6 +131,11 @@ class ForwardConnectionProfileRecord:
         username = str(data.get("username") or base.get("username") or "").strip()
         password = str(data.get("password") or base.get("password") or "").strip()
         network_id = str(data.get("network_id") or base.get("network_id") or "").strip()
+        verify_tls = _coerce_bool(
+            data.get("verify_tls")
+            if "verify_tls" in data
+            else base.get("verify_tls") if base.get("verify_tls") is not None else True
+        )
         snapshot_id = str(
             data.get("snapshot_id") or base.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT
         ).strip() or LATEST_PROCESSED_SNAPSHOT
@@ -167,6 +173,7 @@ class ForwardConnectionProfileRecord:
             username=username,
             password=password,
             network_id=network_id,
+            verify_tls=verify_tls,
             snapshot_id=snapshot_id,
             enabled_models=enabled_models,
             query_contract_version=query_contract_version,
@@ -201,6 +208,7 @@ class ForwardConnectionProfileRecord:
             username=self.username,
             password=self.password,
             network_id=self.network_id,
+            verify_tls=self.verify_tls,
             snapshot_id=self.snapshot_id or LATEST_PROCESSED_SNAPSHOT,
         )
 
@@ -221,6 +229,7 @@ class ForwardConnectionProfileRecord:
             "username": self.username,
             "password": self.password,
             "network_id": self.network_id,
+            "verify_tls": self.verify_tls,
             "snapshot_id": self.snapshot_id,
             "enabled_models": list(self.enabled_models),
             "query_contract_version": self.query_contract_version,
@@ -440,6 +449,7 @@ if models is not None:
         username = models.CharField(max_length=255, blank=True, default="")
         password = models.CharField(max_length=255, blank=True, default="")
         network_id = models.CharField(max_length=64, blank=True, default="")
+        verify_tls = models.BooleanField(default=True)
         snapshot_id = models.CharField(
             max_length=128,
             blank=True,
@@ -470,6 +480,7 @@ if models is not None:
                 username=self.username,
                 password=self.password,
                 network_id=self.network_id,
+                verify_tls=self.verify_tls,
                 snapshot_id=self.snapshot_id,
                 enabled_models=tuple(
                     str(name).strip()

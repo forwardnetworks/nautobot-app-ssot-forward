@@ -154,6 +154,7 @@ def test_configuration_view_can_persist_profile(monkeypatch):
                 "username": "alice",
                 "password": "secret",
                 "network_id": "net-fixture-1",
+                "verify_tls": "0",
                 "snapshot_id": "latestProcessed",
                 "enabled_models": "devices,interfaces",
                 "query_contract_version": "v1",
@@ -176,6 +177,7 @@ def test_configuration_view_can_persist_profile(monkeypatch):
     assert "secret" not in text
     assert manager.rows["primary"].enabled_models == ["devices", "interfaces"]
     assert manager.rows["primary"].is_default is True
+    assert manager.rows["primary"].verify_tls is False
 
 
 def test_configuration_view_rejects_invalid_profile(monkeypatch):

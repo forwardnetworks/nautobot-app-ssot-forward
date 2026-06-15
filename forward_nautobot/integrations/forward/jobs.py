@@ -103,6 +103,13 @@ def _split_csv(value):
     return tuple(part.strip() for part in str(value).split(",") if part.strip())
 
 
+def _coerce_bool(value):
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    return normalized in {"1", "true", "yes", "on", "y"}
+
+
 def _has_meaningful_profile_inputs(data) -> bool:
     profile_name = str(data.get("profile_name") or "").strip()
     if profile_name and profile_name not in {"job-profile", "plan-profile"}:
@@ -232,6 +239,7 @@ def _build_connection_settings(**data):
         password=data.get("password") or "",
         network_id=data.get("network_id") or "",
         snapshot_id=data.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT,
+        verify_tls=_coerce_bool(data["verify_tls"]) if "verify_tls" in data else True,
     )
 
 
@@ -387,6 +395,11 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
         default="",
         description="Name of the persisted Forward profile to use.",
     )
+    verify_tls = BooleanVar(
+        default=True,
+        required=False,
+        description="Validate Forward API TLS certificate.",
+    )
     default_location_type_name = StringVar(
         required=False,
         default="",
@@ -453,6 +466,7 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
             "Setup flow": "Use the Forward configuration page to save a profile, then select it from the SSoT job form.",
             "Forward API URL": "Optional job-time override when you do not want to use the saved profile value.",
             "Forward network": "Optional job-time override when you do not want to use the saved profile value.",
+            "Forward TLS verification": "Optional override (on by default) for certificate validation against custom Forward hosts.",
             "Snapshot": f"Defaults to {LATEST_PROCESSED_SNAPSHOT}.",
             "Profile selection": "Uses a persisted profile by name or the default saved profile when available.",
             "Model selection": "Use selected_models to override a saved profile's enabled model set; leave it blank to use the profile defaults.",

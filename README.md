@@ -109,6 +109,7 @@ The profile form includes these fields:
 - `base_url` (URL)
 - `username`
 - `password`
+- `verify_tls` (`true`/`false`, default `true`)
 - `network_id`
 - `snapshot_id` (`latestProcessed` or explicit snapshot ID)
 - `enabled_models` (comma-separated slugs)
@@ -119,6 +120,11 @@ The profile form includes these fields:
 - `default_device_status_name`
 - `delete_policy` (`ignore`, `mark_inactive`, `delete`)
 - `is_default`
+
+The plugin uses `httpx` with `trust_env=True`, so environment proxy settings are
+respected automatically. Configure standard `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`
+variables on the Nautobot process to route Forward API traffic through enterprise
+proxies when needed.
 
 ## Async NQE and Query Identity
 
