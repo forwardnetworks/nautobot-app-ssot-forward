@@ -7,6 +7,14 @@ from typing import Any
 from ipaddress import ip_interface
 
 try:
+    from django.db import OperationalError as DjangoOperationalError
+except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+    class DjangoOperationalError(Exception):
+        """Fallback for environments without Django."""
+
+        pass
+
+try:
     from django.apps import apps as django_apps
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
     django_apps = None
@@ -543,6 +551,7 @@ class NautobotTargetAdapter(Adapter):
         if django_apps is None:
             return 0
         app_label, model_name = mapping.nautobot_scope.split(".", 1)
+        loaded = 0
         try:
             model = django_apps.get_model(app_label, model_name)
         except Exception:
@@ -554,18 +563,16 @@ class NautobotTargetAdapter(Adapter):
             return 0
         try:
             instances = manager.all()
+            for instance in instances:
+                row = self._serialize_orm_row(mapping, instance)
+                if not row:
+                    continue
+                loaded_rows = self.load_rows(mapping.slug, (row,))
+                loaded += len(loaded_rows)
+        except DjangoOperationalError:
+            return 0
         except Exception:
-            return 0
-        model_class = getattr(self, mapping.slug, None)
-        if model_class is None:
-            return 0
-        loaded = 0
-        for instance in instances:
-            row = self._serialize_orm_row(mapping, instance)
-            if not row:
-                continue
-            loaded_rows = self.load_rows(mapping.slug, (row,))
-            loaded += len(loaded_rows)
+            return loaded
         return loaded
 
     def slice_for_model(self, model_slug: str) -> "NautobotTargetAdapter":

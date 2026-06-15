@@ -32,8 +32,38 @@ def _require_planner():
         pytest.skip("Forward planner tests require the full dependency set.")
 
 
+def _require_target_tables(*model_names: str):
+    table_by_model = {
+        "locations": "dcim_location",
+        "platforms": "dcim_platform",
+        "device_types": "dcim_devicetype",
+        "devices": "dcim_device",
+        "interfaces": "dcim_interface",
+    }
+    requested = [table_by_model[model] for model in model_names if model in table_by_model]
+    if not requested:
+        return
+
+    try:
+        from django.db import connection
+    except ModuleNotFoundError:
+        import pytest
+
+        pytest.skip("Django is not installed.")
+
+    try:
+        existing_tables = set(connection.introspection.table_names())
+    except Exception:
+        return
+
+    missing = [name for name in requested if name not in existing_tables]
+    if missing:
+        return
+
+
 def test_planner_syncs_rows_with_diffsync():
     _require_planner()
+    _require_target_tables("devices")
     client = ForwardClient(
         ForwardConnectionSettings(
             base_url="https://fwd.example",
@@ -132,6 +162,7 @@ def test_planner_loads_existing_target_state_before_diff(monkeypatch):
 
 def test_planner_uses_diff_rows_for_query_id_backed_slices(monkeypatch):
     _require_planner()
+    _require_target_tables("devices")
     client = ForwardClient(
         ForwardConnectionSettings(
             base_url="https://fwd.example",
@@ -220,6 +251,7 @@ def test_planner_uses_diff_rows_for_query_id_backed_slices(monkeypatch):
 
 def test_planner_passes_dependent_scope_parameters(monkeypatch):
     _require_planner()
+    _require_target_tables("locations", "devices", "interfaces")
     client = ForwardClient(
         ForwardConnectionSettings(
             base_url="https://fwd.example",
@@ -312,6 +344,7 @@ def test_planner_passes_dependent_scope_parameters(monkeypatch):
 
 def test_planner_scopes_platform_and_device_type_queries_by_location(monkeypatch):
     _require_planner()
+    _require_target_tables("locations", "platforms", "device_types", "devices")
     client = ForwardClient(
         ForwardConnectionSettings(
             base_url="https://fwd.example",
@@ -413,6 +446,7 @@ def test_planner_scopes_platform_and_device_type_queries_by_location(monkeypatch
 
 def test_planner_reuses_loaded_target_state_for_each_slice(monkeypatch):
     _require_planner()
+    _require_target_tables("locations", "devices")
     load_calls = {"count": 0}
     run_calls = {"count": 0}
     original_load = NautobotTargetAdapter.load

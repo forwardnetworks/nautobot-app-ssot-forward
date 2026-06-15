@@ -1,76 +1,203 @@
 # Forward Networks SSoT for Nautobot
 
-Nautobot 3.1 SSoT app integration for syncing Forward Networks data into Nautobot.
-Target platform: Nautobot 3.1.
+Nautobot 3.1 app for syncing Forward Networks inventory and IPAM data through
+`nautobot-ssot`.
 
-## What Exists Now
+This plugin uses an SSoT job for run history, dry-run semantics, and
+support-bundle capture, with support for Forward async query execution.
 
-- Nautobot app metadata for the `forward_nautobot` import package
-- Python distribution metadata for `nautobot-app-ssot-forward`
-- SSoT `DataSource` job for Forward Networks inventory
-- SSoT dashboard data mappings for the bundled Forward model slices
-- Forward API client with snapshot, query, and pagination support
-- Query identity resolution that binds repository-path queries to live query IDs and commit IDs before execution
-- Forward sync runner that resolves query refs and returns a sync report
-- Forward connection profile for persistent plugin configuration
-- Persistent SSoT profile selection for the sync job
-- Write-prerequisite fields in the connection profile for the first Nautobot objects
-- Editable profile form for the plugin UI
-- Operational overview, status, and configuration pages for UI-first setup
-- Diagnostics page plus per-slice drilldowns for the packaged fixture
-- Ingestion coverage panel with per-slice row counts and drilldowns
-- Packaged profile seed command plus bundled fixture data for validation and support
-- Delete-policy support for missing-row handling
-- Support-bundle helper that preserves raw sample rows, adapter summaries, and failure classification for troubleshooting
-- Support-bundle redaction helper for safe sharing
-- Support-bundle replay inputs that keep raw query references, resolved identity, and sample rows available for diagnostics
-- Raw source/target adapter layer that keeps NQE fields untouched
-- Raw ingestion planner that loads bundled NQE outputs into the adapter stores
-- Raw write-plan layer that surfaces create/update/no-change intent before Nautobot persistence exists
-- Nautobot write executor for the first core slices behind the SSoT dry-run toggle
-- Safe-delete reconciliation for the first supported slices when `delete_policy` is `delete` or `mark_inactive`
-- Bundled core NQE queries tagged with an explicit contract version
-- Bundled query contract drift checks in tests and CI
-- Sanitized fixture ingestion tests that exercise the raw adapter contract without live credentials
-- Fixture-backed dry-run helper for local troubleshooting of raw Forward payloads
-- Native `forward_dry_run` management command for replaying saved payloads
-- Nautobot job entrypoint for the SSoT sync path
-- Read-only configuration/status surface for profile readiness and current policy
-- UI-first setup flow: create or edit a profile in Configuration, then run the SSoT job with that saved profile
-- Fixture-backed dry-run helper for bundled NQE validation and support bundles
-- Query contract and query identity checks in tests and CI
-- CI gates for query contracts, wheel contents, and release/tag state
-- Minimal UI and URL surfaces
-- Repo docs for architecture and planning
-- Tests for client, runner, jobs, and package wiring
-- Live ingestion tests for the corrected Forward network when `FORWARD_LIVE_*` env vars are present
-- GitHub Actions CI for tests plus wheel build
+## Release Compatibility
 
-## Future Enhancements
+| Plugin | Nautobot | nautobot-ssot | Forward | Status |
+| --- | --- | --- | --- | --- |
+| `0.1.0` | `3.1.x` | `4.4` - `<5.0` compatible | `26.6+` for async execution | Current |
 
-- [`docs/03_Plans/active/2026-06-11-forward-nautobot-future-improvements.md`](docs/03_Plans/active/2026-06-11-forward-nautobot-future-improvements.md)
-- future slice/object lookup expansion
-- broader replay tooling and support-bundle ergonomics
-- continued query-load reduction, query identity hardening, query-ID-backed diff execution, and target-state fidelity improvements
+## Overview
 
-## Replay Walkthrough
+- Plugin metadata and app wiring under `forward_nautobot/__init__.py`
+- SSoT data source entrypoint and job registration in `forward_nautobot/jobs.py`
+- Forward API client with snapshot lookup, query resolution, and paging
+- Query identity resolution (`query_path`/`query_id`) to a concrete runtime query ID
+- Contracted query set shipped with the plugin in
+  `forward_nautobot/integrations/forward/queries/*.nqe`
+- Planner and adapters for raw source rows and planned Nautobot writes
+- Optional dry-run mode, including support-bundle collection and replay
+- Support-bundle diagnostics with safe redaction options
+- Profile persistence for repeated demo/demo-friendly runs
+- SSoT UI pages for overview, configuration, status, diagnostics, and slice detail
+- CI gates for query contracts, wheel contents, sensitive-content checks, and release state
 
-1. Seed the profile and fixture data:
-   `nautobot-server forward_fixture_seed`
-2. Open the plugin overview to show the supported slices, ingestion coverage matrix, and query-ID diff positioning.
-3. Open the diagnostics page to show readiness, coverage, status, and raw packaged rows.
-4. Open a slice drilldown from the coverage matrix to show raw packaged rows.
-5. Open the status page to show readiness, policy, and the profile summary.
-6. Open the configuration page to show the editable profile form and saved defaults.
-7. Run the SSoT job with the saved profile selected.
-8. If you want a reproducible replay artifact, run the fixture-backed dry run command against `forward_nautobot/fixtures/forward_sample_ingestion.json` and use `--output` plus `--shared-output` to save the full and redacted JSON artifacts.
+GitHub Actions CI runs these checks on every push and release.
 
-## Repo Map
+## Supported Model Slices
 
-```text
-ARCHITECTURE.md
-AGENTS.md
-docs/
-forward_nautobot/
-tests/
+The following model slugs are currently in the shipped scope.
+
+| Slug | Nautobot Scope | Required Input Fields | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `locations` | `dcim.location` | `name` | enabled | Core seed set |
+| `platforms` | `dcim.platform` | `name` | enabled | Requires location scope |
+| `device_types` | `dcim.devicetype` | `name` | enabled | Requires location scope |
+| `devices` | `dcim.device` | `name` | enabled | Depends on `locations`, `platforms`, `device_types` |
+| `interfaces` | `dcim.interface` | `device`, `name` | disabled | Depends on `devices` |
+| `vlans` | `ipam.vlan` | `site`, `vid` | disabled | Depends on `locations` |
+| `vrfs` | `ipam.vrf` | `name` | disabled | Depends on `devices` |
+| `ipv4_prefixes` | `ipam.prefix` | `prefix`, `vrf` | disabled | Depends on `vrfs` |
+| `ipv6_prefixes` | `ipam.prefix` | `prefix`, `vrf` | disabled | Depends on `vrfs` |
+| `ip_addresses` | `ipam.ipaddress` | `device`, `interface`, `address`, `vrf` | disabled | Depends on `devices`,`interfaces`,`vrfs` |
+| `inventory_items` | `dcim.inventoryitem` | `device`, `name` | disabled | Depends on `devices` |
+| `modules` | `dcim.module` | `device`, `module_bay` | disabled | Depends on `devices` |
+
+## Installation
+
+### Install
+
+From wheel or source distribution:
+
+```bash
+pip install /path/to/nautobot_app_ssot_forward-0.1.0-py3-none-any.whl
 ```
+
+Install dependencies before loading in Nautobot:
+
+```bash
+pip install nautobot==3.1.* nautobot-ssot>=4.4
+```
+
+### Enable plugin
+
+In `nautobot_config.py`:
+
+```python
+PLUGINS = [
+    "forward_nautobot",
+]
+```
+
+Run migrations:
+
+```bash
+nautobot-server migrate
+```
+
+Collect static and run the server as usual for your Nautobot deployment.
+
+## First Run
+
+1. Seed a deterministic demo profile and fixture:
+
+   ```bash
+   nautobot-server forward_fixture_seed
+   ```
+
+2. Open the plugin configuration page.
+3. Confirm or create at least one saved profile with:
+   - `name`, `base_url`, `username`, `password`, `network_id`
+   - `snapshot_id` (default `latestProcessed`)
+   - one or more model slugs in `enabled_models`
+   - `query_contract_version` (default `v1`)
+4. Run the Forward SSoT job and choose that profile.
+5. Review the diagnostic and coverage views before applying writes.
+
+The plugin keeps profile values in the Nautobot DB and reuses them for preview and
+non-preview runs.
+
+## Configuration Fields
+
+The profile form includes these fields:
+
+- `base_url` (URL)
+- `username`
+- `password`
+- `network_id`
+- `snapshot_id` (`latestProcessed` or explicit snapshot ID)
+- `enabled_models` (comma-separated slugs)
+- `query_contract_version` (currently `v1`)
+- `default_location_type_name`
+- `default_location_status_name`
+- `default_device_role_name`
+- `default_device_status_name`
+- `delete_policy` (`ignore`, `mark_inactive`, `delete`)
+- `is_default`
+
+## Async NQE and Query Identity
+
+All query execution in this branch is async where possible and resolves query
+IDs before execution, which is required for Forward 26.6+ hosts that support
+that transport.
+
+- Runtime query references are resolved on demand from profile path settings.
+- Live and fixture paths stay versioned and validated in CI through query-contract checks.
+- Snapshot resolution supports explicit snapshot IDs and `latestProcessed`.
+
+## Commands
+
+### Management commands
+
+```bash
+nautobot-server forward_fixture_seed
+nautobot-server forward_demo_seed
+nautobot-server forward_dry_run <fixture.json> \
+  --sample-size 5 \
+  --sharing-profile external \
+  --output /tmp/replay.json \
+  --shared-output /tmp/replay-shared.json
+```
+
+## Local Validation
+
+Unit and integration testing commands:
+
+```bash
+./.venv_local_test/bin/pytest -q
+./.venv_local_test/bin/pytest -q -m "not integration"
+./.venv_local_test/bin/pytest -q -m integration
+```
+
+Run live integration tests only when these are set:
+
+- `FORWARD_LIVE_BASE_URL`
+- `FORWARD_LIVE_USERNAME`
+- `FORWARD_LIVE_PASSWORD`
+- `FORWARD_LIVE_NETWORK_ID`
+- optional `FORWARD_LIVE_VERIFY_TLS`
+- optional `FORWARD_LIVE_SNAPSHOT_ID` (defaults to `latestProcessed`)
+
+Release-style validation:
+
+```bash
+python -m build
+python scripts/check_sensitive_content.py --all-history
+python scripts/check_harness.py
+python scripts/check_query_contracts.py
+python scripts/check_wheel_contents.py
+python scripts/check_release_state.py
+```
+
+## Documentation
+
+- [Architecture](ARCHITECTURE.md)
+- [Project Knowledge](docs/00_Project_Knowledge/README.md)
+- [Release/goal plans](docs/03_Plans/active/)
+- [Queries](forward_nautobot/integrations/forward/queries/README.md)
+- [Plugin package config](forward_nautobot/__init__.py)
+
+## Release Readiness
+
+Run before tag/release:
+
+- `python -m pytest -q`
+- `python -m build`
+- `python scripts/check_sensitive_content.py --all-history`
+- `python scripts/check_harness.py`
+- `python scripts/check_query_contracts.py`
+- `python scripts/check_wheel_contents.py`
+- `python scripts/check_release_state.py`
+
+The live validation surface should include:
+
+- preview/sync on `locations`
+- preview/sync on `devices` with explicit `forward_location_names`
+
+For local live-dataset work, keep credentials/snapshots out of source code and
+document them only in your private environment.

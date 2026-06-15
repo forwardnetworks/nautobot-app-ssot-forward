@@ -15,7 +15,7 @@ where ni.name != "default"
 where toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE"
 select distinct {
   name: ni.name,
-  rd: null : String,
+  rd: "",
   description: "",
   enforce_unique: false
 };

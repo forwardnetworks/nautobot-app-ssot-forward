@@ -34,7 +34,7 @@ select distinct {
   model: truncate(module_model, 100),
   part_number: if isPresent(component_part_id) then truncate(component_part_id, 50) else truncate(module_model, 50),
   status: "active",
-  serial: if isPresent(component_serial) then truncate(component_serial, 50) else null : String,
-  asset_tag: null : String,
+  serial: if isPresent(component_serial) then truncate(component_serial, 50) else "",
+  asset_tag: "",
   description: if isPresent(component_description) then component_description else ""
 };

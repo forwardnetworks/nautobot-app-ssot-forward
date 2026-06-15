@@ -1,8 +1,10 @@
 """Forward API client for Nautobot sync jobs."""
 
 from dataclasses import dataclass
+from dataclasses import replace
 from dataclasses import field
 import time
+from typing import Callable
 from typing import Any
 from urllib.parse import quote
 
@@ -283,7 +285,7 @@ class ForwardClient:
         commit_id: str = "head",
     ) -> dict[str, Any]:
         repository = str(repository or "org").strip() or "org"
-        query_path = str(query_path or "").strip()
+        query_path = self._normalize_query_path(query_path)
         commit_id = str(commit_id or "head").strip() or "head"
         if not query_path:
             raise ForwardConfigurationError("Forward NQE query path is required.")
@@ -321,6 +323,15 @@ class ForwardClient:
         raise ForwardClientError(
             f"Forward NQE repository lookup for `{query_path}` returned an invalid response."
         )
+
+    @staticmethod
+    def _normalize_query_path(query_path: str) -> str:
+        normalized = str(query_path or "").strip()
+        if not normalized:
+            return ""
+        if not normalized.startswith("/"):
+            return f"/{normalized}"
+        return normalized
 
     def get_nqe_repository_query_index(
         self,
@@ -365,15 +376,16 @@ class ForwardClient:
         if query_spec.query_path and query_spec.resolved_query_id:
             return query_spec
         if query_spec.query_path:
+            normalized_query_path = self._normalize_query_path(query_spec.query_path)
             query_index = self.get_nqe_repository_query_index(
                 repository=query_spec.query_repository or "org",
                 commit_id=query_spec.commit_id or "head",
             )
-            query = query_index.get("by_path", {}).get(query_spec.query_path)
+            query = query_index.get("by_path", {}).get(normalized_query_path)
             if not isinstance(query, dict) or not query.get("queryId"):
                 query = self.get_committed_nqe_query(
                     repository=query_spec.query_repository or "org",
-                    query_path=query_spec.query_path,
+                    query_path=normalized_query_path,
                     commit_id=query_spec.commit_id or "head",
                 )
             query_id = str(query.get("queryId") or "").strip()
@@ -387,7 +399,13 @@ class ForwardClient:
                 raise ForwardClientError(
                     f"Forward NQE query `{query_spec.reference}` did not include a query ID."
                 )
-            return query_spec.with_query_id(query_id, commit_id or None)
+            resolved_query_spec = query_spec.with_query_id(query_id, commit_id or None)
+            if resolved_query_spec.query_path != normalized_query_path:
+                return replace(
+                    resolved_query_spec,
+                    query_path=normalized_query_path,
+                )
+            return resolved_query_spec
         return query_spec
 
     def _parse_nqe_records(self, data: dict[str, Any]) -> tuple[list[dict[str, Any]], int | None]:
@@ -438,6 +456,57 @@ class ForwardClient:
             repr(sorted(last.items())),
         )
 
+    def _paginate_rows(
+        self,
+        fetch_page: Callable[[int], tuple[list[dict[str, Any]], int | None]],
+        *,
+        limit: int,
+        offset: int,
+        fetch_all: bool,
+        exhausted_message: str,
+        stalled_message: str,
+    ) -> list[dict[str, Any]]:
+        rows, total = fetch_page(offset)
+        if not fetch_all:
+            return rows
+
+        all_rows = list(rows)
+        fetched_pages = 1
+        previous_signature = (
+            self._page_signature(rows) if len(rows) == limit and rows else None
+        )
+        identical_full_page_streak = 0
+        while True:
+            if total is not None and len(all_rows) >= total:
+                return all_rows
+            if total is None and len(rows) < limit:
+                return all_rows
+            if fetched_pages >= self.settings.nqe_fetch_all_max_pages:
+                raise ForwardClientError(exhausted_message)
+            next_offset = offset + len(all_rows)
+            rows, page_total = fetch_page(next_offset)
+            fetched_pages += 1
+            if total is None and page_total is not None:
+                total = page_total
+            if not rows:
+                return all_rows
+            if total is None and len(rows) == limit:
+                signature = self._page_signature(rows)
+                if signature == previous_signature:
+                    identical_full_page_streak += 1
+                else:
+                    identical_full_page_streak = 0
+                previous_signature = signature
+                if (
+                    identical_full_page_streak
+                    >= self.settings.nqe_identical_full_page_streak_limit
+                ):
+                    raise ForwardClientError(stalled_message)
+            else:
+                previous_signature = None
+                identical_full_page_streak = 0
+            all_rows.extend(rows)
+
     def run_nqe_query(
         self,
         *,
@@ -459,77 +528,14 @@ class ForwardClient:
         limit = int(limit or self.settings.nqe_page_size)
         if limit < 1:
             raise ForwardConfigurationError("Forward NQE page size must be at least 1.")
-
-        def fetch_page(page_offset: int) -> tuple[list[dict[str, Any]], int | None]:
-            payload: dict[str, Any] = {
-                "parameters": dict(query_spec.parameters),
-                "queryOptions": {
-                    "limit": limit,
-                    "offset": page_offset,
-                    "itemFormat": item_format,
-                },
-            }
-            query_id = query_spec.resolved_query_id or query_spec.query_id
-            commit_id = query_spec.resolved_commit_id or query_spec.commit_id
-            if query_id:
-                payload["queryId"] = query_id
-                if commit_id:
-                    payload["commitId"] = commit_id
-            else:
-                payload["query"] = query_spec.query_text
-            response = self._request(
-                "POST",
-                "/nqe",
-                params={"networkId": network_id, "snapshotId": snapshot_id},
-                json_body=payload,
-            )
-            return self._parse_nqe_records(response.json() or {})
-
-        rows, total = fetch_page(offset)
-        if not fetch_all:
-            return rows
-
-        all_rows = list(rows)
-        fetched_pages = 1
-        previous_signature = (
-            self._page_signature(rows) if len(rows) == limit and rows else None
+        return self.run_nqe_query_async(
+            query_spec=query_spec,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            limit=limit,
+            offset=offset,
+            fetch_all=fetch_all,
         )
-        identical_full_page_streak = 0
-        while True:
-            if total is not None and len(all_rows) >= total:
-                return all_rows
-            if total is None and len(rows) < limit:
-                return all_rows
-            if fetched_pages >= self.settings.nqe_fetch_all_max_pages:
-                raise ForwardClientError(
-                    "Forward NQE pagination exceeded "
-                    f"{self.settings.nqe_fetch_all_max_pages} page(s)."
-                )
-            next_offset = offset + len(all_rows)
-            rows, page_total = fetch_page(next_offset)
-            fetched_pages += 1
-            if total is None and page_total is not None:
-                total = page_total
-            if not rows:
-                return all_rows
-            if total is None and len(rows) == limit:
-                signature = self._page_signature(rows)
-                if signature == previous_signature:
-                    identical_full_page_streak += 1
-                else:
-                    identical_full_page_streak = 0
-                previous_signature = signature
-                if (
-                    identical_full_page_streak
-                    >= self.settings.nqe_identical_full_page_streak_limit
-                ):
-                    raise ForwardClientError(
-                        "Forward NQE pagination did not advance; repeated identical pages were returned."
-                    )
-            else:
-                previous_signature = None
-                identical_full_page_streak = 0
-            all_rows.extend(rows)
 
     def run_nqe_diff(
         self,
@@ -577,48 +583,177 @@ class ForwardClient:
             )
             return self._parse_nqe_diff_rows(response.json() or {})
 
-        rows, total = fetch_page(offset)
-        if not fetch_all:
-            return rows
-
-        all_rows = list(rows)
-        fetched_pages = 1
-        previous_signature = (
-            self._page_signature(rows) if len(rows) == limit and rows else None
+        return self._paginate_rows(
+            fetch_page,
+            limit=limit,
+            offset=offset,
+            fetch_all=fetch_all,
+            exhausted_message=(
+                "Forward NQE diff pagination exceeded "
+                f"{self.settings.nqe_fetch_all_max_pages} page(s)."
+            ),
+            stalled_message=(
+                "Forward NQE diff pagination did not advance; repeated identical pages were returned."
+            ),
         )
-        identical_full_page_streak = 0
-        while True:
-            if total is not None and len(all_rows) >= total:
-                return all_rows
-            if total is None and len(rows) < limit:
-                return all_rows
-            if fetched_pages >= self.settings.nqe_fetch_all_max_pages:
-                raise ForwardClientError(
-                    "Forward NQE diff pagination exceeded "
-                    f"{self.settings.nqe_fetch_all_max_pages} page(s)."
+
+    def get_nqe_execution_status(
+        self,
+        *,
+        network_id: str,
+        execution_key: str,
+    ) -> dict[str, Any]:
+        network_id = str(network_id or "").strip()
+        execution_key = str(execution_key or "").strip()
+        if not network_id:
+            raise ForwardConfigurationError("Forward network ID is required.")
+        if not execution_key:
+            raise ForwardConfigurationError("Forward execution key is required.")
+        response = self._request(
+            "GET",
+            f"/networks/{quote(network_id, safe='')}/nqe-executions/{quote(execution_key, safe='')}",
+        )
+        data = response.json() or {}
+        if not isinstance(data, dict):
+            raise ForwardClientError(
+                "Forward NQE execution status response returned an invalid payload."
+            )
+        return data
+
+    def get_nqe_execution_result(
+        self,
+        *,
+        execution_key: str,
+        network_id: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        fetch_all: bool = False,
+    ) -> list[dict[str, Any]]:
+        network_id = str(network_id or self.settings.network_id or "").strip()
+        execution_key = str(execution_key or "").strip()
+        if not network_id:
+            raise ForwardConfigurationError("Forward network ID is required.")
+        if not execution_key:
+            raise ForwardConfigurationError("Forward execution key is required.")
+        limit = int(limit or self.settings.nqe_page_size)
+        if limit < 1:
+            raise ForwardConfigurationError("Forward NQE page size must be at least 1.")
+
+        def fetch_page(page_offset: int) -> tuple[list[dict[str, Any]], int | None]:
+            response = self._request(
+                "GET",
+                f"/networks/{quote(network_id, safe='')}/nqe-executions/{quote(execution_key, safe='')}/result",
+                params={
+                    "offset": page_offset,
+                    "limit": limit,
+                },
+            )
+            return self._parse_nqe_records(response.json() or {})
+
+        return self._paginate_rows(
+            fetch_page,
+            limit=limit,
+            offset=offset,
+            fetch_all=fetch_all,
+            exhausted_message=(
+                "Forward NQE execution result pagination exceeded "
+                f"{self.settings.nqe_fetch_all_max_pages} page(s)."
+            ),
+            stalled_message=(
+                "Forward NQE execution result pagination did not advance; repeated identical pages were returned."
+            ),
+        )
+
+    def request_nqe_execution(
+        self,
+        *,
+        query_spec: ForwardQuerySpec,
+        network_id: str | None = None,
+        snapshot_id: str | None = None,
+    ) -> dict[str, Any]:
+        network_id = str(network_id or self.settings.network_id or "").strip()
+        if not network_id:
+            raise ForwardConfigurationError("Forward network ID is required.")
+        snapshot_id = self.resolve_snapshot_id(
+            network_id, snapshot_id or self.settings.snapshot_id
+        )
+        query_spec = self.resolve_query_spec(query_spec)
+        payload: dict[str, Any] = {
+            "parameters": dict(query_spec.parameters),
+        }
+        query_id = query_spec.resolved_query_id or query_spec.query_id
+        commit_id = query_spec.resolved_commit_id or query_spec.commit_id
+        if query_id:
+            payload["queryId"] = query_id
+            if commit_id:
+                payload["commitId"] = commit_id
+        else:
+            payload["query"] = query_spec.query_text
+        response = self._request(
+            "POST",
+            f"/networks/{quote(network_id, safe='')}/nqe-executions",
+            params={"snapshotId": snapshot_id},
+            json_body=payload,
+        )
+        data = response.json() or {}
+        if not isinstance(data, dict):
+            raise ForwardClientError(
+                "Forward NQE execution response returned an invalid payload."
+            )
+        execution_key = str(data.get("executionKey") or "").strip()
+        if not execution_key:
+            raise ForwardClientError(
+                "Forward NQE execution response did not include an execution key."
+            )
+        return data
+
+    def run_nqe_query_async(
+        self,
+        *,
+        query_spec: ForwardQuerySpec,
+        network_id: str | None = None,
+        snapshot_id: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        fetch_all: bool = False,
+        poll_interval_seconds: float = 5.0,
+        max_polls: int = 60,
+    ) -> list[dict[str, Any]]:
+        network_id = str(network_id or self.settings.network_id or "").strip()
+        if not network_id:
+            raise ForwardConfigurationError("Forward network ID is required.")
+        execution = self.request_nqe_execution(
+            query_spec=query_spec,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+        )
+        execution_key = str(execution.get("executionKey") or "").strip()
+        status = execution if isinstance(execution, dict) else {}
+        if str(status.get("status") or "").strip() != "COMPLETED":
+            for poll_count in range(int(max_polls)):
+                if poll_count:
+                    time.sleep(float(poll_interval_seconds))
+                status = self.get_nqe_execution_status(
+                    network_id=network_id,
+                    execution_key=execution_key,
                 )
-            next_offset = offset + len(all_rows)
-            rows, page_total = fetch_page(next_offset)
-            fetched_pages += 1
-            if total is None and page_total is not None:
-                total = page_total
-            if not rows:
-                return all_rows
-            if total is None and len(rows) == limit:
-                signature = self._page_signature(rows)
-                if signature == previous_signature:
-                    identical_full_page_streak += 1
-                else:
-                    identical_full_page_streak = 0
-                previous_signature = signature
-                if (
-                    identical_full_page_streak
-                    >= self.settings.nqe_identical_full_page_streak_limit
-                ):
-                    raise ForwardClientError(
-                        "Forward NQE diff pagination did not advance; repeated identical pages were returned."
-                    )
+                if str(status.get("status") or "").strip() == "COMPLETED":
+                    break
             else:
-                previous_signature = None
-                identical_full_page_streak = 0
-            all_rows.extend(rows)
+                raise ForwardClientError(
+                    "Forward NQE execution did not complete before the poll limit was reached."
+                )
+        outcome = str(status.get("outcome") or "").strip()
+        if outcome != "OK":
+            error = status.get("error")
+            error_text = f": {error}" if error is not None else ""
+            raise ForwardClientError(
+                f"Forward NQE execution completed with outcome {outcome or 'UNKNOWN'}{error_text}"
+            )
+        return self.get_nqe_execution_result(
+            execution_key=execution_key,
+            network_id=network_id,
+            limit=limit,
+            offset=offset,
+            fetch_all=fetch_all,
+        )

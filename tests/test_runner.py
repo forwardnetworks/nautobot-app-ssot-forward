@@ -84,12 +84,21 @@ def _counting_transport(calls):
                     ]
                 },
             )
-        if path == "/api/nqe":
+        if path == "/api/networks/net-1/nqe-executions":
             payload = json.loads(request.content.decode("utf-8"))
             calls["nqe_payloads"].append(payload)
             assert payload["queryId"] == "query-123"
             assert payload["commitId"] == "commit-abc"
             assert payload["parameters"] == {"limit": 2}
+            return httpx.Response(
+                200,
+                json={
+                    "executionKey": "execution-query-123",
+                    "status": "COMPLETED",
+                    "outcome": "OK",
+                },
+            )
+        if path == "/api/networks/net-1/nqe-executions/execution-query-123/result":
             return httpx.Response(
                 200,
                 json={
@@ -197,9 +206,18 @@ def test_runner_preview_and_sync_reuse_query_resolution_cache():
                     ]
                 },
             )
-        if path == "/api/nqe":
+        if path == "/api/networks/net-1/nqe-executions":
             payload = json.loads(request.content.decode("utf-8"))
             calls["nqe_payloads"].append(payload)
+            return httpx.Response(
+                200,
+                json={
+                    "executionKey": "execution-query-123",
+                    "status": "COMPLETED",
+                    "outcome": "OK",
+                },
+            )
+        if path == "/api/networks/net-1/nqe-executions/execution-query-123/result":
             return httpx.Response(
                 200,
                 json={

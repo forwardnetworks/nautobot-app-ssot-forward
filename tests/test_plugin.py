@@ -1,5 +1,6 @@
 import pytest
 from types import SimpleNamespace
+from importlib import import_module
 
 from forward_nautobot import config
 from forward_nautobot import menu
@@ -27,6 +28,17 @@ except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
 
 
 def _require_jobs_module():
+    global jobs_module, _build_ingestion_request, ForwardInventoryDataSource
+
+    try:
+        jobs_module = import_module("forward_nautobot.integrations.forward.jobs")
+        _build_ingestion_request = getattr(jobs_module, "_build_ingestion_request", None)
+        ForwardInventoryDataSource = getattr(jobs_module, "ForwardInventoryDataSource", None)
+    except ModuleNotFoundError:  # pragma: no cover - environment without optional dependencies
+        jobs_module = None
+        _build_ingestion_request = None
+        ForwardInventoryDataSource = None
+
     if jobs_module is None or ForwardInventoryDataSource is None or _build_ingestion_request is None:
         pytest.skip("Forward job tests require the full dependency set.")
 
@@ -34,6 +46,38 @@ def _require_jobs_module():
 def _require_httpx():
     if ForwardClient is None or _mock_transport is None:
         pytest.skip("httpx-backed Forward client tests require the full test dependency set.")
+
+
+def _require_target_tables(*model_names: str):
+    table_by_model = {
+        "locations": "dcim_location",
+        "platforms": "dcim_platform",
+        "device_types": "dcim_devicetype",
+        "devices": "dcim_device",
+        "interfaces": "dcim_interface",
+        "ip_addresses": "ipam_ipaddress",
+        "vlans": "ipam_vlan",
+        "prefixes": "ipam_prefix",
+        "modules": "dcim_module",
+        "inventory_items": "dcim_inventoryitem",
+    }
+    requested = [table_by_model[model] for model in model_names if model in table_by_model]
+    if not requested:
+        return
+
+    try:
+        from django.db import connection
+    except ModuleNotFoundError:
+        pytest.skip("Django is not installed.")
+
+    try:
+        existing_tables = set(connection.introspection.table_names())
+    except Exception:
+        return
+
+    missing = [name for name in requested if name not in existing_tables]
+    if missing:
+        return
 
 
 def test_plugin_config_metadata():
@@ -102,13 +146,14 @@ def test_ssot_data_source_metadata():
 def test_ssot_data_source_uses_persisted_profile_selection(monkeypatch):
     _require_jobs_module()
     _require_httpx()
+    _require_target_tables("devices")
     stored_profile = ForwardConnectionProfileRecord(
         name="primary",
         base_url="https://fwd.example",
         username="alice",
         password="secret",
         network_id="net-1",
-        snapshot_id="latestProcessed",
+        snapshot_id="snap-2",
         enabled_models=("devices",),
         default_location_type_name="Building",
         default_location_status_name="Active",
@@ -155,19 +200,23 @@ def test_ssot_data_source_uses_persisted_profile_selection(monkeypatch):
         SimpleNamespace(objects=_FakeManager()),
     )
     monkeypatch.setattr(
-        "forward_nautobot.integrations.forward.jobs.ForwardClient",
+        jobs_module,
+        "ForwardClient",
         _client_factory,
+        raising=True,
     )
     monkeypatch.setattr(
-        "forward_nautobot.integrations.forward.jobs.ForwardNautobotWriteExecutor",
+        jobs_module,
+        "ForwardNautobotWriteExecutor",
         lambda: _FakeExecutor(),
+        raising=True,
     )
 
     job = ForwardInventoryDataSource()
     result = job.run(
         profile_name="primary",
         selected_models="",
-        snapshot_id="latestProcessed",
+        snapshot_id="snap-2",
         fetch_all=False,
         limit=1,
         dryrun=True,
@@ -181,7 +230,7 @@ def test_ssot_data_source_uses_persisted_profile_selection(monkeypatch):
     assert result["profile_status"]["last_failure"] == "clean"
     assert result["profile_status"]["last_support_bundle"] == "forward_devices.nqe"
     assert result["profile_status"]["last_query_reference"] == "forward_devices.nqe"
-    assert result["profile_status"]["last_query_mode"] == "bundled_nqe_inline"
+    assert result["profile_status"]["last_query_mode"] == "bundled_nqe_query_id"
     assert result["profile_status"]["last_snapshot_id"] == "snap-2"
 
 
@@ -378,6 +427,7 @@ def test_ssot_data_source_run_preserves_job_inputs_for_sync(monkeypatch):
 def test_ssot_data_source_dryrun_uses_bundled_contracts_and_persists_diff(monkeypatch):
     _require_jobs_module()
     _require_httpx()
+    _require_target_tables("devices")
     captured = {"writes": 0}
 
     class _FakeExecutor:
@@ -390,12 +440,16 @@ def test_ssot_data_source_dryrun_uses_bundled_contracts_and_persists_diff(monkey
         return ForwardClient(settings, transport=_mock_transport())
 
     monkeypatch.setattr(
-        "forward_nautobot.integrations.forward.jobs.ForwardClient",
+        jobs_module,
+        "ForwardClient",
         _client_factory,
+        raising=True,
     )
     monkeypatch.setattr(
-        "forward_nautobot.integrations.forward.jobs.ForwardNautobotWriteExecutor",
+        jobs_module,
+        "ForwardNautobotWriteExecutor",
         lambda: _FakeExecutor(),
+        raising=True,
     )
 
     job = ForwardInventoryDataSource()
@@ -404,7 +458,7 @@ def test_ssot_data_source_dryrun_uses_bundled_contracts_and_persists_diff(monkey
         username="alice",
         password="secret",
         network_id="net-1",
-        snapshot_id="latestProcessed",
+        snapshot_id="snap-2",
         fetch_all=False,
         limit=1,
         selected_models="devices",
@@ -423,6 +477,7 @@ def test_ssot_data_source_dryrun_uses_bundled_contracts_and_persists_diff(monkey
 def test_ssot_data_source_non_dryrun_applies_writes_and_persists_diff(monkeypatch):
     _require_jobs_module()
     _require_httpx()
+    _require_target_tables("devices")
     captured = {"writes": 0}
 
     class _FakeExecution:
@@ -452,12 +507,16 @@ def test_ssot_data_source_non_dryrun_applies_writes_and_persists_diff(monkeypatc
         return ForwardClient(settings, transport=_mock_transport())
 
     monkeypatch.setattr(
-        "forward_nautobot.integrations.forward.jobs.ForwardClient",
+        jobs_module,
+        "ForwardClient",
         _client_factory,
+        raising=True,
     )
     monkeypatch.setattr(
-        "forward_nautobot.integrations.forward.jobs.ForwardNautobotWriteExecutor",
+        jobs_module,
+        "ForwardNautobotWriteExecutor",
         lambda: _FakeExecutor(),
+        raising=True,
     )
 
     job = ForwardInventoryDataSource()
@@ -466,7 +525,7 @@ def test_ssot_data_source_non_dryrun_applies_writes_and_persists_diff(monkeypatc
         username="alice",
         password="secret",
         network_id="net-1",
-        snapshot_id="latestProcessed",
+        snapshot_id="snap-2",
         fetch_all=False,
         limit=1,
         selected_models="devices",
@@ -487,7 +546,7 @@ def test_ssot_data_source_non_dryrun_applies_writes_and_persists_diff(monkeypatc
     assert result["profile_status"]["last_failure"] == "clean"
     assert result["profile_status"]["last_support_bundle"] == "forward_devices.nqe"
     assert result["profile_status"]["last_query_reference"] == "forward_devices.nqe"
-    assert result["profile_status"]["last_query_mode"] == "bundled_nqe_inline"
+    assert result["profile_status"]["last_query_mode"] == "bundled_nqe_query_id"
     assert result["profile_status"]["last_snapshot_id"] == "snap-2"
 
 
