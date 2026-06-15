@@ -10,7 +10,7 @@ support-bundle capture, with support for Forward async query execution.
 
 | Plugin | Nautobot | nautobot-ssot | Forward | Status |
 | --- | --- | --- | --- | --- |
-| `0.1.0` | `3.1.x` | `4.4` - `<5.0` compatible | `26.6+` for async execution | Current |
+| `0.1.1` | `3.1.x` | `4.4` - `<5.0` compatible | `26.6+` for async execution | Current |
 
 ## Overview
 
@@ -55,7 +55,7 @@ The following model slugs are currently in the shipped scope.
 From wheel or source distribution:
 
 ```bash
-pip install /path/to/nautobot_app_ssot_forward-0.1.0-py3-none-any.whl
+pip install /path/to/nautobot_app_ssot_forward-0.1.1-py3-none-any.whl
 ```
 
 Install dependencies before loading in Nautobot:
