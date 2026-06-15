@@ -1,5 +1,6 @@
 """Forward API client for Nautobot sync jobs."""
 
+import json
 from dataclasses import dataclass
 from dataclasses import replace
 from dataclasses import field
@@ -18,6 +19,9 @@ from .models import LATEST_PROCESSED_SNAPSHOT
 
 
 TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+NQE_ASYNC_RESULT_ACCEPT = (
+    "application/x-ndjson, application/jsonl;q=0.9, application/json;q=0.1"
+)
 
 
 @dataclass(slots=True)
@@ -86,6 +90,7 @@ class ForwardClient:
         *,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         last_error: Exception | None = None
         for attempt in range(self.settings.retries + 1):
@@ -102,7 +107,7 @@ class ForwardClient:
                         self._api_url(path),
                         params=params,
                         json=json_body,
-                        headers=self._headers(),
+                        headers={**self._headers(), **(headers or {})},
                         auth=self.auth,
                     )
                 if response.status_code in TRANSIENT_HTTP_STATUS_CODES:
@@ -409,20 +414,52 @@ class ForwardClient:
             return resolved_query_spec
         return query_spec
 
+    @staticmethod
+    def _record_from_nqe_item(item: Any) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        if isinstance(item.get("fields"), dict):
+            return dict(item["fields"])
+        return dict(item)
+
     def _parse_nqe_records(self, data: dict[str, Any]) -> tuple[list[dict[str, Any]], int | None]:
+        if not isinstance(data, dict):
+            return [], None
         items = data.get("items") or []
         rows: list[dict[str, Any]] = []
         for item in items:
-            if isinstance(item, dict) and isinstance(item.get("fields"), dict):
-                rows.append(dict(item["fields"]))
-            elif isinstance(item, dict):
-                rows.append(dict(item))
+            row = self._record_from_nqe_item(item)
+            if row is not None:
+                rows.append(row)
         total = data.get("totalNumItems")
         try:
             total_int = int(total) if total is not None else None
         except (TypeError, ValueError):
             total_int = None
         return rows, total_int
+
+    def _parse_nqe_lines(self, text: str) -> tuple[list[dict[str, Any]], None]:
+        rows: list[dict[str, Any]] = []
+        for line in str(text or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parsed_line = json.loads(line)
+            row = self._record_from_nqe_item(parsed_line)
+            if row is not None:
+                rows.append(row)
+        return rows, None
+
+    def _parse_nqe_async_result(
+        self,
+        response: httpx.Response,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        content_type = str(
+            ((getattr(response, "headers", {}) or {}).get("content-type") or "")
+        ).lower()
+        if "jsonl" in content_type or "ndjson" in content_type:
+            return self._parse_nqe_lines(getattr(response, "text", ""))
+        return self._parse_nqe_records(response.json() or {})
 
     def _parse_nqe_diff_rows(
         self, data: dict[str, Any]
@@ -536,6 +573,7 @@ class ForwardClient:
             limit=limit,
             offset=offset,
             fetch_all=fetch_all,
+            item_format=item_format,
         )
 
     def run_nqe_diff(
@@ -648,8 +686,9 @@ class ForwardClient:
                     "offset": page_offset,
                     "limit": limit,
                 },
+                headers={"Accept": NQE_ASYNC_RESULT_ACCEPT},
             )
-            return self._parse_nqe_records(response.json() or {})
+            return self._parse_nqe_async_result(response)
 
         return self._paginate_rows(
             fetch_page,
@@ -671,6 +710,7 @@ class ForwardClient:
         query_spec: ForwardQuerySpec,
         network_id: str | None = None,
         snapshot_id: str | None = None,
+        item_format: str = "JSON",
     ) -> dict[str, Any]:
         network_id = str(network_id or self.settings.network_id or "").strip()
         if not network_id:
@@ -682,6 +722,8 @@ class ForwardClient:
         payload: dict[str, Any] = {
             "parameters": dict(query_spec.parameters),
         }
+        if item_format is not None:
+            payload["options"] = {"itemFormat": item_format}
         query_id = query_spec.resolved_query_id or query_spec.query_id
         commit_id = query_spec.resolved_commit_id or query_spec.commit_id
         if query_id:
@@ -719,6 +761,7 @@ class ForwardClient:
         fetch_all: bool = False,
         poll_interval_seconds: float = 5.0,
         max_polls: int = 60,
+        item_format: str = "JSON",
     ) -> list[dict[str, Any]]:
         network_id = str(network_id or self.settings.network_id or "").strip()
         if not network_id:
@@ -727,6 +770,7 @@ class ForwardClient:
             query_spec=query_spec,
             network_id=network_id,
             snapshot_id=snapshot_id,
+            item_format=item_format,
         )
         execution_key = str(execution.get("executionKey") or "").strip()
         status = execution if isinstance(execution, dict) else {}

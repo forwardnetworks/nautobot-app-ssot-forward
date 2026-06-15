@@ -550,6 +550,7 @@ def test_client_async_nqe_execution_flow(monkeypatch):
             assert payload["queryId"] == "query-123"
             assert payload["commitId"] == "commit-abc"
             assert payload["parameters"] == {}
+            assert payload["options"]["itemFormat"] == "JSON"
             assert request.url.params["snapshotId"] == "snap-2"
             return httpx.Response(
                 200,
@@ -573,6 +574,7 @@ def test_client_async_nqe_execution_flow(monkeypatch):
             calls["execution_results"] += 1
             offset = int(request.url.params.get("offset", "0"))
             limit = int(request.url.params.get("limit", "0"))
+            assert request.headers.get("accept") == client_module.NQE_ASYNC_RESULT_ACCEPT
             assert limit == 1
             if offset == 0:
                 return httpx.Response(
@@ -621,6 +623,96 @@ def test_client_async_nqe_execution_flow(monkeypatch):
     assert calls["execution_statuses"] == 2
     assert calls["execution_results"] == 2
     assert sleep_calls == [0.01]
+
+
+def test_client_async_nqe_execution_result_prefers_ndjson_payload(monkeypatch):
+    _require_client()
+    calls = {
+        "execution_submits": 0,
+        "execution_statuses": 0,
+        "execution_results": 0,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/snapshots/latestProcessed":
+            return httpx.Response(200, json={"id": "snap-2", "state": "processed"})
+        if path == "/api/networks/net-1/nqe-executions":
+            calls["execution_submits"] += 1
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["queryId"] == "query-123"
+            assert payload["commitId"] == "commit-abc"
+            assert payload["parameters"] == {}
+            assert payload["options"]["itemFormat"] == "JSON"
+            return httpx.Response(
+                200,
+                json={
+                    "executionKey": "execution-ndjson",
+                    "status": "SUBMITTED",
+                    "outcome": "OK",
+                },
+            )
+        if path == "/api/networks/net-1/nqe-executions/execution-ndjson":
+            calls["execution_statuses"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "status": "COMPLETED",
+                    "outcome": "OK",
+                },
+            )
+        if path == "/api/networks/net-1/nqe-executions/execution-ndjson/result":
+            calls["execution_results"] += 1
+            assert request.headers.get("accept") == client_module.NQE_ASYNC_RESULT_ACCEPT
+            return httpx.Response(
+                200,
+                text='{"fields": {"id": "r1", "name": "device-1"}}\n'
+                '{"fields": {"id": "r2", "name": "device-2"}}\n',
+                headers={"content-type": "application/x-ndjson"},
+            )
+        if path == "/api/nqe/repos/org/commits/head/queries":
+            return httpx.Response(
+                200,
+                json={
+                    "queries": [
+                        {
+                            "path": "/forward_nautobot_validation/forward_devices",
+                            "queryId": "query-123",
+                            "lastCommit": {"id": "commit-abc"},
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected path: {path}")
+
+    monkeypatch.setattr(
+        client_module.time,
+        "sleep",
+        lambda _seconds: pytest.fail("async polling should not run for completed execution"),
+    )
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            snapshot_id="snap-2",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    rows = client.run_nqe_query_async(
+        query_spec=ForwardQuerySpec(
+            query_path="/forward_nautobot_validation/forward_devices"
+        ),
+        fetch_all=False,
+    )
+
+    assert rows == [{"id": "r1", "name": "device-1"}, {"id": "r2", "name": "device-2"}]
+    assert calls["execution_submits"] == 1
+    assert calls["execution_statuses"] == 1
+    assert calls["execution_results"] == 1
 
 
 def test_client_respects_request_min_interval(monkeypatch):
