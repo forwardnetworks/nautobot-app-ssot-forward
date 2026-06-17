@@ -6,6 +6,7 @@ focused on run behavior and validation.
 ## Core Docs
 
 - [Architecture](../ARCHITECTURE.md)
+- [Architecture flow — end-to-end diagrams](architecture-flow.md)
 - [Project Knowledge](00_Project_Knowledge/README.md)
 - [Active plans](03_Plans/active/)
 
