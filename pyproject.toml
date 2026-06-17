@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "nautobot-app-ssot-forward"
-version = "0.1.1"
+version = "0.2.0"
 description = "Forward Networks SSoT integration for Nautobot"
 authors = ["Forward Networks"]
 license = "MIT"

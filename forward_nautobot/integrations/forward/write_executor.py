@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from dataclasses import field
-from typing import TYPE_CHECKING
 from typing import Any
 
 try:
@@ -21,9 +20,7 @@ from .support import classify_failure
 from .registry import get_model_mapping
 from .write_path import ForwardWriteOperation
 from .write_path import ForwardWritePlan
-
-if TYPE_CHECKING:
-    from ...models import ForwardConnectionProfileRecord
+from ...models import ForwardConnectionProfileRecord
 
 
 def _slugify(value: str) -> str:
