@@ -353,7 +353,10 @@ class ForwardIngestionPlanner:
         except ForwardClientError as exc:
             query_text = self._query_text_for(mapping)
             rows = self.client.run_nqe_query(
-                query_spec=ForwardQuerySpec(query_text=query_text, parameters=parameters),
+                query_spec=ForwardQuerySpec(
+                    query_text=query_text,
+                    parameters=parameters,
+                ),
                 network_id=network_id,
                 snapshot_id=current_snapshot_id,
                 limit=limit,
@@ -391,9 +394,10 @@ class ForwardIngestionPlanner:
                 )
                 query_mode = "bundled_nqe_query_id_diff"
                 is_diff = True
-            except Exception as diff_error:
+            except ForwardClientError as diff_error:
                 notes = notes + (
-                    "Diff execution failed; using query ID-backed full query instead.",
+                    f"Diff execution failed ({type(diff_error).__name__}: {diff_error}); "
+                    "using query ID-backed full query instead.",
                 )
                 rows = self.client.run_nqe_query(
                     query_spec=resolved_query_spec,
@@ -410,6 +414,7 @@ class ForwardIngestionPlanner:
                     "query_reference": query_reference,
                     "fallback": "diff-unavailable",
                     "error": str(diff_error),
+                    "error_type": type(diff_error).__name__,
                     "rows": rows,
                 }
         else:

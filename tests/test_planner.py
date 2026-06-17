@@ -575,3 +575,112 @@ def test_planner_skips_nqe_when_snapshot_unchanged(monkeypatch):
     assert plan.diff_detail["skipped"] is True
     assert plan.diff_detail["current_snapshot_id"] == "snap-2"
     assert plan.diff_detail["baseline_snapshot_id"] == "snap-2"
+
+
+def test_planner_does_not_send_sort_keys_by_default(monkeypatch):
+    """sortKeys not wired automatically — Forward API requires SortBy objects (not strings).
+    The ForwardQuerySpec.sort_keys field remains available for callers to populate explicitly."""
+    _require_planner()
+    captured_sort_keys: list = []
+
+    def _resolve_snapshot(self, network_id, snapshot_id):
+        return "snap-99"
+
+    def _mock_run_nqe(self, *, query_spec, **kwargs):
+        captured_sort_keys.extend(query_spec.sort_keys)
+        return []
+
+    monkeypatch.setattr(ForwardClient, "resolve_snapshot_id", _resolve_snapshot)
+    monkeypatch.setattr(ForwardClient, "run_nqe_query", _mock_run_nqe)
+    monkeypatch.setattr(ForwardClient, "run_nqe_diff", _mock_run_nqe)
+    monkeypatch.setattr(
+        ForwardClient, "resolve_query_spec",
+        lambda self, qs: qs,
+    )
+    monkeypatch.setattr(
+        ForwardClient, "get_nqe_repository_query_index",
+        lambda self, **kwargs: {"by_path": {}},
+    )
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        )
+    )
+    planner = ForwardIngestionPlanner(client)
+    plan = planner.run(
+        ForwardIngestionRequest(
+            connection=ForwardConnectionSettings(
+                base_url="https://fwd.example",
+                username="alice",
+                password="secret",
+                network_id="net-1",
+            ),
+            model_names=("locations",),
+            fetch_all=False,
+        )
+    )
+    assert plan is not None
+    assert captured_sort_keys == [], f"sort_keys unexpectedly set: {captured_sort_keys}"
+
+
+def test_planner_diff_fallback_narrows_exception(monkeypatch):
+    """Bare Exception in diff fallback replaced with ForwardClientError only."""
+    _require_planner()
+    from forward_nautobot.integrations.forward.exceptions import ForwardClientError
+
+    def _resolve_snapshot(self, network_id, snapshot_id):
+        return "snap-new"
+
+    def _mock_run_nqe(self, *, query_spec, **kwargs):
+        return []
+
+    def _mock_run_diff(*args, **kwargs):
+        raise ForwardClientError("diff-unavailable")
+
+    def _mock_resolve_query_spec(self, qs):
+        from forward_nautobot.integrations.forward.models import ForwardQuerySpec
+        from dataclasses import replace
+        return replace(qs, resolved_query_id="q-123", query_path=None, query_text="select { x: 1 }")
+
+    monkeypatch.setattr(ForwardClient, "resolve_snapshot_id", _resolve_snapshot)
+    monkeypatch.setattr(ForwardClient, "run_nqe_query", _mock_run_nqe)
+    monkeypatch.setattr(ForwardClient, "run_nqe_diff", _mock_run_diff)
+    monkeypatch.setattr(ForwardClient, "resolve_query_spec", _mock_resolve_query_spec)
+    monkeypatch.setattr(
+        ForwardClient, "get_nqe_repository_query_index",
+        lambda self, **kwargs: {"by_path": {}},
+    )
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        )
+    )
+    planner = ForwardIngestionPlanner(client)
+    plan = planner.run(
+        ForwardIngestionRequest(
+            connection=ForwardConnectionSettings(
+                base_url="https://fwd.example",
+                username="alice",
+                password="secret",
+                network_id="net-1",
+            ),
+            model_names=("locations",),
+            fetch_all=False,
+            connection_profile=ForwardConnectionProfileRecord(
+                name="primary",
+                network_id="net-1",
+                last_snapshot_id="snap-old",
+            ),
+        )
+    )
+    assert plan is not None
+    loc_slice = plan.diff_detail.get("slices", {}).get("locations", {})
+    assert "ForwardClientError" in str(loc_slice), f"Exception type not recorded: {loc_slice}"

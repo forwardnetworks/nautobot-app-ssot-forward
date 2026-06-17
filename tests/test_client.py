@@ -862,3 +862,63 @@ def test_client_rejects_auth_failures_without_retry():
     assert calls["nqe_runs"] == 1
 
 
+def test_request_nqe_execution_sends_sort_keys(monkeypatch):
+    _require_client()
+    captured_payload: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/nqe-executions":
+            captured_payload.update(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={"executionKey": "exec-1", "status": "SUBMITTED"})
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            snapshot_id="snap-1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    client.request_nqe_execution(
+        query_spec=ForwardQuerySpec(
+            query_text="foreach device in network.devices select { name: device.name }",
+            sort_keys=("name",),
+        ),
+        network_id="net-1",
+        snapshot_id="snap-1",
+    )
+    assert captured_payload.get("sortKeys") == ["name"]
+    assert "parameters" not in captured_payload
+
+
+def test_request_nqe_execution_omits_sort_keys_when_empty(monkeypatch):
+    _require_client()
+    captured_payload: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/networks/net-1/nqe-executions":
+            captured_payload.update(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(200, json={"executionKey": "exec-2", "status": "SUBMITTED"})
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            snapshot_id="snap-1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    client.request_nqe_execution(
+        query_spec=ForwardQuerySpec(query_text="foreach device in network.devices select { name: device.name }"),
+        network_id="net-1",
+        snapshot_id="snap-1",
+    )
+    assert "sortKeys" not in captured_payload
+
