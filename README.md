@@ -184,6 +184,7 @@ python scripts/check_release_state.py
 ## Documentation
 
 - [Architecture](ARCHITECTURE.md)
+- [Architecture flow — end-to-end diagrams](docs/architecture-flow.md)
 - [Project Knowledge](docs/00_Project_Knowledge/README.md)
 - [Release/goal plans](docs/03_Plans/active/)
 - [Queries](forward_nautobot/integrations/forward/queries/README.md)
