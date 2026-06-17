@@ -293,7 +293,20 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
     bundle = {}
     shared_bundle = {}
     profile_status = {}
-    if plan.reports:
+    if plan.diff_detail.get("skipped") and request.connection_profile is not None:
+        # Snapshot unchanged — no NQE ran, no report to build.
+        # Still stamp last_run_at so the UI reflects when we last checked.
+        run_at = datetime.now().isoformat(timespec="seconds")
+        prof = request.connection_profile.with_run_history(
+            last_run_at=run_at,
+            last_failure="",
+        )
+        if not dryrun:
+            saved_profile = _save_profile_record(prof)
+            if saved_profile is not None:
+                prof = saved_profile
+        profile_status = prof.status_record(last_run=run_at).as_dict()
+    elif plan.reports:
         bundle, shared_bundle = build_support_bundle_pair(
             plan.reports[0],
             source_summary=plan.source_summary,
