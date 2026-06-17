@@ -4,6 +4,7 @@
  * @contract-version v1
  */
 
+@primaryKey(prefix, vrf)
 @query
 f(forward_device_names: List<String>) =
 foreach device in network.devices
@@ -20,7 +21,7 @@ where !(toNumber(networkAddress(entry.prefix)) >= toNumber(ipAddress("0.0.0.0"))
 where !(toNumber(networkAddress(entry.prefix)) >= toNumber(ipAddress("127.0.0.0"))
   && toNumber(networkAddress(entry.prefix)) <= toNumber(ipAddress("127.255.255.255")))
 let prefix = ipSubnet(networkAddress(entry.prefix), length(entry.prefix))
-select distinct {
+select {
   vrf: if ni.name != "default"
     then if toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE" then ni.name else "default"
     else "default",

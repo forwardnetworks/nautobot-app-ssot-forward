@@ -4,10 +4,11 @@
  * @contract-version v1
  */
 
+@primaryKey(name)
 @query
 f() =
 foreach location in network.locations
-select distinct {
+select {
   name: location.name,
   city: if isPresent(location.city) then location.city else "",
   country: if isPresent(location.country) then location.country else ""

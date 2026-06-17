@@ -10,3 +10,5 @@ htmlcov/
 .coverage
 .coverage.*
 .sensitive-patterns.local.txt
+.env
+.env.*

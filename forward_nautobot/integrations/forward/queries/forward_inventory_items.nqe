@@ -11,6 +11,7 @@ isInventoryHardwareRole(role_name: String) =
   role_name != "APPLICATION" &&
   role_name != "UNMODELED BACKUP DEVICE";
 
+@primaryKey(device, name)
 @query
 f(forward_device_names: List<String>) =
 foreach device in network.devices
@@ -27,7 +28,7 @@ let component_description = if isPresent(component.description) && component.des
 let component_version = if isPresent(component.versionId) && component.versionId != "" then component.versionId else null : String
 let inventory_name = if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else role_name
 let inventory_description = if isPresent(component_description) && isPresent(component_version) then truncate(join(" | ", [component_description, join(": ", ["Version", component_version])]), 200) else if isPresent(component_description) then truncate(component_description, 200) else if isPresent(component_version) then truncate(join(": ", ["Version", component_version]), 200) else ""
-select distinct {
+select {
   device: device.name,
   manufacturer: toString(device.platform.vendor),
   name: truncate(inventory_name, 64),

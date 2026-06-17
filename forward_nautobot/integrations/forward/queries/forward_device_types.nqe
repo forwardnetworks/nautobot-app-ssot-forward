@@ -4,6 +4,7 @@
  * @contract-version v1
  */
 
+@primaryKey(name)
 @query
 f(forward_location_names: List<String>) =
 foreach device in network.devices
@@ -12,7 +13,7 @@ where device.platform.vendor != Vendor.FORWARD_CUSTOM
 where isEmpty(forward_location_names)
   || !isPresent(device.locationName)
   || device.locationName in forward_location_names
-select distinct {
+select {
   name: toString(device.platform.deviceType),
   color: "9e9e9e"
 };

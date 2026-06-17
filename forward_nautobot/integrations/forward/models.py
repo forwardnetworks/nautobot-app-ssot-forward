@@ -25,7 +25,6 @@ class ForwardConnectionSettings:
     request_min_interval_seconds: float = 0.0
     nqe_page_size: int = 1000
     nqe_fetch_all_max_pages: int = 100
-    nqe_identical_full_page_streak_limit: int = 2
 
     @property
     def has_basic_auth(self) -> bool:
@@ -44,6 +43,7 @@ class ForwardQuerySpec:
     resolved_query_id: str | None = None
     resolved_commit_id: str | None = None
     parameters: dict[str, Any] = field(default_factory=dict)
+    sort_keys: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         reference_count = sum(
@@ -92,7 +92,6 @@ class ForwardSyncSpec:
     fetch_all: bool = True
     limit: int | None = None
     offset: int = 0
-    item_format: str = "JSON"
     model_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:

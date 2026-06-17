@@ -4,6 +4,7 @@
  * @contract-version v1
  */
 
+@primaryKey(name)
 @query
 f(forward_location_names: List<String>) =
 foreach device in network.devices

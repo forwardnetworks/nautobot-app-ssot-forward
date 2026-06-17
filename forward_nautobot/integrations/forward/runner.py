@@ -33,7 +33,6 @@ class ForwardSyncRunner:
             limit=spec.limit or connection.nqe_page_size,
             offset=spec.offset,
             fetch_all=spec.fetch_all,
-            item_format=spec.item_format,
         )
         snapshot_metrics = {}
         try:

@@ -4,6 +4,7 @@
  * @contract-version v1
  */
 
+@primaryKey(device, name)
 @query
 f(forward_device_names: List<String>) =
 foreach device in network.devices
@@ -28,7 +29,7 @@ foreach interface in device.interfaces
     else if interface.interfaceType == IfaceType.IF_LOOPBACK then "virtual"
     else if interface.interfaceType == IfaceType.IF_AGGREGATE then "lag"
     else "other"
-select distinct {
+select {
   device: device.name,
   name: interface.name,
   type: interface_type,

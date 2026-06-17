@@ -549,8 +549,8 @@ def test_client_async_nqe_execution_flow(monkeypatch):
             payload = json.loads(request.content.decode("utf-8"))
             assert payload["queryId"] == "query-123"
             assert payload["commitId"] == "commit-abc"
-            assert payload["parameters"] == {}
-            assert payload["options"]["itemFormat"] == "JSON"
+            assert "parameters" not in payload
+            assert "options" not in payload
             assert request.url.params["snapshotId"] == "snap-2"
             return httpx.Response(
                 200,
@@ -572,27 +572,14 @@ def test_client_async_nqe_execution_flow(monkeypatch):
             )
         if path == "/api/networks/net-1/nqe-executions/execution-1/result":
             calls["execution_results"] += 1
-            offset = int(request.url.params.get("offset", "0"))
-            limit = int(request.url.params.get("limit", "0"))
             assert request.headers.get("accept") == client_module.NQE_ASYNC_RESULT_ACCEPT
-            assert limit == 1
-            if offset == 0:
-                return httpx.Response(
-                    200,
-                    json={
-                        "items": [{"fields": {"id": "r1"}}],
-                        "totalNumItems": 2,
-                    },
-                )
-            if offset == 1:
-                return httpx.Response(
-                    200,
-                    json={
-                        "items": [{"fields": {"id": "r2"}}],
-                        "totalNumItems": 2,
-                    },
-                )
-            raise AssertionError(f"unexpected result offset: {offset}")
+            return httpx.Response(
+                200,
+                json={
+                    "items": [{"fields": {"id": "r1"}}, {"fields": {"id": "r2"}}],
+                    "totalNumItems": 2,
+                },
+            )
         raise AssertionError(f"unexpected path: {path}")
 
     monkeypatch.setattr(client_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
@@ -621,7 +608,7 @@ def test_client_async_nqe_execution_flow(monkeypatch):
     assert calls["query_lookups"] == 1
     assert calls["execution_submits"] == 1
     assert calls["execution_statuses"] == 2
-    assert calls["execution_results"] == 2
+    assert calls["execution_results"] == 1
     assert sleep_calls == [0.01]
 
 
@@ -642,8 +629,8 @@ def test_client_async_nqe_execution_result_prefers_ndjson_payload(monkeypatch):
             payload = json.loads(request.content.decode("utf-8"))
             assert payload["queryId"] == "query-123"
             assert payload["commitId"] == "commit-abc"
-            assert payload["parameters"] == {}
-            assert payload["options"]["itemFormat"] == "JSON"
+            assert "parameters" not in payload
+            assert "options" not in payload
             return httpx.Response(
                 200,
                 json={
@@ -801,7 +788,7 @@ def test_client_retries_transient_http_errors_before_succeeding():
                 return httpx.Response(503, text="temporarily unavailable")
             payload = json.loads(request.content.decode("utf-8"))
             assert payload["query"] == "select { id: string }"
-            assert payload["parameters"] == {}
+            assert "parameters" not in payload
             return httpx.Response(
                 200,
                 json={
@@ -875,58 +862,3 @@ def test_client_rejects_auth_failures_without_retry():
     assert calls["nqe_runs"] == 1
 
 
-def test_client_detects_stalled_full_page_pagination():
-    _require_client()
-    calls = {"nqe_runs": 0, "execution_results": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        if path == "/api/networks/net-1/snapshots/latestProcessed":
-            return httpx.Response(200, json={"id": "snap-2", "state": "processed"})
-        if path == "/api/networks/net-1/nqe-executions":
-            calls["nqe_runs"] += 1
-            return httpx.Response(
-                200,
-                json={
-                    "executionKey": "execution-inline",
-                    "status": "COMPLETED",
-                    "outcome": "OK",
-                },
-            )
-        if path == "/api/networks/net-1/nqe-executions/execution-inline/result":
-            calls["execution_results"] += 1
-            offset = int(request.url.params.get("offset", "0"))
-            assert int(request.url.params.get("limit", "0")) == 1
-            if offset in (0, 1):
-                return httpx.Response(
-                    200,
-                    json={"items": [{"fields": {"id": "r1"}}]},
-                )
-            raise AssertionError(f"unexpected result offset: {offset}")
-        raise AssertionError(f"unexpected path: {path}")
-
-    client = ForwardClient(
-        ForwardConnectionSettings(
-            base_url="https://fwd.example",
-            username="alice",
-            password="secret",
-            network_id="net-1",
-            nqe_page_size=1,
-            nqe_identical_full_page_streak_limit=1,
-            nqe_fetch_all_max_pages=4,
-        ),
-        transport=httpx.MockTransport(handler),
-    )
-
-    with pytest.raises(
-        ForwardClientError,
-        match="pagination did not advance; repeated identical pages were returned",
-    ):
-        client.run_nqe_query(
-            query_spec=ForwardQuerySpec(query_text="select { id: string }"),
-            fetch_all=True,
-            limit=1,
-        )
-
-    assert calls["nqe_runs"] == 1
-    assert calls["execution_results"] == 2

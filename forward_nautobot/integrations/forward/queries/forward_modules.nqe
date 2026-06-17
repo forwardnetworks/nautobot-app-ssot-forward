@@ -13,6 +13,7 @@ isNetBoxModuleComponent(component: DevicePart) =
   component.partType == DevicePartType.FABRIC_MODULE ||
   component.partType == DevicePartType.ROUTING_ENGINE;
 
+@primaryKey(device, module_bay)
 @query
 f(forward_device_names: List<String>) =
 foreach device in network.devices
@@ -27,7 +28,7 @@ let component_serial = if isPresent(component.serialNumber) && component.serialN
 let component_description = if isPresent(component.description) && component.description != "" then component.description else null : String
 let module_bay_name = if isPresent(component_name) then component_name else if isPresent(component_part_id) then component_part_id else replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
 let module_model = if isPresent(component_part_id) then component_part_id else if isPresent(component_description) then component_description else module_bay_name
-select distinct {
+select {
   device: device.name,
   module_bay: truncate(module_bay_name, 100),
   manufacturer: toString(device.platform.vendor),

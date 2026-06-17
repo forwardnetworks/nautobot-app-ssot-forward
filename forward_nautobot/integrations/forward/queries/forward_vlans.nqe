@@ -4,6 +4,7 @@
  * @contract-version v1
  */
 
+@primaryKey(site, vid)
 @query
 f(forward_location_names: List<String>) =
 foreach device in network.devices
@@ -14,7 +15,7 @@ where isEmpty(forward_location_names)
   || device.locationName in forward_location_names
 foreach ni in device.networkInstances
 foreach vlan in ni.vlans
-select distinct {
+select {
   site: if isPresent(device.locationName) then device.locationName else "",
   vid: vlan.vlanId,
   name: if isPresent(vlan.name) then vlan.name else join(" ", ["VLAN", toString(vlan.vlanId)]),

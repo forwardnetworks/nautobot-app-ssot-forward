@@ -519,3 +519,59 @@ def test_planner_reuses_loaded_target_state_for_each_slice(monkeypatch):
     assert plan.write_summary["create"] == 2
     assert plan.source.count("locations") == 1
     assert plan.source.count("devices") == 1
+
+
+def test_planner_skips_nqe_when_snapshot_unchanged(monkeypatch):
+    _require_planner()
+
+    nqe_call_count = {"count": 0}
+
+    def _resolve_snapshot(self, network_id, snapshot_id):
+        return "snap-2"
+
+    def _should_not_query(self, **kwargs):
+        nqe_call_count["count"] += 1
+        raise AssertionError("NQE must not be called when snapshot is unchanged")
+
+    monkeypatch.setattr(ForwardClient, "resolve_snapshot_id", _resolve_snapshot)
+    monkeypatch.setattr(ForwardClient, "run_nqe_query", _should_not_query)
+    monkeypatch.setattr(ForwardClient, "run_nqe_diff", _should_not_query)
+    monkeypatch.setattr(
+        ForwardClient,
+        "get_nqe_repository_query_index",
+        lambda self, **kwargs: {"by_path": {}},
+    )
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=_mock_transport(),
+    )
+    planner = ForwardIngestionPlanner(client)
+    plan = planner.run(
+        ForwardIngestionRequest(
+            connection=ForwardConnectionSettings(
+                base_url="https://fwd.example",
+                username="alice",
+                password="secret",
+                network_id="net-1",
+            ),
+            model_names=("devices",),
+            fetch_all=False,
+            connection_profile=ForwardConnectionProfileRecord(
+                name="primary",
+                network_id="net-1",
+                last_snapshot_id="snap-2",
+            ),
+        )
+    )
+
+    assert nqe_call_count["count"] == 0
+    assert plan.reports == ()
+    assert plan.diff_detail["skipped"] is True
+    assert plan.diff_detail["current_snapshot_id"] == "snap-2"
+    assert plan.diff_detail["baseline_snapshot_id"] == "snap-2"

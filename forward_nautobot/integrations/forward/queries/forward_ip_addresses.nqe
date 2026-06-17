@@ -184,10 +184,11 @@ routed_vlan_ipv6(forward_device_names: List<String>) =
     status: "active"
   };
 
+@primaryKey(device, interface, address, vrf)
 @query
 f(forward_device_names: List<String>) =
 foreach row in (
   subinterface_ipv4(forward_device_names) + subinterface_ipv6(forward_device_names) + bridge_ipv4(forward_device_names) + bridge_ipv6(forward_device_names) + tunnel_ipv4(forward_device_names) + tunnel_ipv6(forward_device_names)
     + routed_vlan_ipv4(forward_device_names) + routed_vlan_ipv6(forward_device_names)
 )
-select distinct row;
+select row;

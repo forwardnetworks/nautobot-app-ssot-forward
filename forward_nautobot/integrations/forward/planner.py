@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 from dataclasses import dataclass
 from typing import Any
 from importlib import resources
@@ -9,6 +11,7 @@ from importlib import resources
 from .adapters import ForwardSourceAdapter
 from .adapters import NautobotTargetAdapter
 from .client import ForwardClient
+from .exceptions import ForwardClientError
 from ...models import ForwardConnectionProfileRecord
 from .models import ForwardConnectionSettings
 from .models import ForwardQuerySpec
@@ -31,7 +34,6 @@ class ForwardIngestionRequest:
     fetch_all: bool = True
     limit: int | None = None
     offset: int = 0
-    item_format: str = "JSON"
     snapshot_id: str | None = None
     connection_profile: ForwardConnectionProfileRecord | None = None
 
@@ -72,8 +74,23 @@ class ForwardIngestionPlanner:
 
     @staticmethod
     def _query_text_for(mapping: ForwardModelMapping) -> str:
+        """Return inline-safe NQE text from a bundled .nqe file.
+
+        The inline execution API accepts @query and function signatures but rejects
+        @primaryKey. Strip only @primaryKey; caller must supply the same parameters
+        via ForwardQuerySpec.parameters so the API can bind them.
+        """
         package = resources.files("forward_nautobot.integrations.forward.queries")
-        return (package / mapping.forward_query_file).read_text(encoding="utf-8")
+        raw = (package / mapping.forward_query_file).read_text(encoding="utf-8")
+        lines = raw.splitlines()
+        # Drop leading /* ... */ doc comment block.
+        if lines and lines[0].startswith("/*"):
+            end = next((i for i, ln in enumerate(lines) if ln.rstrip().endswith("*/")), None)
+            if end is not None:
+                lines = lines[end + 1:]
+        # Strip only @primaryKey (file-format only; inline API rejects it).
+        filtered = [ln for ln in lines if not ln.strip().startswith("@primaryKey")]
+        return "\n".join(filtered).strip()
 
     @staticmethod
     def _row_key(mapping: ForwardModelMapping, row: dict[str, Any]) -> str:
@@ -271,6 +288,142 @@ class ForwardIngestionPlanner:
             tuple(diff_entries),
         )
 
+    @staticmethod
+    def _compute_tiers(
+        mappings: tuple[ForwardModelMapping, ...],
+    ) -> list[list[ForwardModelMapping]]:
+        """Group topologically-ordered mappings into parallel execution tiers.
+
+        A tier boundary is created for both explicit `depends_on` structural
+        dependencies and implicit `query_parameters` source-slug dependencies,
+        since both require the source adapter to be populated before the query
+        parameters can be computed.
+        """
+        selected_slugs = {m.slug for m in mappings}
+        levels: dict[str, int] = {}
+        for m in mappings:
+            param_source_deps = {
+                src_slug
+                for src_slugs in m.query_parameters.values()
+                for src_slug in src_slugs
+            }
+            all_deps = set(m.depends_on) | param_source_deps
+            selected_deps = [d for d in all_deps if d in selected_slugs]
+            levels[m.slug] = 1 + max((levels[d] for d in selected_deps), default=0)
+        max_level = max(levels.values(), default=1)
+        tiers: list[list[ForwardModelMapping]] = [[] for _ in range(max_level)]
+        for m in mappings:
+            tiers[levels[m.slug] - 1].append(m)
+        return tiers
+
+    def _fetch_slice(
+        self,
+        *,
+        mapping: ForwardModelMapping,
+        parameters: dict[str, list[str]],
+        network_id: str,
+        current_snapshot_id: str,
+        baseline_snapshot_id: str,
+        limit: int,
+        offset: int,
+        fetch_all: bool,
+    ) -> tuple[
+        list[dict[str, Any]],  # rows
+        str,                    # query_mode
+        str,                    # query_reference
+        str,                    # resolved_query_reference
+        tuple[str, ...],        # notes
+        bool,                   # is_diff
+        dict[str, Any] | None,  # diff_fallback_detail
+    ]:
+        """Run the network I/O for a single slice. Thread-safe — no shared state writes."""
+        query_spec = ForwardQuerySpec(
+            query_path=mapping.forward_query_path,
+            parameters=parameters,
+        )
+        query_mode = "bundled_nqe"
+        query_reference = mapping.forward_query_file
+        notes: tuple[str, ...] = (f"Loaded {mapping.slug} rows from bundled NQE.",)
+        resolved_query_reference = ""
+        diff_fallback_detail: dict[str, Any] | None = None
+        is_diff = False
+
+        try:
+            resolved_query_spec = self.client.resolve_query_spec(query_spec)
+        except ForwardClientError as exc:
+            query_text = self._query_text_for(mapping)
+            rows = self.client.run_nqe_query(
+                query_spec=ForwardQuerySpec(query_text=query_text, parameters=parameters),
+                network_id=network_id,
+                snapshot_id=current_snapshot_id,
+                limit=limit,
+                offset=offset,
+                fetch_all=fetch_all,
+            )
+            query_mode = "bundled_nqe_inline"
+            query_reference = mapping.forward_query_file
+            notes = notes + (
+                f"Bundled query path resolution failed ({type(exc).__name__}: {exc}); "
+                "inline NQE was used.",
+            )
+            return rows, query_mode, query_reference, resolved_query_reference, notes, is_diff, diff_fallback_detail
+
+        query_mode = "bundled_nqe_query_id"
+        resolved_query_reference = resolved_query_spec.reference
+        if (
+            baseline_snapshot_id
+            and baseline_snapshot_id != current_snapshot_id
+            and (resolved_query_spec.resolved_query_id or resolved_query_spec.query_id)
+        ):
+            try:
+                rows = self.client.run_nqe_diff(
+                    query_id=resolved_query_spec.resolved_query_id
+                    or resolved_query_spec.query_id
+                    or "",
+                    commit_id=resolved_query_spec.resolved_commit_id
+                    or resolved_query_spec.commit_id,
+                    parameters=resolved_query_spec.parameters,
+                    before_snapshot_id=baseline_snapshot_id,
+                    after_snapshot_id=current_snapshot_id,
+                    limit=limit,
+                    offset=offset,
+                    fetch_all=fetch_all,
+                )
+                query_mode = "bundled_nqe_query_id_diff"
+                is_diff = True
+            except Exception as diff_error:
+                notes = notes + (
+                    "Diff execution failed; using query ID-backed full query instead.",
+                )
+                rows = self.client.run_nqe_query(
+                    query_spec=resolved_query_spec,
+                    network_id=network_id,
+                    snapshot_id=current_snapshot_id,
+                    limit=limit,
+                    offset=offset,
+                    fetch_all=fetch_all,
+                )
+                query_mode = "bundled_nqe_query_id"
+                diff_fallback_detail = {
+                    "mode": "snapshot",
+                    "query_mode": query_mode,
+                    "query_reference": query_reference,
+                    "fallback": "diff-unavailable",
+                    "error": str(diff_error),
+                    "rows": rows,
+                }
+        else:
+            rows = self.client.run_nqe_query(
+                query_spec=resolved_query_spec,
+                network_id=network_id,
+                snapshot_id=current_snapshot_id,
+                limit=limit,
+                offset=offset,
+                fetch_all=fetch_all,
+            )
+
+        return rows, query_mode, query_reference, resolved_query_reference, notes, is_diff, diff_fallback_detail
+
     def run(self, request: ForwardIngestionRequest) -> ForwardIngestionPlan:
         connection = request.connection
         network_id = str(connection.network_id or "").strip()
@@ -287,6 +440,34 @@ class ForwardIngestionPlanner:
         baseline_snapshot_id = str(
             getattr(request.connection_profile, "last_snapshot_id", "") or ""
         ).strip()
+        if baseline_snapshot_id and baseline_snapshot_id == current_snapshot_id:
+            empty_summary: dict[str, int] = {
+                "create": 0, "update": 0, "no-change": 0, "blocked": 0, "deleted": 0,
+            }
+            return ForwardIngestionPlan(
+                source=source,
+                target=target,
+                reports=(),
+                write_plan=ForwardWritePlan(
+                    configuration_status=self._configuration_status(
+                        profile=request.connection_profile,
+                        model_mappings=model_mappings,
+                    ),
+                    slice_policies={
+                        m.slug: self._slice_policy_for(m) for m in model_mappings
+                    },
+                ),
+                diff_summary=empty_summary,
+                diff_detail={
+                    "mode": "snapshot",
+                    "baseline_snapshot_id": baseline_snapshot_id,
+                    "current_snapshot_id": current_snapshot_id,
+                    "delta_models": [],
+                    "skipped": True,
+                    "reason": "snapshot unchanged since last sync",
+                    "slices": {},
+                },
+            )
         aggregate_operations: list[ForwardWriteOperation] = []
         aggregate_summary = {
             "create": 0,
@@ -298,79 +479,77 @@ class ForwardIngestionPlanner:
         diff_detail_slices: dict[str, Any] = {}
         delta_models: list[str] = []
         limit = request.limit or connection.nqe_page_size
-        for mapping in model_mappings:
-            query_spec = ForwardQuerySpec(
-                query_path=mapping.forward_query_path,
-                parameters=self._query_parameters_for(mapping, source),
-            )
-            query_mode = "bundled_nqe"
-            query_reference = mapping.forward_query_file
-            query_contract_version = mapping.contract_version
-            rows: list[dict[str, Any]] = []
-            report_rows: list[dict[str, Any]] = []
-            notes: tuple[str, ...] = (f"Loaded {mapping.slug} rows from bundled NQE.",)
-            resolved_query_reference = ""
-            slice_write_plan: ForwardWritePlan
-            slice_diff_summary: dict[str, int]
-            slice_diff_detail: dict[str, Any]
-            diff_fallback_detail: dict[str, Any] | None = None
-            try:
-                resolved_query_spec = self.client.resolve_query_spec(query_spec)
-                query_mode = "bundled_nqe_query_id"
-                resolved_query_reference = resolved_query_spec.reference
-                if (
-                    baseline_snapshot_id
-                    and baseline_snapshot_id != current_snapshot_id
-                    and (resolved_query_spec.resolved_query_id or resolved_query_spec.query_id)
-                ):
-                    try:
-                        rows = self.client.run_nqe_diff(
-                            query_id=resolved_query_spec.resolved_query_id
-                            or resolved_query_spec.query_id
-                            or "",
-                            commit_id=resolved_query_spec.resolved_commit_id
-                            or resolved_query_spec.commit_id,
-                            parameters=resolved_query_spec.parameters,
-                            before_snapshot_id=baseline_snapshot_id,
-                            after_snapshot_id=current_snapshot_id,
-                            limit=limit,
-                            offset=request.offset,
-                            fetch_all=request.fetch_all,
-                        )
-                        query_mode = "bundled_nqe_query_id_diff"
-                    except Exception as diff_error:
-                        notes = notes + (
-                            "Diff execution failed; using query ID-backed full query instead.",
-                        )
-                        rows = self.client.run_nqe_query(
-                            query_spec=resolved_query_spec,
+
+        tiers = self._compute_tiers(model_mappings)
+
+        # Warm the NQE query index cache before parallel tier dispatch.
+        # All bundled mappings share org:head — one fetch fills the cache so
+        # N parallel workers don't race on the same endpoint.
+        try:
+            self.client.get_nqe_repository_query_index(repository="org", commit_id="head")
+        except ForwardClientError:
+            pass  # per-slice inline fallback handles resolution failures
+
+        for tier in tiers:
+            # Compute query parameters for each slice in this tier (reads source, sequential).
+            tier_params = {
+                m.slug: self._query_parameters_for(m, source) for m in tier
+            }
+
+            # Fetch rows for each slice in parallel (pure network I/O, no shared writes).
+            if len(tier) > 1:
+                with ThreadPoolExecutor(max_workers=len(tier)) as pool:
+                    futures = {
+                        pool.submit(
+                            self._fetch_slice,
+                            mapping=m,
+                            parameters=tier_params[m.slug],
                             network_id=network_id,
-                            snapshot_id=current_snapshot_id,
+                            current_snapshot_id=current_snapshot_id,
+                            baseline_snapshot_id=baseline_snapshot_id,
                             limit=limit,
                             offset=request.offset,
                             fetch_all=request.fetch_all,
-                            item_format=request.item_format,
-                        )
-                        query_mode = "bundled_nqe_query_id"
-                        diff_fallback_detail = {
-                            "mode": "snapshot",
-                            "query_mode": query_mode,
-                            "query_reference": query_reference,
-                            "fallback": "diff-unavailable",
-                            "error": str(diff_error),
-                            "rows": rows,
-                        }
-                else:
-                    rows = self.client.run_nqe_query(
-                        query_spec=resolved_query_spec,
+                        ): m
+                        for m in tier
+                    }
+                    tier_fetch: dict[str, tuple] = {}
+                    for future in as_completed(futures):
+                        slug = futures[future].slug
+                        tier_fetch[slug] = future.result()
+            else:
+                m = tier[0]
+                tier_fetch = {
+                    m.slug: self._fetch_slice(
+                        mapping=m,
+                        parameters=tier_params[m.slug],
                         network_id=network_id,
-                        snapshot_id=current_snapshot_id,
+                        current_snapshot_id=current_snapshot_id,
+                        baseline_snapshot_id=baseline_snapshot_id,
                         limit=limit,
                         offset=request.offset,
                         fetch_all=request.fetch_all,
-                        item_format=request.item_format,
                     )
-                if query_mode.endswith("_diff"):
+                }
+
+            # Process results in topo order (mutates source — must be sequential).
+            for mapping in tier:
+                (
+                    rows,
+                    query_mode,
+                    query_reference,
+                    resolved_query_reference,
+                    notes,
+                    is_diff,
+                    diff_fallback_detail,
+                ) = tier_fetch[mapping.slug]
+                query_contract_version = mapping.contract_version
+                report_rows: list[dict[str, Any]] = []
+                slice_write_plan: ForwardWritePlan
+                slice_diff_summary: dict[str, int]
+                slice_diff_detail: dict[str, Any]
+
+                if is_diff:
                     slice_write_plan, slice_diff_summary, slice_diff_detail, source_rows, report_rows = self._build_delta_plan(
                         mapping=mapping,
                         rows=rows,
@@ -408,64 +587,33 @@ class ForwardIngestionPlanner:
                     }
                     if diff_fallback_detail is not None:
                         diff_detail_slices[mapping.slug].update(diff_fallback_detail)
-            except Exception:
-                query_text = self._query_text_for(mapping)
-                rows = self.client.run_nqe_query(
-                    query_spec=ForwardQuerySpec(query_text=query_text),
-                    network_id=network_id,
-                    snapshot_id=current_snapshot_id,
-                    limit=limit,
-                    offset=request.offset,
-                    fetch_all=request.fetch_all,
-                    item_format=request.item_format,
-                )
-                query_mode = "bundled_nqe_inline"
-                query_reference = mapping.forward_query_file
-                source.load_rows(mapping.slug, rows)
-                slice_source = source.slice_for_model(mapping.slug)
-                slice_target = target.slice_for_model(mapping.slug)
-                slice_write_plan, slice_diff_summary, slice_diff_detail = self._build_full_plan(
-                    source=slice_source,
-                    target=slice_target,
-                    profile=request.connection_profile,
-                )
-                report_rows = rows
-                notes = notes + ("Bundled query path resolution failed; inline NQE was used.",)
-                diff_detail_slices[mapping.slug] = {
-                    "mode": "snapshot",
-                    "query_mode": query_mode,
-                    "query_reference": query_reference,
-                    "resolved_query_reference": resolved_query_reference,
-                    "rows": rows,
-                    "diff_summary": dict(slice_diff_summary),
-                    "diff_detail": slice_diff_detail,
-                    "summary": dict(slice_write_plan.summary),
-                }
-            aggregate_operations.extend(slice_write_plan.operations)
-            aggregate_summary = self._merge_counts(aggregate_summary, slice_write_plan.summary)
-            reports.append(
-                ForwardSyncReport(
-                    mode="preview",
-                    source_url=connection.base_url.rstrip("/"),
-                    network_id=network_id,
-                    snapshot_id=current_snapshot_id,
-                    baseline_snapshot_id=baseline_snapshot_id,
-                    query_mode=query_mode,
-                    query_reference=query_reference,
-                    query_contract_version=query_contract_version,
-                    row_count=len(report_rows or rows),
-                    rows=tuple(report_rows or rows),
-                    planned_models=(mapping.slug,),
-                    notes=(
-                        *notes,
-                        *(
-                            (f"Diff baseline snapshot: {baseline_snapshot_id}.",)
-                            if query_mode.endswith("_diff") and baseline_snapshot_id
-                            else ()
+
+                aggregate_operations.extend(slice_write_plan.operations)
+                aggregate_summary = self._merge_counts(aggregate_summary, slice_write_plan.summary)
+                reports.append(
+                    ForwardSyncReport(
+                        mode="preview",
+                        source_url=connection.base_url.rstrip("/"),
+                        network_id=network_id,
+                        snapshot_id=current_snapshot_id,
+                        baseline_snapshot_id=baseline_snapshot_id,
+                        query_mode=query_mode,
+                        query_reference=query_reference,
+                        query_contract_version=query_contract_version,
+                        row_count=len(report_rows or rows),
+                        rows=tuple(report_rows or rows),
+                        planned_models=(mapping.slug,),
+                        notes=(
+                            *notes,
+                            *(
+                                (f"Diff baseline snapshot: {baseline_snapshot_id}.",)
+                                if query_mode.endswith("_diff") and baseline_snapshot_id
+                                else ()
+                            ),
                         ),
-                    ),
+                    )
                 )
-            )
+
         write_plan = ForwardWritePlan(
             operations=tuple(aggregate_operations),
             summary=aggregate_summary,
