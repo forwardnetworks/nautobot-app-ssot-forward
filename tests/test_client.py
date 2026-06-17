@@ -891,7 +891,7 @@ def test_request_nqe_execution_sends_sort_keys(monkeypatch):
         network_id="net-1",
         snapshot_id="snap-1",
     )
-    assert captured_payload.get("sortKeys") == ["name"]
+    assert captured_payload.get("sortKeys") == [{"columnName": "name", "order": "ASC"}]
     assert "parameters" not in captured_payload
 
 

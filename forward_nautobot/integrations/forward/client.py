@@ -763,7 +763,9 @@ class ForwardClient:
         else:
             payload["query"] = query_spec.query_text
         if query_spec.sort_keys:
-            payload["sortKeys"] = list(query_spec.sort_keys)
+            payload["sortKeys"] = [
+                {"columnName": col, "order": "ASC"} for col in query_spec.sort_keys
+            ]
         response = self._request(
             "POST",
             f"/networks/{quote(network_id, safe='')}/nqe-executions",

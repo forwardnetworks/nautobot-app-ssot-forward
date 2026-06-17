@@ -577,9 +577,8 @@ def test_planner_skips_nqe_when_snapshot_unchanged(monkeypatch):
     assert plan.diff_detail["baseline_snapshot_id"] == "snap-2"
 
 
-def test_planner_does_not_send_sort_keys_by_default(monkeypatch):
-    """sortKeys not wired automatically — Forward API requires SortBy objects (not strings).
-    The ForwardQuerySpec.sort_keys field remains available for callers to populate explicitly."""
+def test_planner_propagates_sort_keys_to_nqe(monkeypatch):
+    """Planner passes mapping.identity_fields as sortKeys for stable pagination."""
     _require_planner()
     captured_sort_keys: list = []
 
@@ -624,7 +623,7 @@ def test_planner_does_not_send_sort_keys_by_default(monkeypatch):
         )
     )
     assert plan is not None
-    assert captured_sort_keys == [], f"sort_keys unexpectedly set: {captured_sort_keys}"
+    assert "name" in captured_sort_keys, f"sort_keys not propagated; captured: {captured_sort_keys}"
 
 
 def test_planner_diff_fallback_narrows_exception(monkeypatch):

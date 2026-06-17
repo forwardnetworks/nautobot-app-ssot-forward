@@ -340,6 +340,7 @@ class ForwardIngestionPlanner:
         query_spec = ForwardQuerySpec(
             query_path=mapping.forward_query_path,
             parameters=parameters,
+            sort_keys=mapping.identity_fields,
         )
         query_mode = "bundled_nqe"
         query_reference = mapping.forward_query_file
@@ -356,6 +357,7 @@ class ForwardIngestionPlanner:
                 query_spec=ForwardQuerySpec(
                     query_text=query_text,
                     parameters=parameters,
+                    sort_keys=mapping.identity_fields,
                 ),
                 network_id=network_id,
                 snapshot_id=current_snapshot_id,
