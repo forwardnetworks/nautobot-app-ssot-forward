@@ -23,8 +23,7 @@ def _ensure_django():
 
 
 def test_profile_form_exposes_expected_fields():
-    from forward_nautobot.forms import FORWARD_PROFILE_FORM_FIELDS
-    from forward_nautobot.forms import ForwardConnectionProfileForm
+    from forward_nautobot.forms import FORWARD_PROFILE_FORM_FIELDS, ForwardConnectionProfileForm
 
     _ensure_django()
     form = ForwardConnectionProfileForm()

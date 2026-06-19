@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import dataclass, field
 from typing import Any
 
 from .models import WRITE_DEFAULT_FIELD_NAMES
@@ -42,6 +41,7 @@ DELETE_POLICY_CHOICES: tuple[tuple[str, str], ...] = (
     ("delete", "Delete missing rows"),
 )
 
+
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -52,6 +52,7 @@ def _coerce_bool(value: Any) -> bool:
 try:
     from django import forms
     from django.apps import apps as _django_apps
+
     if not _django_apps.ready:
         raise ModuleNotFoundError("Django app registry is not ready")
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
@@ -100,14 +101,18 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
                 for part in str(self.data.get("enabled_models") or "").split(",")
                 if part.strip()
             )
-            self.cleaned_data["is_default"] = str(self.data.get("is_default") or "").strip().lower() in {
+            self.cleaned_data["is_default"] = str(
+                self.data.get("is_default") or ""
+            ).strip().lower() in {
                 "1",
                 "true",
                 "yes",
                 "on",
                 "y",
             }
-            if self.cleaned_data["delete_policy"] not in {value for value, _ in DELETE_POLICY_CHOICES}:
+            if self.cleaned_data["delete_policy"] not in {
+                value for value, _ in DELETE_POLICY_CHOICES
+            }:
                 self.errors.setdefault("delete_policy", []).append("Select a valid choice.")
             return not self.errors
 
@@ -143,15 +148,9 @@ else:
         def clean_enabled_models(self):
             raw_value = self.cleaned_data.get("enabled_models", "")
             if isinstance(raw_value, (list, tuple)):
+                return tuple(str(item).strip() for item in raw_value if str(item).strip())
                 return tuple(
-                    str(item).strip()
-                    for item in raw_value
-                    if str(item).strip()
-                )
-                return tuple(
-                    part.strip()
-                    for part in str(raw_value or "").split(",")
-                    if part.strip()
+                    part.strip() for part in str(raw_value or "").split(",") if part.strip()
                 )
 
         def clean_verify_tls(self):

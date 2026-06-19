@@ -3,15 +3,13 @@ from __future__ import annotations
 import sys
 from zipfile import ZipFile
 
-from scripts import check_sensitive_content
-from scripts import check_wheel_contents
+from scripts import check_sensitive_content, check_wheel_contents
 
 
 def test_sensitive_content_gate_blocks_customer_identifiers(tmp_path, capsys, monkeypatch):
     sample = tmp_path / "customer-note.txt"
     sample.write_text(
-        "customer network_id: 248592\n"
-        "contact support+noreply@forwardnetworks.com\n",
+        "customer network_id: 248592\ncontact support+noreply@forwardnetworks.com\n",
         encoding="utf-8",
     )
 

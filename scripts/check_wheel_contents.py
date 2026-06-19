@@ -12,7 +12,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from forward_nautobot.integrations.forward.queries import QUERY_FILENAMES
 
-
 EXPECTED_FILES = (
     "forward_nautobot/forms.py",
     "forward_nautobot/models.py",
@@ -47,9 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         names = set(wheel.namelist())
 
     failures = [
-        f"missing wheel file: {expected}"
-        for expected in EXPECTED_FILES
-        if expected not in names
+        f"missing wheel file: {expected}" for expected in EXPECTED_FILES if expected not in names
     ]
 
     if failures:

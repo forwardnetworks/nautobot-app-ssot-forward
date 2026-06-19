@@ -1,5 +1,4 @@
-from forward_nautobot.views import ForwardHomeView
-from forward_nautobot.views import ForwardStatusView
+from forward_nautobot.views import ForwardHomeView, ForwardStatusView
 
 
 def _content_text(response):

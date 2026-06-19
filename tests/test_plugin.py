@@ -1,9 +1,9 @@
-import pytest
-from types import SimpleNamespace
 from importlib import import_module
+from types import SimpleNamespace
 
-from forward_nautobot import config
-from forward_nautobot import menu
+import pytest
+
+from forward_nautobot import config, menu
 from forward_nautobot.integrations.forward import CORE_MODEL_SLUGS
 from forward_nautobot.models import ForwardConnectionProfileRecord
 
@@ -14,8 +14,10 @@ except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
 
 try:
     import forward_nautobot.integrations.forward.jobs as jobs_module
-    from forward_nautobot.integrations.forward.jobs import _build_ingestion_request
-    from forward_nautobot.integrations.forward.jobs import ForwardInventoryDataSource
+    from forward_nautobot.integrations.forward.jobs import (
+        ForwardInventoryDataSource,
+        _build_ingestion_request,
+    )
 except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
     jobs_module = None
     _build_ingestion_request = None
@@ -39,7 +41,11 @@ def _require_jobs_module():
         _build_ingestion_request = None
         ForwardInventoryDataSource = None
 
-    if jobs_module is None or ForwardInventoryDataSource is None or _build_ingestion_request is None:
+    if (
+        jobs_module is None
+        or ForwardInventoryDataSource is None
+        or _build_ingestion_request is None
+    ):
         pytest.skip("Forward job tests require the full dependency set.")
 
 
@@ -308,6 +314,7 @@ def test_build_ingestion_request_uses_profile_models_and_selected_overrides(monk
 
 def test_ssot_lookup_object_resolves_real_objects(monkeypatch):
     _require_jobs_module()
+
     class _FakeManager:
         def __init__(self, *records):
             self.records = list(records)

@@ -5,8 +5,8 @@ import importlib
 import os
 import sys
 import types
-from types import SimpleNamespace
 from collections import namedtuple
+from types import SimpleNamespace
 
 import pytest
 

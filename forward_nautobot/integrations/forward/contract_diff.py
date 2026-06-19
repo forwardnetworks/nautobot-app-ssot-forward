@@ -7,10 +7,11 @@ from pathlib import Path
 from subprocess import run
 from typing import Any
 
-from .queries import QUERY_CONTRACT_FIELDS
-from .queries import QUERY_CONTRACT_VERSIONS
-from .queries import QUERY_FILENAMES
-from .queries import get_query_contract_field_sets
+from .queries import (
+    QUERY_CONTRACT_VERSIONS,
+    QUERY_FILENAMES,
+    get_query_contract_field_sets,
+)
 
 
 @dataclass(slots=True)
@@ -157,4 +158,3 @@ def get_query_contract_field_sets_from_text(query_text: str) -> tuple[tuple[str,
     if current_fields:
         field_sets.append(tuple(current_fields))
     return tuple(field_sets)
-

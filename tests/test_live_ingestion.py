@@ -5,15 +5,18 @@ from importlib import resources
 
 import pytest
 
-from forward_nautobot.integrations.forward.adapters import ForwardSourceAdapter
-from forward_nautobot.integrations.forward.adapters import NautobotTargetAdapter
+from forward_nautobot.integrations.forward.adapters import (
+    ForwardSourceAdapter,
+    NautobotTargetAdapter,
+)
 from forward_nautobot.integrations.forward.exceptions import ForwardClientError
-from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
-from forward_nautobot.integrations.forward.models import ForwardQuerySpec
-from forward_nautobot.integrations.forward.models import ForwardSyncReport
-from forward_nautobot.integrations.forward.models import ForwardSyncSpec
-from forward_nautobot.integrations.forward.registry import get_model_mapping
-from forward_nautobot.integrations.forward.registry import get_model_mappings
+from forward_nautobot.integrations.forward.models import (
+    ForwardConnectionSettings,
+    ForwardQuerySpec,
+    ForwardSyncReport,
+    ForwardSyncSpec,
+)
+from forward_nautobot.integrations.forward.registry import get_model_mapping, get_model_mappings
 from forward_nautobot.integrations.forward.support import build_support_bundle
 
 try:
@@ -22,8 +25,10 @@ except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
     ForwardClient = None
 
 try:
-    from forward_nautobot.integrations.forward.planner import ForwardIngestionPlanner
-    from forward_nautobot.integrations.forward.planner import ForwardIngestionRequest
+    from forward_nautobot.integrations.forward.planner import (
+        ForwardIngestionPlanner,
+        ForwardIngestionRequest,
+    )
     from forward_nautobot.integrations.forward.runner import ForwardSyncRunner
 except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
     ForwardIngestionPlanner = None
@@ -613,12 +618,12 @@ def test_live_preview_sync_smoke_is_bounded(monkeypatch):
     assert preview_report.planned_models == ("locations",)
     assert sync_report.planned_models == ("locations",)
     assert calls.get(("GET", "/nqe/repos/org/commits/head/queries"), 0) == 0
-    assert calls[("GET", "/networks/%s/snapshots/latestProcessed" % settings.network_id)] == 1
-    assert calls[("GET", "/snapshots/%s/metrics" % preview_report.snapshot_id)] == 1
-    assert calls[("GET", "/networks/%s/snapshots" % settings.network_id)] == 1
-    assert calls[("POST", "/networks/%s/nqe-executions" % settings.network_id)] == 2
+    assert calls[("GET", f"/networks/{settings.network_id}/snapshots/latestProcessed")] == 1
+    assert calls[("GET", f"/snapshots/{preview_report.snapshot_id}/metrics")] == 1
+    assert calls[("GET", f"/networks/{settings.network_id}/snapshots")] == 1
+    assert calls[("POST", f"/networks/{settings.network_id}/nqe-executions")] == 2
     assert any(
-        method == "GET" and path.startswith("/networks/%s/nqe-executions/" % settings.network_id)
+        method == "GET" and path.startswith(f"/networks/{settings.network_id}/nqe-executions/")
         for method, path in calls
     )
 
@@ -667,11 +672,11 @@ def test_live_preview_sync_smoke_for_devices_is_bounded(monkeypatch):
     assert preview_report.planned_models == ("devices",)
     assert sync_report.planned_models == ("devices",)
     assert calls.get(("GET", "/nqe/repos/org/commits/head/queries"), 0) == 0
-    assert calls[("GET", "/networks/%s/snapshots/latestProcessed" % settings.network_id)] == 1
-    assert calls[("GET", "/snapshots/%s/metrics" % preview_report.snapshot_id)] == 1
-    assert calls[("GET", "/networks/%s/snapshots" % settings.network_id)] == 1
-    assert calls[("POST", "/networks/%s/nqe-executions" % settings.network_id)] == 2
+    assert calls[("GET", f"/networks/{settings.network_id}/snapshots/latestProcessed")] == 1
+    assert calls[("GET", f"/snapshots/{preview_report.snapshot_id}/metrics")] == 1
+    assert calls[("GET", f"/networks/{settings.network_id}/snapshots")] == 1
+    assert calls[("POST", f"/networks/{settings.network_id}/nqe-executions")] == 2
     assert any(
-        method == "GET" and path.startswith("/networks/%s/nqe-executions/" % settings.network_id)
+        method == "GET" and path.startswith(f"/networks/{settings.network_id}/nqe-executions/")
         for method, path in calls
     )

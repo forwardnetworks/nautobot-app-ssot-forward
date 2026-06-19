@@ -12,19 +12,23 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
 from .navigation import menu
 
 if TYPE_CHECKING:  # pragma: no cover - import-time hinting only
-    from .forms import DELETE_POLICY_CHOICES
-    from .forms import FORWARD_PROFILE_FORM_FIELDS
-    from .forms import ForwardConnectionProfileForm
-    from .models import ForwardConnectionProfile
-    from .models import ForwardConnectionProfileRecord
-    from .models import ForwardPluginConfiguration
+    from .forms import (
+        DELETE_POLICY_CHOICES,
+        FORWARD_PROFILE_FORM_FIELDS,
+        ForwardConnectionProfileForm,
+    )
+    from .models import (
+        ForwardConnectionProfile,
+        ForwardConnectionProfileRecord,
+        ForwardPluginConfiguration,
+    )
 
 
 class ForwardNautobotConfig(NautobotAppConfig):
     name = "forward_nautobot"
     verbose_name = "Forward Networks SSoT"
     description = "Sync Forward Networks data into Nautobot through the SSoT app."
-    version = "0.1.1"
+    version = "0.2.0"
     author = "Forward Networks"
     author_email = "support@forwardnetworks.com"
     base_url = "forward"
@@ -36,6 +40,7 @@ class ForwardNautobotConfig(NautobotAppConfig):
 
 
 config = ForwardNautobotConfig
+
 
 def __getattr__(name: str):
     if name in {
@@ -65,6 +70,7 @@ def __getattr__(name: str):
         )
         return globals()[name]
     raise AttributeError(name)
+
 
 __all__ = [
     "ForwardConnectionProfile",

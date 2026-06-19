@@ -8,7 +8,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_PATTERN_FILE = ".sensitive-patterns.local.txt"
 
@@ -129,22 +128,14 @@ def _tracked_files(repo_root: Path) -> list[Path]:
         cwd=repo_root,
         capture_output=True,
     )
-    return [
-        repo_root / Path(item.decode("utf-8"))
-        for item in result.stdout.split(b"\x00")
-        if item
-    ]
+    return [repo_root / Path(item.decode("utf-8")) for item in result.stdout.split(b"\x00") if item]
 
 
 def _iter_files(paths: list[Path]) -> list[Path]:
     files: list[Path] = []
     for path in paths:
         if path.is_dir():
-            files.extend(
-                nested
-                for nested in sorted(path.rglob("*"))
-                if nested.is_file()
-            )
+            files.extend(nested for nested in sorted(path.rglob("*")) if nested.is_file())
             continue
         if path.is_file():
             files.append(path)
@@ -265,9 +256,7 @@ def main() -> int:
         )
 
     if args.all_history:
-        findings.extend(
-            _scan_commit_history(repo_root=REPO_ROOT, patterns=patterns)
-        )
+        findings.extend(_scan_commit_history(repo_root=REPO_ROOT, patterns=patterns))
 
     for rev_arg in args.rev_list:
         findings.extend(

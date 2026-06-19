@@ -39,9 +39,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    model_names = tuple(
-        part.strip() for part in str(args.models or "").split(",") if part.strip()
-    )
+    model_names = tuple(part.strip() for part in str(args.models or "").split(",") if part.strip())
     result = run_fixture_dry_run(
         args.fixture,
         model_names=model_names or None,

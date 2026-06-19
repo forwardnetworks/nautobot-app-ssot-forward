@@ -1,27 +1,19 @@
 """Forward API client for Nautobot sync jobs."""
 
 import json
-from dataclasses import dataclass
-from dataclasses import replace
-from dataclasses import field
 import time
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
-from .exceptions import ForwardClientError
-from .exceptions import ForwardConfigurationError
-from .models import ForwardConnectionSettings
-from .models import ForwardQuerySpec
-from .models import LATEST_PROCESSED_SNAPSHOT
-
+from .exceptions import ForwardClientError, ForwardConfigurationError
+from .models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings, ForwardQuerySpec
 
 TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
-NQE_ASYNC_RESULT_ACCEPT = (
-    "application/x-ndjson, application/jsonl;q=0.9, application/json;q=0.1"
-)
+NQE_ASYNC_RESULT_ACCEPT = "application/x-ndjson, application/jsonl;q=0.9, application/json;q=0.1"
 
 
 @dataclass(slots=True)
@@ -48,12 +40,8 @@ class ForwardClient:
     _snapshots_cache: dict[tuple[str, bool, int], list[dict[str, Any]]] = field(
         default_factory=dict, init=False, repr=False
     )
-    _last_request_completed_at: float | None = field(
-        default=None, init=False, repr=False
-    )
-    _http_client: httpx.Client | None = field(
-        default=None, init=False, repr=False
-    )
+    _last_request_completed_at: float | None = field(default=None, init=False, repr=False)
+    _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
 
     def _get_http_client(self) -> httpx.Client:
         if self._http_client is None:
@@ -140,18 +128,18 @@ class ForwardClient:
             except httpx.HTTPStatusError as exc:
                 self._last_request_completed_at = time.monotonic()
                 status_code = exc.response.status_code
-                if status_code not in TRANSIENT_HTTP_STATUS_CODES or attempt >= self.settings.retries:
+                if (
+                    status_code not in TRANSIENT_HTTP_STATUS_CODES
+                    or attempt >= self.settings.retries
+                ):
                     raise ForwardClientError(
-                        f"Forward API request failed with HTTP {status_code}: "
-                        f"{exc.response.text}"
+                        f"Forward API request failed with HTTP {status_code}: {exc.response.text}"
                     ) from exc
                 last_error = exc
             except (httpx.TimeoutException, httpx.RequestError) as exc:
                 self._last_request_completed_at = time.monotonic()
                 if attempt >= self.settings.retries:
-                    raise ForwardClientError(
-                        f"Forward API request failed: {exc}"
-                    ) from exc
+                    raise ForwardClientError(f"Forward API request failed: {exc}") from exc
                 last_error = exc
 
         raise ForwardClientError("Forward API request failed.") from last_error
@@ -473,15 +461,13 @@ class ForwardClient:
         response: httpx.Response,
     ) -> tuple[list[dict[str, Any]], int | None]:
         content_type = str(
-            ((getattr(response, "headers", {}) or {}).get("content-type") or "")
+            (getattr(response, "headers", {}) or {}).get("content-type") or ""
         ).lower()
         if "jsonl" in content_type or "ndjson" in content_type:
             return self._parse_nqe_lines(getattr(response, "text", ""))
         return self._parse_nqe_records(response.json() or {})
 
-    def _parse_nqe_diff_rows(
-        self, data: dict[str, Any]
-    ) -> tuple[list[dict[str, Any]], int | None]:
+    def _parse_nqe_diff_rows(self, data: dict[str, Any]) -> tuple[list[dict[str, Any]], int | None]:
         rows = data.get("rows") or []
         parsed_rows: list[dict[str, Any]] = []
         for row in rows:
@@ -579,9 +565,7 @@ class ForwardClient:
             ) from exc
         except (httpx.TimeoutException, httpx.RequestError) as exc:
             self._last_request_completed_at = time.monotonic()
-            raise ForwardClientError(
-                f"Forward API request failed: {exc}"
-            ) from exc
+            raise ForwardClientError(f"Forward API request failed: {exc}") from exc
         return rows
 
     def run_nqe_query(
@@ -597,9 +581,7 @@ class ForwardClient:
         network_id = str(network_id or self.settings.network_id or "").strip()
         if not network_id:
             raise ForwardConfigurationError("Forward network ID is required.")
-        snapshot_id = self.resolve_snapshot_id(
-            network_id, snapshot_id or self.settings.snapshot_id
-        )
+        snapshot_id = self.resolve_snapshot_id(network_id, snapshot_id or self.settings.snapshot_id)
         query_spec = self.resolve_query_spec(query_spec)
         limit = int(limit or self.settings.nqe_page_size)
         if limit < 1:
@@ -631,9 +613,7 @@ class ForwardClient:
         if not query_id:
             raise ForwardConfigurationError("Forward query ID is required.")
         if not before_snapshot_id or not after_snapshot_id:
-            raise ForwardConfigurationError(
-                "Both before and after snapshot IDs are required."
-            )
+            raise ForwardConfigurationError("Both before and after snapshot IDs are required.")
         limit = int(limit or self.settings.nqe_page_size)
         if limit < 1:
             raise ForwardConfigurationError("Forward NQE page size must be at least 1.")
@@ -774,9 +754,7 @@ class ForwardClient:
         )
         data = response.json() or {}
         if not isinstance(data, dict):
-            raise ForwardClientError(
-                "Forward NQE execution response returned an invalid payload."
-            )
+            raise ForwardClientError("Forward NQE execution response returned an invalid payload.")
         execution_key = str(data.get("executionKey") or "").strip()
         if not execution_key:
             raise ForwardClientError(

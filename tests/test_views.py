@@ -1,12 +1,14 @@
 from types import SimpleNamespace
 
-from forward_nautobot.models import ForwardConnectionProfileRecord
 import forward_nautobot.views as views
-from forward_nautobot.views import ForwardDiagnosticsView
-from forward_nautobot.views import ForwardConfigurationView
-from forward_nautobot.views import ForwardHomeView
-from forward_nautobot.views import ForwardSliceDetailView
-from forward_nautobot.views import ForwardStatusView
+from forward_nautobot.models import ForwardConnectionProfileRecord
+from forward_nautobot.views import (
+    ForwardConfigurationView,
+    ForwardDiagnosticsView,
+    ForwardHomeView,
+    ForwardSliceDetailView,
+    ForwardStatusView,
+)
 
 
 def _content_text(response):

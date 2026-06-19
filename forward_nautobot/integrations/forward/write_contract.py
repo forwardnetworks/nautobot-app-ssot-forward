@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ...models import DELETE_POLICIES
-from ...models import ForwardConnectionProfileRecord
+from ...models import DELETE_POLICIES, ForwardConnectionProfileRecord
 from .registry import ForwardModelMapping
 
 

@@ -1,7 +1,9 @@
-from forward_nautobot.integrations.forward.queries import QUERY_CONTRACT_VERSIONS
-from forward_nautobot.integrations.forward.queries import QUERY_FILENAMES
-from forward_nautobot.integrations.forward.queries import QUERY_CONTRACT_FIELDS
-from forward_nautobot.integrations.forward.queries import get_query_contract_field_sets
+from forward_nautobot.integrations.forward.queries import (
+    QUERY_CONTRACT_FIELDS,
+    QUERY_CONTRACT_VERSIONS,
+    QUERY_FILENAMES,
+    get_query_contract_field_sets,
+)
 from forward_nautobot.integrations.forward.registry import CORE_MODEL_MAPPINGS
 
 

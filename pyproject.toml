@@ -30,6 +30,23 @@ markers = [
     "integration: live Forward API tests that require credentials and network access",
 ]
 
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["forward_nautobot/integrations/forward/queries"]
+
+[tool.ruff.lint]
+# E/F pyflakes+pycodestyle, I import-sort, UP pyupgrade, B bugbear.
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]  # line length handled by ruff-format, not enforced hard
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+# Gate scripts insert REPO_ROOT on sys.path before importing the package.
+"scripts/*" = ["E402"]
+# Nautobot config files use `from nautobot.settings import *`.
+"nautobot_config.py" = ["F403", "F405"]
+
 [build-system]
 requires = ["poetry-core>=1.9.0"]
 build-backend = "poetry.core.masonry.api"

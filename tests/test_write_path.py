@@ -1,5 +1,7 @@
-from forward_nautobot.integrations.forward.adapters import ForwardSourceAdapter
-from forward_nautobot.integrations.forward.adapters import NautobotTargetAdapter
+from forward_nautobot.integrations.forward.adapters import (
+    ForwardSourceAdapter,
+    NautobotTargetAdapter,
+)
 from forward_nautobot.integrations.forward.write_path import ForwardWritePlanner
 
 

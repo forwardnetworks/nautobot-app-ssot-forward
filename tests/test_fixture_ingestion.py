@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 
 from forward_nautobot.fixture_support import fixture_path
-from forward_nautobot.integrations.forward.adapters import ForwardSourceAdapter
-from forward_nautobot.integrations.forward.adapters import NautobotTargetAdapter
-from forward_nautobot.integrations.forward.registry import CORE_MODEL_MAPPINGS
 from forward_nautobot.integrations.forward import CORE_MODEL_SLUGS
+from forward_nautobot.integrations.forward.adapters import (
+    ForwardSourceAdapter,
+    NautobotTargetAdapter,
+)
+from forward_nautobot.integrations.forward.registry import CORE_MODEL_MAPPINGS
 
 
 def _identity_key(mapping, row):

@@ -1,7 +1,6 @@
 """Registry of Forward-to-Nautobot model slices."""
 
-from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import dataclass, field
 
 from .exceptions import ForwardConfigurationError
 
@@ -221,9 +220,7 @@ def _topologically_ordered_model_mappings(
     )
     unknown = sorted({name for name in selected_names if name not in CORE_MODEL_LOOKUP})
     if unknown:
-        raise ForwardConfigurationError(
-            f"Unknown Forward model slice(s): {', '.join(unknown)}"
-        )
+        raise ForwardConfigurationError(f"Unknown Forward model slice(s): {', '.join(unknown)}")
 
     selected_set = set(selected_names)
     ordered: list[ForwardModelMapping] = []
@@ -234,9 +231,7 @@ def _topologically_ordered_model_mappings(
         if slug in permanent:
             return
         if slug in visiting:
-            raise ForwardConfigurationError(
-                f"Forward model dependency cycle detected at `{slug}`."
-            )
+            raise ForwardConfigurationError(f"Forward model dependency cycle detected at `{slug}`.")
         visiting.add(slug)
         mapping = CORE_MODEL_LOOKUP[slug]
         for dependency in mapping.depends_on:

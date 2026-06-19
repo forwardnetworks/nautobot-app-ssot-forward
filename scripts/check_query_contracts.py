@@ -8,10 +8,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from forward_nautobot.integrations.forward.queries import QUERY_CONTRACT_FIELDS
-from forward_nautobot.integrations.forward.queries import QUERY_CONTRACT_VERSIONS
-from forward_nautobot.integrations.forward.queries import QUERY_FILENAMES
-from forward_nautobot.integrations.forward.queries import get_query_contract_field_sets
+from forward_nautobot.integrations.forward.queries import (
+    QUERY_CONTRACT_FIELDS,
+    QUERY_CONTRACT_VERSIONS,
+    QUERY_FILENAMES,
+    get_query_contract_field_sets,
+)
 
 
 def main() -> int:
@@ -20,7 +22,9 @@ def main() -> int:
         expected = QUERY_CONTRACT_FIELDS[filename]
         field_sets = get_query_contract_field_sets(filename)
         if not field_sets:
-            failures.append(f"{filename}: no contract fields could be parsed from the bundled query")
+            failures.append(
+                f"{filename}: no contract fields could be parsed from the bundled query"
+            )
             continue
         if any(field_set != expected for field_set in field_sets):
             failures.append(

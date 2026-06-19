@@ -1,9 +1,10 @@
-from forward_nautobot.integrations.forward.models import ForwardSnapshotInfo
-from forward_nautobot.integrations.forward.models import ForwardSyncReport
-from forward_nautobot.integrations.forward.support import classify_failure
-from forward_nautobot.integrations.forward.support import build_support_bundle
-from forward_nautobot.integrations.forward.support import build_support_bundle_pair
-from forward_nautobot.integrations.forward.support import redact_support_bundle_payload
+from forward_nautobot.integrations.forward.models import ForwardSnapshotInfo, ForwardSyncReport
+from forward_nautobot.integrations.forward.support import (
+    build_support_bundle,
+    build_support_bundle_pair,
+    classify_failure,
+    redact_support_bundle_payload,
+)
 
 
 def test_support_bundle_preserves_raw_sample_rows():
@@ -19,9 +20,7 @@ def test_support_bundle_preserves_raw_sample_rows():
             {"name": "device-1", "location": "alpha"},
             {"name": "device-2", "location": "beta"},
         ),
-        available_snapshots=(
-            ForwardSnapshotInfo(id="snap-1", label="snap-1"),
-        ),
+        available_snapshots=(ForwardSnapshotInfo(id="snap-1", label="snap-1"),),
         planned_models=("devices",),
         notes=("ssot-sync",),
     )

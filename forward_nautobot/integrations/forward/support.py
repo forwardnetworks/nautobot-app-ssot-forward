@@ -1,8 +1,7 @@
 """Support-bundle helpers for the Forward integration."""
 
-from dataclasses import dataclass
-from dataclasses import field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from .models import ForwardSyncReport
@@ -73,11 +72,9 @@ SHARING_PROFILES: dict[str, dict[str, set[str]]] = {
             "missing_defaults",
             "missing_row_policy",
             "model_counts",
-            "current",
             "baseline",
             "changed_files",
             "entries",
-            "planned_models",
             "query_contract_version",
             "query_mode",
             "query_reference",
@@ -85,12 +82,7 @@ SHARING_PROFILES: dict[str, dict[str, set[str]]] = {
             "snapshot_metrics",
             "source_url",
             "sharing_profile",
-            "last_run_at",
-            "last_failure",
-            "last_support_bundle",
-            "last_run",
             "needs_attention_profiles",
-            "update",
         },
         "denylist": REDACTION_KEYS | {"source_url"},
     },
@@ -288,7 +280,7 @@ def build_support_bundle(
         )
     )
     return ForwardSupportBundle(
-        generated_at=datetime.now(timezone.utc).isoformat(),
+        generated_at=datetime.now(UTC).isoformat(),
         mode=report.mode,
         source_url=report.source_url,
         network_id=report.network_id,

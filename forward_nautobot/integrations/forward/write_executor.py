@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import dataclass, field
 from typing import Any
 
 try:
@@ -16,11 +15,10 @@ except Exception:  # pragma: no cover - local compatibility import path
     ContentType = None
     slugify = None
 
-from .support import classify_failure
-from .registry import get_model_mapping
-from .write_path import ForwardWriteOperation
-from .write_path import ForwardWritePlan
 from ...models import ForwardConnectionProfileRecord
+from .registry import get_model_mapping
+from .support import classify_failure
+from .write_path import ForwardWriteOperation, ForwardWritePlan
 
 
 def _slugify(value: str) -> str:
@@ -109,10 +107,14 @@ class ForwardNautobotWriteBackend:
         if manager is None:
             raise LookupError(f"Nautobot model {app_label}.{model_name} has no manager.")
         obj, _created = manager.get_or_create(name=value)
-        if content_type_target is not None and hasattr(obj, "content_types") and ContentType is not None:
+        if (
+            content_type_target is not None
+            and hasattr(obj, "content_types")
+            and ContentType is not None
+        ):
             target_model = self.resolve_model(*content_type_target)
             content_type = ContentType.objects.get_for_model(target_model)
-            manager = getattr(obj, "content_types")
+            manager = obj.content_types
             if hasattr(manager, "add"):
                 manager.add(content_type)
         return obj
@@ -124,8 +126,8 @@ class ForwardNautobotWriteBackend:
         if not fields:
             return set()
         names: set[str] = set()
-        for field in fields:
-            name = getattr(field, "name", "")
+        for model_field in fields:
+            name = getattr(model_field, "name", "")
             if name:
                 names.add(str(name))
         return names
@@ -136,9 +138,7 @@ class ForwardNautobotWriteBackend:
         if not field_names:
             return dict(updates)
         return {
-            field_name: value
-            for field_name, value in updates.items()
-            if field_name in field_names
+            field_name: value for field_name, value in updates.items() if field_name in field_names
         }
 
     @classmethod
@@ -168,7 +168,7 @@ class ForwardNautobotWriteBackend:
     @staticmethod
     def _instance_value(value: Any) -> Any:
         if hasattr(value, "name"):
-            return getattr(value, "name")
+            return value.name
         return value
 
     def _mapping_for_slug(self, model_slug: str):
@@ -206,7 +206,7 @@ class ForwardNautobotWriteBackend:
             except Exception:
                 return ()
         if hasattr(manager, "records"):
-            return list(getattr(manager, "records").values())
+            return list(manager.records.values())
         return ()
 
     def _mark_inactive(self, instance):
@@ -271,7 +271,7 @@ class ForwardNautobotWriteBackend:
                         planned_action=delete_policy,
                         status="error",
                         message=str(exc),
-                )
+                    )
                 )
         return tuple(items)
 
@@ -355,7 +355,9 @@ class ForwardNautobotWriteBackend:
             message="No matching Nautobot object exists for the delete operation.",
         )
 
-    def _upsert_location(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+    def _upsert_location(
+        self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord
+    ):
         row = dict(operation.fields)
         name = str(row.get("name") or "").strip()
         if not name:
@@ -392,7 +394,9 @@ class ForwardNautobotWriteBackend:
         )
         return obj, created
 
-    def _upsert_platform(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+    def _upsert_platform(
+        self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord
+    ):
         row = dict(operation.fields)
         name = str(row.get("name") or "").strip()
         manufacturer_name = str(row.get("manufacturer") or row.get("vendor") or "").strip()
@@ -412,7 +416,9 @@ class ForwardNautobotWriteBackend:
         self._sync_fields(obj, {"manufacturer": manufacturer})
         return obj, created
 
-    def _upsert_device_type(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+    def _upsert_device_type(
+        self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord
+    ):
         row = dict(operation.fields)
         manufacturer_name = str(row.get("manufacturer") or row.get("vendor") or "").strip()
         model_name = str(row.get("model") or row.get("name") or "").strip()
@@ -435,7 +441,9 @@ class ForwardNautobotWriteBackend:
         self._sync_fields(obj, defaults)
         return obj, created
 
-    def _upsert_device(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+    def _upsert_device(
+        self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord
+    ):
         row = dict(operation.fields)
         name = str(row.get("name") or "").strip()
         location_name = str(row.get("location") or "").strip()
@@ -691,7 +699,9 @@ class ForwardNautobotWriteBackend:
         )
         return obj
 
-    def _resolve_inventory_item(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+    def _resolve_inventory_item(
+        self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord
+    ):
         row = dict(operation.fields)
         device = self._resolve_device(row["device"])
         role = self._get_or_create_named(
@@ -742,7 +752,9 @@ class ForwardNautobotWriteBackend:
         )
         return obj, created
 
-    def _resolve_module(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+    def _resolve_module(
+        self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord
+    ):
         row = dict(operation.fields)
         device = self._resolve_device(row["device"])
         module_bay_name = str(row.get("module_bay") or "").strip()
@@ -802,7 +814,9 @@ class ForwardNautobotWriteBackend:
         )
         return obj, created
 
-    def _upsert_interface(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+    def _upsert_interface(
+        self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord
+    ):
         row = dict(operation.fields)
         device = self._resolve_device(row["device"])
         name = str(row.get("name") or "").strip()
@@ -832,7 +846,9 @@ class ForwardNautobotWriteBackend:
         self._sync_fields(obj, defaults)
         return obj, created
 
-    def _upsert_vlan(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+    def _upsert_vlan(
+        self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord
+    ):
         row = dict(operation.fields)
         vid = int(row.get("vid"))
         location = self._resolve_location(row.get("site"), profile)
@@ -852,7 +868,9 @@ class ForwardNautobotWriteBackend:
         self._sync_fields(obj, updates)
         return obj, created
 
-    def _upsert_vrf(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+    def _upsert_vrf(
+        self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord
+    ):
         row = dict(operation.fields)
         name = str(row.get("name") or "").strip()
         if not name:
@@ -870,7 +888,9 @@ class ForwardNautobotWriteBackend:
         self._sync_fields(obj, defaults)
         return obj, created
 
-    def _upsert_prefix(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+    def _upsert_prefix(
+        self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord
+    ):
         row = dict(operation.fields)
         prefix_value = str(row.get("prefix") or "").strip()
         if not prefix_value:
@@ -892,7 +912,9 @@ class ForwardNautobotWriteBackend:
         self._sync_fields(obj, updates)
         return obj, created
 
-    def _upsert_ip_address(self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord):
+    def _upsert_ip_address(
+        self, operation: ForwardWriteOperation, profile: ForwardConnectionProfileRecord
+    ):
         row = dict(operation.fields)
         device = self._resolve_device(row["device"])
         interface = self._resolve_interface(device, row["interface"])
@@ -1043,7 +1065,9 @@ class ForwardNautobotWriteExecutor:
         failure_classification = (
             "clean"
             if summary["error"] == 0 and summary["blocked"] == 0
-            else "row-blocked" if summary["blocked"] else "error"
+            else "row-blocked"
+            if summary["blocked"]
+            else "error"
         )
         if profile is not None and not profile.write_ready:
             failure_classification = classify_failure(

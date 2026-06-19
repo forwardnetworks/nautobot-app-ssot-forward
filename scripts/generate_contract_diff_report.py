@@ -11,9 +11,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from forward_nautobot.integrations.forward.contract_diff import diff_contract_snapshots
-from forward_nautobot.integrations.forward.contract_diff import snapshot_contracts_from_git_ref
-from forward_nautobot.integrations.forward.contract_diff import snapshot_current_contracts
+from forward_nautobot.integrations.forward.contract_diff import (
+    diff_contract_snapshots,
+    snapshot_contracts_from_git_ref,
+    snapshot_current_contracts,
+)
 
 
 def main(argv: list[str] | None = None) -> int:

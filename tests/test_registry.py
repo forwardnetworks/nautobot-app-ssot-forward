@@ -1,6 +1,8 @@
-from forward_nautobot.integrations.forward.registry import CORE_MODEL_MAPPINGS
-from forward_nautobot.integrations.forward.registry import get_model_mappings
-from forward_nautobot.integrations.forward.registry import CORE_MODEL_SLUGS
+from forward_nautobot.integrations.forward.registry import (
+    CORE_MODEL_MAPPINGS,
+    CORE_MODEL_SLUGS,
+    get_model_mappings,
+)
 
 
 def test_registry_entries_expose_dispatch_metadata():

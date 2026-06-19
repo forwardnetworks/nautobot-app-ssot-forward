@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_PATHS = [
@@ -93,7 +92,10 @@ def _check_required_text(failures: list[str]) -> None:
 
 
 def _check_plan_headings(failures: list[str]) -> None:
-    plan_path = REPO_ROOT / "docs/03_Plans/active/2026-06-11-forward-nautobot-production-readiness-checklist.md"
+    plan_path = (
+        REPO_ROOT
+        / "docs/03_Plans/active/2026-06-11-forward-nautobot-production-readiness-checklist.md"
+    )
     if not plan_path.exists():
         return
     text = plan_path.read_text(encoding="utf-8")
@@ -103,13 +105,17 @@ def _check_plan_headings(failures: list[str]) -> None:
 
 
 def _check_roadmap_headings(failures: list[str]) -> None:
-    roadmap_path = REPO_ROOT / "docs/03_Plans/active/2026-06-11-forward-nautobot-future-improvements.md"
+    roadmap_path = (
+        REPO_ROOT / "docs/03_Plans/active/2026-06-11-forward-nautobot-future-improvements.md"
+    )
     if not roadmap_path.exists():
         return
     text = roadmap_path.read_text(encoding="utf-8")
     for heading in ROADMAP_REQUIRED_HEADINGS:
         if heading not in text:
-            failures.append(f"{roadmap_path.relative_to(REPO_ROOT)} must include heading: {heading}")
+            failures.append(
+                f"{roadmap_path.relative_to(REPO_ROOT)} must include heading: {heading}"
+            )
 
 
 def main() -> int:

@@ -11,9 +11,11 @@ except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
 
 try:
     from forward_nautobot.integrations.forward.client import ForwardClient
-    from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
-    from forward_nautobot.integrations.forward.models import ForwardQuerySpec
-    from forward_nautobot.integrations.forward.models import ForwardSyncSpec
+    from forward_nautobot.integrations.forward.models import (
+        ForwardConnectionSettings,
+        ForwardQuerySpec,
+        ForwardSyncSpec,
+    )
     from forward_nautobot.integrations.forward.runner import ForwardSyncRunner
 
     from .test_client import _mock_transport
@@ -80,7 +82,7 @@ def _counting_transport(calls):
                             "path": "/forward_nautobot_validation/forward_locations",
                             "queryId": "query-456",
                             "lastCommit": {"id": "commit-def"},
-                        }
+                        },
                     ]
                 },
             )

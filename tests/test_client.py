@@ -4,12 +4,16 @@ import pytest
 
 try:
     import httpx
-    from forward_nautobot.integrations.forward.client import ForwardClient
+
     import forward_nautobot.integrations.forward.client as client_module
+    from forward_nautobot.integrations.forward.client import ForwardClient
     from forward_nautobot.integrations.forward.exceptions import ForwardClientError
-    from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
-    from forward_nautobot.integrations.forward.models import ForwardQuerySpec
+    from forward_nautobot.integrations.forward.models import (
+        ForwardConnectionSettings,
+        ForwardQuerySpec,
+    )
 except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
+
     class _HttpxStub:
         class Request:  # pragma: no cover - import-time placeholder only
             pass
@@ -311,9 +315,7 @@ def test_client_normalizes_query_path_when_resolving():
     )
 
     rows = client.run_nqe_query(
-        query_spec=ForwardQuerySpec(
-            query_path="forward_nautobot_validation/forward_devices"
-        ),
+        query_spec=ForwardQuerySpec(query_path="forward_nautobot_validation/forward_devices"),
         fetch_all=False,
     )
 
@@ -345,7 +347,7 @@ def test_client_caches_query_resolution_for_repeated_runs():
                             "path": "/forward_nautobot_validation/forward_locations",
                             "queryId": "query-456",
                             "lastCommit": {"id": "commit-def"},
-                        }
+                        },
                     ]
                 },
             )
@@ -501,15 +503,11 @@ def test_client_binds_multiple_query_paths_from_one_repository_index():
     )
 
     devices = client.run_nqe_query(
-        query_spec=ForwardQuerySpec(
-            query_path="/forward_nautobot_validation/forward_devices"
-        ),
+        query_spec=ForwardQuerySpec(query_path="/forward_nautobot_validation/forward_devices"),
         fetch_all=False,
     )
     locations = client.run_nqe_query(
-        query_spec=ForwardQuerySpec(
-            query_path="/forward_nautobot_validation/forward_locations"
-        ),
+        query_spec=ForwardQuerySpec(query_path="/forward_nautobot_validation/forward_locations"),
         fetch_all=False,
     )
 
@@ -596,9 +594,7 @@ def test_client_async_nqe_execution_flow(monkeypatch):
     )
 
     rows = client.run_nqe_query_async(
-        query_spec=ForwardQuerySpec(
-            query_path="/forward_nautobot_validation/forward_devices"
-        ),
+        query_spec=ForwardQuerySpec(query_path="/forward_nautobot_validation/forward_devices"),
         fetch_all=True,
         limit=1,
         poll_interval_seconds=0.01,
@@ -690,9 +686,7 @@ def test_client_async_nqe_execution_result_prefers_ndjson_payload(monkeypatch):
     )
 
     rows = client.run_nqe_query_async(
-        query_spec=ForwardQuerySpec(
-            query_path="/forward_nautobot_validation/forward_devices"
-        ),
+        query_spec=ForwardQuerySpec(query_path="/forward_nautobot_validation/forward_devices"),
         fetch_all=False,
     )
 
@@ -768,7 +762,19 @@ def test_client_caches_snapshot_listing_and_latest_processed_snapshot():
     latest_1 = client.get_latest_processed_snapshot_id("net-1")
     latest_2 = client.get_latest_processed_snapshot_id("net-1")
 
-    assert snapshots_1 == snapshots_2 == [{"id": "snap-1", "state": "archived", "created_at": "2026-06-09T00:00:00Z", "processed_at": "", "label": "snap-1 | archived | 2026-06-09T00:00:00Z"}]
+    assert (
+        snapshots_1
+        == snapshots_2
+        == [
+            {
+                "id": "snap-1",
+                "state": "archived",
+                "created_at": "2026-06-09T00:00:00Z",
+                "processed_at": "",
+                "label": "snap-1 | archived | 2026-06-09T00:00:00Z",
+            }
+        ]
+    )
     assert latest_1 == latest_2 == "snap-2"
     assert calls["snapshot_listings"] == 1
     assert calls["latest_processed"] == 1
@@ -916,9 +922,10 @@ def test_request_nqe_execution_omits_sort_keys_when_empty(monkeypatch):
         transport=httpx.MockTransport(handler),
     )
     client.request_nqe_execution(
-        query_spec=ForwardQuerySpec(query_text="foreach device in network.devices select { name: device.name }"),
+        query_spec=ForwardQuerySpec(
+            query_text="foreach device in network.devices select { name: device.name }"
+        ),
         network_id="net-1",
         snapshot_id="snap-1",
     )
     assert "sortKeys" not in captured_payload
-

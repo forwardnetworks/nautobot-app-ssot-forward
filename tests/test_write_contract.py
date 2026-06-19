@@ -1,6 +1,6 @@
+from forward_nautobot.integrations.forward.registry import CORE_MODEL_MAPPINGS
 from forward_nautobot.integrations.forward.write_contract import ForwardWriteContractAdvisor
 from forward_nautobot.models import ForwardConnectionProfileRecord
-from forward_nautobot.integrations.forward.registry import CORE_MODEL_MAPPINGS
 
 
 def test_locations_are_blocked_until_location_defaults_are_set():

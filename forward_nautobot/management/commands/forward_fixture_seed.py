@@ -7,6 +7,7 @@ import json
 try:
     from django.core.management.base import BaseCommand
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+
     class _Stdout:
         def write(self, message: str) -> None:
             print(message)
@@ -19,9 +20,8 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
         def __init__(self) -> None:
             self.stdout = _Stdout()
 
-from ...fixture_support import fixture_path
-from ...fixture_support import fixture_payload
-from ...fixture_support import seed_profile
+
+from ...fixture_support import fixture_path, fixture_payload, seed_profile
 
 
 class Command(BaseCommand):

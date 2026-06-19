@@ -1,10 +1,10 @@
 from types import SimpleNamespace
 
 import forward_nautobot.integrations.forward.adapters as adapters
-
-from forward_nautobot.integrations.forward.adapters import ForwardSourceAdapter
-from forward_nautobot.integrations.forward.adapters import NautobotTargetAdapter
 from forward_nautobot.integrations.forward import CORE_MODEL_SLUGS
+from forward_nautobot.integrations.forward.adapters import (
+    NautobotTargetAdapter,
+)
 
 
 def _assert_record_fields(record, expected):
@@ -190,94 +190,130 @@ def test_target_adapter_loads_current_orm_state_for_supported_models(monkeypatch
     assert target.count("ip_addresses") == 1
     assert target.count("inventory_items") == 1
     assert target.count("modules") == 1
-    _assert_record_fields(target.get_all("locations")[0], {
-        "name": "SITE-ALPHA",
-        "city": "Austin",
-        "country": "US",
-    })
-    _assert_record_fields(target.get_all("platforms")[0], {
-        "name": "NX-9000",
-        "manufacturer": "Cisco",
-        "device_type": "NX-9000",
-    })
-    _assert_record_fields(target.get_all("device_types")[0], {
-        "name": "NX-9000",
-        "color": "9e9e9e",
-    })
-    _assert_record_fields(target.get_all("devices")[0], {
-        "name": "device-1",
-        "location": "SITE-ALPHA",
-        "vendor": "Cisco",
-        "model": "NX-9000",
-        "device_type": "NX-9000",
-    })
-    _assert_record_fields(target.get_all("interfaces")[0], {
-        "device": "device-1",
-        "name": "Ethernet1/1",
-        "type": "1000base-t",
-        "lag": "Port-Channel1",
-        "mode": "access",
-        "untagged_vlan": 100,
-        "enabled": True,
-        "mtu": 1500,
-        "description": "uplink",
-        "speed": 1000000000,
-    })
-    _assert_record_fields(target.get_all("vlans")[0], {
-        "site": "SITE-ALPHA",
-        "vid": 100,
-        "name": "Users",
-        "status": "Active",
-    })
-    _assert_record_fields(target.get_all("vrfs")[0], {
-        "name": "BLUE",
-        "rd": "65000:1",
-        "description": "Blue VRF",
-        "enforce_unique": True,
-    })
-    _assert_record_fields(target.get_all("ipv4_prefixes")[0], {
-        "prefix": "10.0.0.0/24",
-        "vrf": "BLUE",
-        "status": "Active",
-    })
-    _assert_record_fields(target.get_all("ipv6_prefixes")[0], {
-        "prefix": "10.0.0.0/24",
-        "vrf": "BLUE",
-        "status": "Active",
-    })
-    _assert_record_fields(target.get_all("ip_addresses")[0], {
-        "device": "device-1",
-        "interface": "Ethernet1/1",
-        "address": "10.0.0.1/24",
-        "host_ip": "10.0.0.1",
-        "prefix_length": 24,
-        "vrf": "BLUE",
-        "status": "Active",
-    })
-    _assert_record_fields(target.get_all("inventory_items")[0], {
-        "device": "device-1",
-        "name": "Chassis",
-        "manufacturer": "Cisco",
-        "label": "Chassis",
-        "part_id": "PID1",
-        "serial": "SER1",
-        "asset_tag": "AT1",
-        "role": "Chassis",
-        "status": "Active",
-        "discovered": True,
-        "description": "Inventory item",
-    })
-    _assert_record_fields(target.get_all("modules")[0], {
-        "device": "device-1",
-        "module_bay": "Bay 1",
-        "manufacturer": "Cisco",
-        "model": "Line Card",
-        "part_number": "LC1",
-        "status": "Active",
-        "serial": "MSN1",
-        "asset_tag": "MAT1",
-        "description": "Module",
-    })
+    _assert_record_fields(
+        target.get_all("locations")[0],
+        {
+            "name": "SITE-ALPHA",
+            "city": "Austin",
+            "country": "US",
+        },
+    )
+    _assert_record_fields(
+        target.get_all("platforms")[0],
+        {
+            "name": "NX-9000",
+            "manufacturer": "Cisco",
+            "device_type": "NX-9000",
+        },
+    )
+    _assert_record_fields(
+        target.get_all("device_types")[0],
+        {
+            "name": "NX-9000",
+            "color": "9e9e9e",
+        },
+    )
+    _assert_record_fields(
+        target.get_all("devices")[0],
+        {
+            "name": "device-1",
+            "location": "SITE-ALPHA",
+            "vendor": "Cisco",
+            "model": "NX-9000",
+            "device_type": "NX-9000",
+        },
+    )
+    _assert_record_fields(
+        target.get_all("interfaces")[0],
+        {
+            "device": "device-1",
+            "name": "Ethernet1/1",
+            "type": "1000base-t",
+            "lag": "Port-Channel1",
+            "mode": "access",
+            "untagged_vlan": 100,
+            "enabled": True,
+            "mtu": 1500,
+            "description": "uplink",
+            "speed": 1000000000,
+        },
+    )
+    _assert_record_fields(
+        target.get_all("vlans")[0],
+        {
+            "site": "SITE-ALPHA",
+            "vid": 100,
+            "name": "Users",
+            "status": "Active",
+        },
+    )
+    _assert_record_fields(
+        target.get_all("vrfs")[0],
+        {
+            "name": "BLUE",
+            "rd": "65000:1",
+            "description": "Blue VRF",
+            "enforce_unique": True,
+        },
+    )
+    _assert_record_fields(
+        target.get_all("ipv4_prefixes")[0],
+        {
+            "prefix": "10.0.0.0/24",
+            "vrf": "BLUE",
+            "status": "Active",
+        },
+    )
+    _assert_record_fields(
+        target.get_all("ipv6_prefixes")[0],
+        {
+            "prefix": "10.0.0.0/24",
+            "vrf": "BLUE",
+            "status": "Active",
+        },
+    )
+    _assert_record_fields(
+        target.get_all("ip_addresses")[0],
+        {
+            "device": "device-1",
+            "interface": "Ethernet1/1",
+            "address": "10.0.0.1/24",
+            "host_ip": "10.0.0.1",
+            "prefix_length": 24,
+            "vrf": "BLUE",
+            "status": "Active",
+        },
+    )
+    _assert_record_fields(
+        target.get_all("inventory_items")[0],
+        {
+            "device": "device-1",
+            "name": "Chassis",
+            "manufacturer": "Cisco",
+            "label": "Chassis",
+            "part_id": "PID1",
+            "serial": "SER1",
+            "asset_tag": "AT1",
+            "role": "Chassis",
+            "status": "Active",
+            "discovered": True,
+            "description": "Inventory item",
+        },
+    )
+    _assert_record_fields(
+        target.get_all("modules")[0],
+        {
+            "device": "device-1",
+            "module_bay": "Bay 1",
+            "manufacturer": "Cisco",
+            "model": "Line Card",
+            "part_number": "LC1",
+            "status": "Active",
+            "serial": "MSN1",
+            "asset_tag": "MAT1",
+            "description": "Module",
+        },
+    )
 
 
 def test_target_adapter_slice_for_model_reuses_loaded_rows():

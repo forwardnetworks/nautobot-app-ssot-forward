@@ -3,13 +3,13 @@
 try:
     from django.utils.translation import gettext_lazy as _
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+
     def _(value):
         return value
 
+
 try:
-    from nautobot.apps.ui import PluginMenu
-    from nautobot.apps.ui import PluginMenuButton
-    from nautobot.apps.ui import PluginMenuItem
+    from nautobot.apps.ui import PluginMenu, PluginMenuButton, PluginMenuItem
 except Exception:  # pragma: no cover - local compatibility import path
     from dataclasses import dataclass
 

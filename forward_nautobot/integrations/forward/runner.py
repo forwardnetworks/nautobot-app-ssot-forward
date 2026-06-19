@@ -1,13 +1,10 @@
 """Sync runner helpers for the Forward integration."""
 
-from dataclasses import dataclass
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from .client import ForwardClient
 from .exceptions import ForwardConfigurationError
-from .models import ForwardSnapshotInfo
-from .models import ForwardSyncReport
-from .models import ForwardSyncSpec
+from .models import ForwardSnapshotInfo, ForwardSyncReport, ForwardSyncSpec
 from .registry import get_model_mappings
 
 
@@ -23,9 +20,7 @@ class ForwardSyncRunner:
         if not network_id:
             raise ForwardConfigurationError("Forward network ID is required.")
         query_spec = self.client.resolve_query_spec(spec.query)
-        snapshot_id = self.client.resolve_snapshot_id(
-            network_id, connection.snapshot_id
-        )
+        snapshot_id = self.client.resolve_snapshot_id(network_id, connection.snapshot_id)
         rows = self.client.run_nqe_query(
             query_spec=query_spec,
             network_id=network_id,
@@ -39,9 +34,7 @@ class ForwardSyncRunner:
             snapshot_metrics = self.client.get_snapshot_metrics(snapshot_id)
         except Exception:
             snapshot_metrics = {}
-        planned_models = tuple(
-            mapping.slug for mapping in get_model_mappings(spec.model_names)
-        )
+        planned_models = tuple(mapping.slug for mapping in get_model_mappings(spec.model_names))
         notes = ()
         if mode == "sync":
             notes = (
@@ -59,8 +52,7 @@ class ForwardSyncRunner:
             rows=tuple(rows),
             snapshot_metrics=snapshot_metrics,
             available_snapshots=tuple(
-                ForwardSnapshotInfo(**item)
-                for item in self._snapshot_choices(network_id)
+                ForwardSnapshotInfo(**item) for item in self._snapshot_choices(network_id)
             ),
             planned_models=planned_models,
             notes=notes,

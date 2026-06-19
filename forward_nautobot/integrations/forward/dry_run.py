@@ -7,14 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .adapters import ForwardSourceAdapter
-from .adapters import NautobotTargetAdapter
+from .adapters import ForwardSourceAdapter, NautobotTargetAdapter
 from .models import ForwardSyncReport
-from .support import ForwardSupportBundle
-from .support import build_support_bundle_pair
-from .support import classify_failure
-from .write_path import ForwardWritePlan
-from .write_path import ForwardWritePlanner
+from .support import ForwardSupportBundle, build_support_bundle_pair, classify_failure
+from .write_path import ForwardWritePlan, ForwardWritePlanner
 
 
 @dataclass(slots=True)
@@ -91,9 +87,7 @@ def run_fixture_dry_run(
         row_count=row_count,
         query_contract_version="fixture",
         rows=tuple(
-            row
-            for model_name in selected_models
-            for row in rows_by_model.get(model_name, [])
+            row for model_name in selected_models for row in rows_by_model.get(model_name, [])
         ),
         planned_models=selected_models,
         notes=("Fixture-backed dry run.",),

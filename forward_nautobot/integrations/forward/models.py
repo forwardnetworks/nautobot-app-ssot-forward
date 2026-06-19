@@ -1,11 +1,7 @@
 """Forward integration data contracts."""
 
-from dataclasses import dataclass
-from dataclasses import field
-from dataclasses import replace
-from typing import Any
-from typing import Literal
-
+from dataclasses import dataclass, field, replace
+from typing import Any, Literal
 
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
 
@@ -85,9 +81,7 @@ class ForwardSyncSpec:
     """All runtime inputs for a Forward sync request."""
 
     mode: Literal["preview", "sync"] = "preview"
-    connection: ForwardConnectionSettings = field(
-        default_factory=ForwardConnectionSettings
-    )
+    connection: ForwardConnectionSettings = field(default_factory=ForwardConnectionSettings)
     query: ForwardQuerySpec | None = None
     fetch_all: bool = True
     limit: int | None = None
@@ -159,6 +153,5 @@ class ForwardSyncReport:
     @property
     def summary(self) -> str:
         return (
-            f"{self.mode} {self.row_count} row(s) from "
-            f"{self.query_reference} on {self.snapshot_id}"
+            f"{self.mode} {self.row_count} row(s) from {self.query_reference} on {self.snapshot_id}"
         )

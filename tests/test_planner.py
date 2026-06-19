@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import forward_nautobot.integrations.forward.adapters as adapters
-
 from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
 from forward_nautobot.models import ForwardConnectionProfileRecord
 
 try:
-    from forward_nautobot.integrations.forward.client import ForwardClient
     from forward_nautobot.integrations.forward.adapters import NautobotTargetAdapter
-    from forward_nautobot.integrations.forward.planner import ForwardIngestionPlanner
-    from forward_nautobot.integrations.forward.planner import ForwardIngestionRequest
+    from forward_nautobot.integrations.forward.client import ForwardClient
+    from forward_nautobot.integrations.forward.planner import (
+        ForwardIngestionPlanner,
+        ForwardIngestionRequest,
+    )
+
     from .test_client import _mock_transport
 except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
     ForwardClient = None
@@ -593,11 +595,13 @@ def test_planner_propagates_sort_keys_to_nqe(monkeypatch):
     monkeypatch.setattr(ForwardClient, "run_nqe_query", _mock_run_nqe)
     monkeypatch.setattr(ForwardClient, "run_nqe_diff", _mock_run_nqe)
     monkeypatch.setattr(
-        ForwardClient, "resolve_query_spec",
+        ForwardClient,
+        "resolve_query_spec",
         lambda self, qs: qs,
     )
     monkeypatch.setattr(
-        ForwardClient, "get_nqe_repository_query_index",
+        ForwardClient,
+        "get_nqe_repository_query_index",
         lambda self, **kwargs: {"by_path": {}},
     )
 
@@ -641,8 +645,8 @@ def test_planner_diff_fallback_narrows_exception(monkeypatch):
         raise ForwardClientError("diff-unavailable")
 
     def _mock_resolve_query_spec(self, qs):
-        from forward_nautobot.integrations.forward.models import ForwardQuerySpec
         from dataclasses import replace
+
         return replace(qs, resolved_query_id="q-123", query_path=None, query_text="select { x: 1 }")
 
     monkeypatch.setattr(ForwardClient, "resolve_snapshot_id", _resolve_snapshot)
@@ -650,7 +654,8 @@ def test_planner_diff_fallback_narrows_exception(monkeypatch):
     monkeypatch.setattr(ForwardClient, "run_nqe_diff", _mock_run_diff)
     monkeypatch.setattr(ForwardClient, "resolve_query_spec", _mock_resolve_query_spec)
     monkeypatch.setattr(
-        ForwardClient, "get_nqe_repository_query_index",
+        ForwardClient,
+        "get_nqe_repository_query_index",
         lambda self, **kwargs: {"by_path": {}},
     )
 

@@ -3,15 +3,18 @@
 try:
     from django.urls import path
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+
     def path(route, view, name=None):  # type: ignore[no-redef]
         return (route, view, name)
 
-from .views import ForwardConfigurationView
-from .views import ForwardHomeView
-from .views import ForwardDiagnosticsView
-from .views import ForwardSliceDetailView
-from .views import ForwardStatusView
 
+from .views import (
+    ForwardConfigurationView,
+    ForwardDiagnosticsView,
+    ForwardHomeView,
+    ForwardSliceDetailView,
+    ForwardStatusView,
+)
 
 urlpatterns = [
     path("", ForwardHomeView.as_view(), name="home"),

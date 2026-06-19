@@ -6,10 +6,8 @@ import json
 from importlib.resources import files
 from typing import Any
 
-from .integrations.forward.registry import CORE_MODEL_MAPPINGS
-from .integrations.forward.registry import CORE_MODEL_SLUGS
-from .models import ForwardConnectionProfile
-from .models import ForwardConnectionProfileRecord
+from .integrations.forward.registry import CORE_MODEL_MAPPINGS, CORE_MODEL_SLUGS
+from .models import ForwardConnectionProfile, ForwardConnectionProfileRecord
 
 PROFILE_NAME = "replay"
 FIXTURE_NAME = "forward_sample_ingestion.json"
@@ -115,7 +113,7 @@ def seed_profile(manager=None) -> ForwardConnectionProfileRecord | None:
                 if getattr(other, "name", None) == profile.name:
                     continue
                 if getattr(other, "is_default", False):
-                    setattr(other, "is_default", False)
+                    other.is_default = False
                     if hasattr(other, "save"):
                         other.save(update_fields=["is_default"])
         except Exception:  # pragma: no cover - defensive

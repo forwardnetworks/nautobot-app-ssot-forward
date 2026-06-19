@@ -1,6 +1,8 @@
-from forward_nautobot.integrations.forward.contract_diff import ContractDiffEntry
-from forward_nautobot.integrations.forward.contract_diff import ContractSnapshot
-from forward_nautobot.integrations.forward.contract_diff import diff_contract_snapshots
+from forward_nautobot.integrations.forward.contract_diff import (
+    ContractDiffEntry,
+    ContractSnapshot,
+    diff_contract_snapshots,
+)
 
 
 def test_contract_diff_report_tracks_modified_contracts():
@@ -8,14 +10,23 @@ def test_contract_diff_report_tracks_modified_contracts():
         source="current",
         contracts={
             "forward_devices.nqe": {"contract_version": "v2", "fields": ("name", "location")},
-            "forward_locations.nqe": {"contract_version": "v1", "fields": ("name", "city", "country")},
+            "forward_locations.nqe": {
+                "contract_version": "v1",
+                "fields": ("name", "city", "country"),
+            },
         },
     )
     baseline = ContractSnapshot(
         source="baseline",
         contracts={
-            "forward_devices.nqe": {"contract_version": "v1", "fields": ("name", "location", "vendor")},
-            "forward_locations.nqe": {"contract_version": "v1", "fields": ("name", "city", "country")},
+            "forward_devices.nqe": {
+                "contract_version": "v1",
+                "fields": ("name", "location", "vendor"),
+            },
+            "forward_locations.nqe": {
+                "contract_version": "v1",
+                "fields": ("name", "city", "country"),
+            },
         },
     )
 

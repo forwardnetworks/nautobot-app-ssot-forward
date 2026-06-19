@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import dataclass, field
 from typing import Any
 
-from .adapters import ForwardSourceAdapter
-from .adapters import NautobotTargetAdapter
 from ...models import ForwardConnectionProfileRecord
+from .adapters import ForwardSourceAdapter, NautobotTargetAdapter
 from .registry import ForwardModelMapping
 from .write_contract import ForwardWriteContractAdvisor
 
@@ -92,8 +90,12 @@ class ForwardWritePlanner:
         configuration_status: dict[str, Any] = {
             "profile_provided": profile is not None,
             "write_ready": bool(profile.write_ready) if profile is not None else False,
-            "missing_defaults": list(profile.missing_write_defaults()) if profile is not None else [],
-            "delete_policy": getattr(profile, "delete_policy", "ignore") if profile is not None else "ignore",
+            "missing_defaults": list(profile.missing_write_defaults())
+            if profile is not None
+            else [],
+            "delete_policy": getattr(profile, "delete_policy", "ignore")
+            if profile is not None
+            else "ignore",
             "slice_policies": {
                 mapping.slug: {
                     "write_mode": mapping.write_mode,

@@ -2,27 +2,19 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any
 from importlib import resources
+from typing import Any
 
-from .adapters import ForwardSourceAdapter
-from .adapters import NautobotTargetAdapter
+from ...models import ForwardConnectionProfileRecord
+from .adapters import ForwardSourceAdapter, NautobotTargetAdapter
 from .client import ForwardClient
 from .exceptions import ForwardClientError
-from ...models import ForwardConnectionProfileRecord
-from .models import ForwardConnectionSettings
-from .models import ForwardQuerySpec
-from .models import ForwardSyncReport
-from .registry import ForwardModelMapping
-from .registry import get_model_mapping
-from .registry import get_model_mappings
+from .models import ForwardConnectionSettings, ForwardQuerySpec, ForwardSyncReport
+from .registry import ForwardModelMapping, get_model_mapping, get_model_mappings
 from .write_contract import ForwardWriteContractAdvisor
-from .write_path import ForwardWriteOperation
-from .write_path import ForwardWritePlan
-from .write_path import ForwardWritePlanner
+from .write_path import ForwardWriteOperation, ForwardWritePlan, ForwardWritePlanner
 
 
 @dataclass(slots=True)
@@ -87,7 +79,7 @@ class ForwardIngestionPlanner:
         if lines and lines[0].startswith("/*"):
             end = next((i for i, ln in enumerate(lines) if ln.rstrip().endswith("*/")), None)
             if end is not None:
-                lines = lines[end + 1:]
+                lines = lines[end + 1 :]
         # Strip only @primaryKey (file-format only; inline API rejects it).
         filtered = [ln for ln in lines if not ln.strip().startswith("@primaryKey")]
         return "\n".join(filtered).strip()
@@ -118,8 +110,12 @@ class ForwardIngestionPlanner:
         return {
             "profile_provided": profile is not None,
             "write_ready": bool(profile.write_ready) if profile is not None else False,
-            "missing_defaults": list(profile.missing_write_defaults()) if profile is not None else [],
-            "delete_policy": getattr(profile, "delete_policy", "ignore") if profile is not None else "ignore",
+            "missing_defaults": list(profile.missing_write_defaults())
+            if profile is not None
+            else [],
+            "delete_policy": getattr(profile, "delete_policy", "ignore")
+            if profile is not None
+            else "ignore",
             "slice_policies": {
                 mapping.slug: {
                     "write_mode": mapping.write_mode,
@@ -303,9 +299,7 @@ class ForwardIngestionPlanner:
         levels: dict[str, int] = {}
         for m in mappings:
             param_source_deps = {
-                src_slug
-                for src_slugs in m.query_parameters.values()
-                for src_slug in src_slugs
+                src_slug for src_slugs in m.query_parameters.values() for src_slug in src_slugs
             }
             all_deps = set(m.depends_on) | param_source_deps
             selected_deps = [d for d in all_deps if d in selected_slugs]
@@ -329,11 +323,11 @@ class ForwardIngestionPlanner:
         fetch_all: bool,
     ) -> tuple[
         list[dict[str, Any]],  # rows
-        str,                    # query_mode
-        str,                    # query_reference
-        str,                    # resolved_query_reference
-        tuple[str, ...],        # notes
-        bool,                   # is_diff
+        str,  # query_mode
+        str,  # query_reference
+        str,  # resolved_query_reference
+        tuple[str, ...],  # notes
+        bool,  # is_diff
         dict[str, Any] | None,  # diff_fallback_detail
     ]:
         """Run the network I/O for a single slice. Thread-safe — no shared state writes."""
@@ -371,7 +365,15 @@ class ForwardIngestionPlanner:
                 f"Bundled query path resolution failed ({type(exc).__name__}: {exc}); "
                 "inline NQE was used.",
             )
-            return rows, query_mode, query_reference, resolved_query_reference, notes, is_diff, diff_fallback_detail
+            return (
+                rows,
+                query_mode,
+                query_reference,
+                resolved_query_reference,
+                notes,
+                is_diff,
+                diff_fallback_detail,
+            )
 
         query_mode = "bundled_nqe_query_id"
         resolved_query_reference = resolved_query_spec.reference
@@ -429,7 +431,15 @@ class ForwardIngestionPlanner:
                 fetch_all=fetch_all,
             )
 
-        return rows, query_mode, query_reference, resolved_query_reference, notes, is_diff, diff_fallback_detail
+        return (
+            rows,
+            query_mode,
+            query_reference,
+            resolved_query_reference,
+            notes,
+            is_diff,
+            diff_fallback_detail,
+        )
 
     def run(self, request: ForwardIngestionRequest) -> ForwardIngestionPlan:
         connection = request.connection
@@ -449,7 +459,11 @@ class ForwardIngestionPlanner:
         ).strip()
         if baseline_snapshot_id and baseline_snapshot_id == current_snapshot_id:
             empty_summary: dict[str, int] = {
-                "create": 0, "update": 0, "no-change": 0, "blocked": 0, "deleted": 0,
+                "create": 0,
+                "update": 0,
+                "no-change": 0,
+                "blocked": 0,
+                "deleted": 0,
             }
             return ForwardIngestionPlan(
                 source=source,
@@ -460,9 +474,7 @@ class ForwardIngestionPlanner:
                         profile=request.connection_profile,
                         model_mappings=model_mappings,
                     ),
-                    slice_policies={
-                        m.slug: self._slice_policy_for(m) for m in model_mappings
-                    },
+                    slice_policies={m.slug: self._slice_policy_for(m) for m in model_mappings},
                 ),
                 diff_summary=empty_summary,
                 diff_detail={
@@ -499,9 +511,7 @@ class ForwardIngestionPlanner:
 
         for tier in tiers:
             # Compute query parameters for each slice in this tier (reads source, sequential).
-            tier_params = {
-                m.slug: self._query_parameters_for(m, source) for m in tier
-            }
+            tier_params = {m.slug: self._query_parameters_for(m, source) for m in tier}
 
             # Fetch rows for each slice in parallel (pure network I/O, no shared writes).
             if len(tier) > 1:
@@ -557,7 +567,13 @@ class ForwardIngestionPlanner:
                 slice_diff_detail: dict[str, Any]
 
                 if is_diff:
-                    slice_write_plan, slice_diff_summary, slice_diff_detail, source_rows, report_rows = self._build_delta_plan(
+                    (
+                        slice_write_plan,
+                        slice_diff_summary,
+                        slice_diff_detail,
+                        source_rows,
+                        report_rows,
+                    ) = self._build_delta_plan(
                         mapping=mapping,
                         rows=rows,
                         profile=request.connection_profile,
@@ -629,8 +645,7 @@ class ForwardIngestionPlanner:
                 model_mappings=model_mappings,
             ),
             slice_policies={
-                mapping.slug: self._slice_policy_for(mapping)
-                for mapping in model_mappings
+                mapping.slug: self._slice_policy_for(mapping) for mapping in model_mappings
             },
             delta_mode=bool(delta_models),
             delta_models=tuple(delta_models),

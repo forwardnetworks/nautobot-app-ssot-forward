@@ -1,10 +1,11 @@
-from forward_nautobot.fixture_support import fixture_coverage
-from forward_nautobot.fixture_support import fixture_payload
-from forward_nautobot.fixture_support import fixture_path
-from forward_nautobot.fixture_support import profile_record
-from forward_nautobot.fixture_support import seed_profile
-from forward_nautobot.integrations.forward.registry import CORE_MODEL_MAPPINGS
-from forward_nautobot.integrations.forward.registry import CORE_MODEL_SLUGS
+from forward_nautobot.fixture_support import (
+    fixture_coverage,
+    fixture_path,
+    fixture_payload,
+    profile_record,
+    seed_profile,
+)
+from forward_nautobot.integrations.forward.registry import CORE_MODEL_MAPPINGS, CORE_MODEL_SLUGS
 from forward_nautobot.management.commands.forward_fixture_seed import Command
 
 

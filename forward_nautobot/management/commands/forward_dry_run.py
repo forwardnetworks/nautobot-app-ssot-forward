@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import argparse
+import json
 from pathlib import Path
 
 try:
-    from django.core.management.base import BaseCommand
-    from django.core.management.base import CommandParser
+    from django.core.management.base import BaseCommand, CommandParser
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+
     class _Stdout:
         def write(self, message: str) -> None:
             print(message)
@@ -69,9 +69,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         fixture = options["fixture"]
         model_names = tuple(
-            part.strip()
-            for part in str(options.get("models") or "").split(",")
-            if part.strip()
+            part.strip() for part in str(options.get("models") or "").split(",") if part.strip()
         )
         result = run_fixture_dry_run(
             fixture,
@@ -90,7 +88,5 @@ class Command(BaseCommand):
         if shared_output_path is not None:
             shared_output_path = Path(shared_output_path)
             shared_output_path.parent.mkdir(parents=True, exist_ok=True)
-            shared_payload = json.dumps(
-                result.support_bundle_shared, indent=2, sort_keys=True
-            )
+            shared_payload = json.dumps(result.support_bundle_shared, indent=2, sort_keys=True)
             shared_output_path.write_text(shared_payload + "\n", encoding="utf-8")

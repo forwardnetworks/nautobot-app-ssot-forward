@@ -15,4 +15,3 @@ class ForwardClientError(ForwardError):
 
 class ForwardSyncError(ForwardError):
     """Raised when the Forward sync runner cannot complete a request."""
-

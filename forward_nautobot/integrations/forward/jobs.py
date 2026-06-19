@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
-from collections import namedtuple
-from datetime import datetime
-from dataclasses import replace
-from types import SimpleNamespace
 import re
+from collections import namedtuple
+from dataclasses import replace
+from datetime import datetime
+from types import SimpleNamespace
 
+from ...models import (
+    WRITE_DEFAULT_FIELD_NAMES,
+    ForwardConnectionProfile,
+    ForwardConnectionProfileRecord,
+)
 from .client import ForwardClient
-from ...models import ForwardConnectionProfile
-from ...models import ForwardConnectionProfileRecord
-from .models import ForwardConnectionSettings
-from .models import LATEST_PROCESSED_SNAPSHOT
-from ...models import WRITE_DEFAULT_FIELD_NAMES
-from .planner import ForwardIngestionPlanner
-from .planner import ForwardIngestionRequest
-from .registry import CORE_MODEL_MAPPINGS
-from .registry import get_model_mapping
-from .support import build_support_bundle_pair
-from .support import classify_failure
+from .models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings
+from .planner import ForwardIngestionPlanner, ForwardIngestionRequest
+from .registry import CORE_MODEL_MAPPINGS, get_model_mapping
+from .support import build_support_bundle_pair, classify_failure
 from .write_executor import ForwardNautobotWriteExecutor
 
 try:
@@ -28,12 +26,9 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
     django_apps = None
 
 try:
-    from nautobot.apps.jobs import BooleanVar
-    from nautobot.apps.jobs import ChoiceVar
-    from nautobot.apps.jobs import IntegerVar
-    from nautobot.apps.jobs import StringVar
-    from nautobot.apps.jobs import register_jobs
+    from nautobot.apps.jobs import BooleanVar, ChoiceVar, IntegerVar, StringVar, register_jobs
 except Exception:  # pragma: no cover - local compatibility import path
+
     class _Var:
         def __init__(self, *args, **kwargs):
             self.args = args
@@ -56,8 +51,7 @@ except Exception:  # pragma: no cover - local compatibility import path
 
 
 try:
-    from nautobot_ssot.jobs.base import DataMapping
-    from nautobot_ssot.jobs.base import DataSource
+    from nautobot_ssot.jobs.base import DataMapping, DataSource
 except Exception:  # pragma: no cover - local compatibility import path
     DataMapping = namedtuple(
         "DataMapping",
@@ -149,8 +143,7 @@ def _iter_persisted_profile_records() -> tuple[ForwardConnectionProfileRecord, .
     except Exception:  # pragma: no cover - defensive
         return ()
     return tuple(
-        record.to_record() if hasattr(record, "to_record") else record
-        for record in records
+        record.to_record() if hasattr(record, "to_record") else record for record in records
     )
 
 
@@ -223,7 +216,7 @@ def _save_profile_record(
                 if getattr(other, "name", None) == record.name:
                     continue
                 if getattr(other, "is_default", False):
-                    setattr(other, "is_default", False)
+                    other.is_default = False
                     if hasattr(other, "save"):
                         other.save(update_fields=["is_default"])
         except Exception:  # pragma: no cover - defensive
@@ -272,10 +265,14 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
     plan = planner.run(request)
     write_execution = {}
     if not dryrun:
-        write_execution = ForwardNautobotWriteExecutor().execute(
-            plan.write_plan,
-            request.connection_profile,
-        ).as_dict()
+        write_execution = (
+            ForwardNautobotWriteExecutor()
+            .execute(
+                plan.write_plan,
+                request.connection_profile,
+            )
+            .as_dict()
+        )
 
     failure_classification = (
         "clean"
@@ -596,7 +593,9 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
         device = self.lookup_object("devices", parts[0])
         if device is None:
             return None
-        return self._lookup_model_object("dcim", "Module", device=device, module_bay__position=parts[1])
+        return self._lookup_model_object(
+            "dcim", "Module", device=device, module_bay__position=parts[1]
+        )
 
     @staticmethod
     def _mapping_for_lookup(model_name: str):

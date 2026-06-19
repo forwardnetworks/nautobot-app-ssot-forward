@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 from ipaddress import ip_interface
+from typing import Any
 
 try:
     from django.db import OperationalError as DjangoOperationalError
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+
     class DjangoOperationalError(Exception):
         """Fallback for environments without Django."""
 
         pass
+
 
 try:
     from django.apps import apps as django_apps
@@ -22,6 +24,7 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
 try:
     from diffsync import Adapter
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+
     class Adapter:  # type: ignore[too-many-ancestors]
         """Fallback adapter base when DiffSync is not installed."""
 
@@ -70,7 +73,7 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
             model_names = sorted(set(self._records) | set(getattr(target, "_records", {})))
             for model_name in model_names:
                 source_items = list(self.get_all(model_name))
-                target_items = list(getattr(target, "get_all", lambda _name: ()) (model_name))
+                target_items = list(getattr(target, "get_all", lambda _name: ())(model_name))
                 source_by_key: dict[tuple[tuple[str, Any], ...], dict[str, Any]] = {}
                 target_by_key: dict[tuple[tuple[str, Any], ...], dict[str, Any]] = {}
                 for item in source_items:
@@ -113,22 +116,21 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
             return _FallbackDiff(summary, detail)
 
 
-from .diffsync_models import ForwardDevice
-from .diffsync_models import ForwardDeviceType
-from .diffsync_models import ForwardIPAddress
-from .diffsync_models import ForwardInterface
-from .diffsync_models import ForwardIPv4Prefix
-from .diffsync_models import ForwardIPv6Prefix
-from .diffsync_models import ForwardInventoryItem
-from .diffsync_models import ForwardLocation
-from .diffsync_models import ForwardModule
-from .diffsync_models import ForwardPlatform
-from .diffsync_models import ForwardVLAN
-from .diffsync_models import ForwardVRF
-from .registry import ForwardModelMapping
-from .registry import CORE_MODEL_MAPPINGS
-from .registry import CORE_MODEL_SLUGS
-from .registry import get_model_mappings
+from .diffsync_models import (
+    ForwardDevice,
+    ForwardDeviceType,
+    ForwardInterface,
+    ForwardInventoryItem,
+    ForwardIPAddress,
+    ForwardIPv4Prefix,
+    ForwardIPv6Prefix,
+    ForwardLocation,
+    ForwardModule,
+    ForwardPlatform,
+    ForwardVLAN,
+    ForwardVRF,
+)
+from .registry import CORE_MODEL_MAPPINGS, CORE_MODEL_SLUGS, ForwardModelMapping, get_model_mappings
 
 
 def _string_value(value: Any, *attrs: str) -> str:
@@ -193,9 +195,7 @@ class ForwardSourceAdapter(Adapter):
 
     def __init__(self, model_names: tuple[str, ...] | list[str] | None = None):
         super().__init__(name="forward_source")
-        self.model_mappings: tuple[ForwardModelMapping, ...] = get_model_mappings(
-            model_names
-        )
+        self.model_mappings: tuple[ForwardModelMapping, ...] = get_model_mappings(model_names)
         self._mapping_by_slug = {mapping.slug: mapping for mapping in CORE_MODEL_MAPPINGS}
         self.records: dict[str, dict[str, ForwardLoadedRecord]] = {
             mapping.slug: {} for mapping in self.model_mappings
@@ -246,7 +246,7 @@ class ForwardSourceAdapter(Adapter):
             loaded.append(record)
         return tuple(loaded)
 
-    def slice_for_model(self, model_slug: str) -> "ForwardSourceAdapter":
+    def slice_for_model(self, model_slug: str) -> ForwardSourceAdapter:
         mapping = self._get_mapping(model_slug)
         slice_adapter = ForwardSourceAdapter(model_names=(mapping.slug,))
         slice_rows = tuple(
@@ -292,9 +292,7 @@ class NautobotTargetAdapter(Adapter):
 
     def __init__(self, model_names: tuple[str, ...] | list[str] | None = None):
         super().__init__(name="nautobot_target")
-        self.model_mappings: tuple[ForwardModelMapping, ...] = get_model_mappings(
-            model_names
-        )
+        self.model_mappings: tuple[ForwardModelMapping, ...] = get_model_mappings(model_names)
         self._mapping_by_slug = {mapping.slug: mapping for mapping in CORE_MODEL_MAPPINGS}
         self.loaded_records: dict[str, dict[str, ForwardPlannedWrite]] = {
             mapping.slug: {} for mapping in self.model_mappings
@@ -329,9 +327,7 @@ class NautobotTargetAdapter(Adapter):
             key_parts.append(value_text)
         return "|".join(key_parts)
 
-    def plan_rows(
-        self, model_slug: str, rows: list[dict[str, Any]] | tuple[dict[str, Any], ...]
-    ):
+    def plan_rows(self, model_slug: str, rows: list[dict[str, Any]] | tuple[dict[str, Any], ...]):
         mapping = self._get_mapping(model_slug)
         planned: list[ForwardPlannedWrite] = []
         for row in rows:
@@ -351,9 +347,7 @@ class NautobotTargetAdapter(Adapter):
             planned.append(write)
         return tuple(planned)
 
-    def load_rows(
-        self, model_slug: str, rows: list[dict[str, Any]] | tuple[dict[str, Any], ...]
-    ):
+    def load_rows(self, model_slug: str, rows: list[dict[str, Any]] | tuple[dict[str, Any], ...]):
         mapping = self._get_mapping(model_slug)
         loaded: list[ForwardPlannedWrite] = []
         for row in rows:
@@ -526,7 +520,9 @@ class NautobotTargetAdapter(Adapter):
             "description": _string_value(getattr(instance, "description", "")),
         }
 
-    def _serialize_orm_row(self, mapping: ForwardModelMapping, instance: Any) -> dict[str, Any] | None:
+    def _serialize_orm_row(
+        self, mapping: ForwardModelMapping, instance: Any
+    ) -> dict[str, Any] | None:
         serializer_name = {
             "locations": "_serialize_location",
             "platforms": "_serialize_platform",
@@ -575,12 +571,11 @@ class NautobotTargetAdapter(Adapter):
             return loaded
         return loaded
 
-    def slice_for_model(self, model_slug: str) -> "NautobotTargetAdapter":
+    def slice_for_model(self, model_slug: str) -> NautobotTargetAdapter:
         mapping = self._get_mapping(model_slug)
         slice_adapter = NautobotTargetAdapter(model_names=(mapping.slug,))
         slice_rows = tuple(
-            dict(record.fields)
-            for record in self.loaded_records.get(mapping.slug, {}).values()
+            dict(record.fields) for record in self.loaded_records.get(mapping.slug, {}).values()
         )
         if slice_rows:
             slice_adapter.load_rows(mapping.slug, slice_rows)

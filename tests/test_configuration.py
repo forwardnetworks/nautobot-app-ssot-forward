@@ -1,5 +1,4 @@
-from forward_nautobot.models import ForwardConnectionProfileRecord
-from forward_nautobot.models import ForwardPluginConfiguration
+from forward_nautobot.models import ForwardConnectionProfileRecord, ForwardPluginConfiguration
 
 
 def test_connection_profile_record_round_trips_connection_settings():

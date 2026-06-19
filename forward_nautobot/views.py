@@ -11,6 +11,7 @@ try:
     from django.http import HttpResponse
     from django.views import View
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+
     class HttpResponse:  # type: ignore[too-many-ancestors]
         def __init__(self, content="", status=200, content_type="text/html"):
             self.content = content
@@ -27,15 +28,16 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
 
             return _view
 
-from .forms import DELETE_POLICY_CHOICES
-from .forms import FORWARD_PROFILE_FORM_FIELDS
-from .forms import ForwardConnectionProfileForm
+
 from .fixture_support import fixture_coverage
+from .forms import DELETE_POLICY_CHOICES, FORWARD_PROFILE_FORM_FIELDS, ForwardConnectionProfileForm
 from .integrations.forward.registry import CORE_MODEL_MAPPINGS
-from .models import ForwardConnectionProfile
-from .models import ForwardConnectionProfileRecord
-from .models import ForwardPluginConfiguration
-from .models import WRITE_DEFAULT_FIELD_NAMES
+from .models import (
+    WRITE_DEFAULT_FIELD_NAMES,
+    ForwardConnectionProfile,
+    ForwardConnectionProfileRecord,
+    ForwardPluginConfiguration,
+)
 
 
 def _iter_persisted_profile_records() -> tuple[ForwardConnectionProfileRecord, ...]:
@@ -48,8 +50,7 @@ def _iter_persisted_profile_records() -> tuple[ForwardConnectionProfileRecord, .
         except Exception:  # pragma: no cover - defensive
             return ()
         return tuple(
-            record.to_record() if hasattr(record, "to_record") else record
-            for record in records
+            record.to_record() if hasattr(record, "to_record") else record for record in records
         )
     return ()
 
@@ -62,8 +63,7 @@ def _iter_profile_records(manager) -> tuple[ForwardConnectionProfileRecord, ...]
     except Exception:  # pragma: no cover - defensive
         return ()
     return tuple(
-        record.to_record() if hasattr(record, "to_record") else record
-        for record in records
+        record.to_record() if hasattr(record, "to_record") else record for record in records
     )
 
 
@@ -105,9 +105,7 @@ def _render_profile_editor(
             control = f'<select name="{escape(field_name)}">{"".join(options)}</select>'
         elif field_name in {"is_default", "verify_tls"}:
             checked = " checked" if bool(value) else ""
-            control = (
-                f'<input type="checkbox" name="{escape(field_name)}" value="1"{checked}>'
-            )
+            control = f'<input type="checkbox" name="{escape(field_name)}" value="1"{checked}>'
         elif field_name == "password":
             control = f'<input type="password" name="{escape(field_name)}" value="">'
         else:
@@ -115,18 +113,13 @@ def _render_profile_editor(
                 f'<input type="text" name="{escape(field_name)}" '
                 f'value="{escape(str(value or ""))}">'
             )
-        controls.append(
-            "<label>"
-            f"<span>{escape(field_name)}</span>"
-            f"{control}"
-            "</label>"
-        )
+        controls.append(f"<label><span>{escape(field_name)}</span>{control}</label>")
     return (
-        "<form class=\"forward-profile-form\" method=\"post\">"
+        '<form class="forward-profile-form" method="post">'
         f"{message_html}{error_html}"
         "<p>Profile editing is available here for the persisted connection profile.</p>"
         + "".join(controls)
-        + "<button type=\"submit\">Save profile</button>"
+        + '<button type="submit">Save profile</button>'
         + "</form>"
     )
 
@@ -181,7 +174,7 @@ def _save_profile_record(
                 if getattr(other, "name", None) == record.name:
                     continue
                 if getattr(other, "is_default", False):
-                    setattr(other, "is_default", False)
+                    other.is_default = False
                     if hasattr(other, "save"):
                         other.save(update_fields=["is_default"])
         except Exception:  # pragma: no cover - defensive
@@ -374,9 +367,9 @@ def _render_page(title: str, body: str, *, kicker: str = "Forward Networks SSoT"
 def _render_metric_card(label: str, value: str, description: str = "") -> str:
     return (
         '<div class="forward-card">'
-        f"<div class=\"subtle\">{escape(label)}</div>"
-        f"<div class=\"metric\">{escape(value)}</div>"
-        + (f"<div class=\"subtle\">{escape(description)}</div>" if description else "")
+        f'<div class="subtle">{escape(label)}</div>'
+        f'<div class="metric">{escape(value)}</div>'
+        + (f'<div class="subtle">{escape(description)}</div>' if description else "")
         + "</div>"
     )
 
@@ -413,7 +406,7 @@ def _render_coverage_table(coverage_by_slug: dict[str, dict[str, object]] | None
             f"<td>{int(entry['count'])}</td>"
             f"<td>{escape(str(entry['sample_key'] or 'none'))}</td>"
             f"<td>{escape(str(entry['contract_version']))}</td>"
-            f"<td><a href=\"/plugins/forward_nautobot/slices/{escape(str(entry['slug']))}/\">Open</a></td>"
+            f'<td><a href="/plugins/forward_nautobot/slices/{escape(str(entry["slug"]))}/">Open</a></td>'
             "</tr>"
         )
     return '<table class="forward-table">' + "".join(rows) + "</table>"
@@ -426,22 +419,25 @@ def _render_coverage_details(coverage_by_slug: dict[str, dict[str, object]] | No
     for entry in coverage_by_slug.values():
         sample_rows = entry.get("sample_rows", ())
         serialized_rows = "".join(
-            f"<pre>{escape(json.dumps(row, indent=2, sort_keys=True))}</pre>"
-            for row in sample_rows
+            f"<pre>{escape(json.dumps(row, indent=2, sort_keys=True))}</pre>" for row in sample_rows
         )
         blocks.append(
-            "<details class=\"forward-panel\" style=\"margin-top: 12px;\">"
+            '<details class="forward-panel" style="margin-top: 12px;">'
             f"<summary><strong>{escape(str(entry['slug']))}</strong> "
             f"({int(entry['count'])} rows)</summary>"
-            f"<p class=\"subtle\">{escape(str(entry['description']))}</p>"
+            f'<p class="subtle">{escape(str(entry["description"]))}</p>'
             f"{serialized_rows or empty_rows_message}"
             "</details>"
         )
     return "".join(blocks)
 
 
-def _render_dashboard_body(summary: dict[str, object], profiles: tuple[ForwardConnectionProfileRecord, ...]) -> str:
-    default_profile = next((profile for profile in profiles if profile.is_default), profiles[0] if profiles else None)
+def _render_dashboard_body(
+    summary: dict[str, object], profiles: tuple[ForwardConnectionProfileRecord, ...]
+) -> str:
+    default_profile = next(
+        (profile for profile in profiles if profile.is_default), profiles[0] if profiles else None
+    )
     if default_profile is None:
         default_profile_name = "no saved profile"
         default_policy = "ignore"
@@ -452,12 +448,24 @@ def _render_dashboard_body(summary: dict[str, object], profiles: tuple[ForwardCo
         default_snapshot = default_profile.last_snapshot_id or default_profile.snapshot_id or "none"
     cards = (
         _render_metric_card("Saved profiles", str(len(profiles)), "Profiles persist in Nautobot."),
-        _render_metric_card("Ready profiles", str(int(summary.get("ready_profiles") or 0)), "All write defaults set."),
-        _render_metric_card("Last snapshot", str(summary.get("last_snapshot_id") or default_snapshot), "Baseline used for diffs."),
-        _render_metric_card("Policy", str(summary.get("current_policy") or default_policy), "Delete handling for missing rows."),
+        _render_metric_card(
+            "Ready profiles",
+            str(int(summary.get("ready_profiles") or 0)),
+            "All write defaults set.",
+        ),
+        _render_metric_card(
+            "Last snapshot",
+            str(summary.get("last_snapshot_id") or default_snapshot),
+            "Baseline used for diffs.",
+        ),
+        _render_metric_card(
+            "Policy",
+            str(summary.get("current_policy") or default_policy),
+            "Delete handling for missing rows.",
+        ),
     )
     sections = [
-        "<div class=\"forward-grid\">" + "".join(cards) + "</div>",
+        '<div class="forward-grid">' + "".join(cards) + "</div>",
         '<div class="forward-section forward-panel">'
         "<h3>Demo flow</h3>"
         '<ol class="forward-note-list">'
@@ -473,7 +481,7 @@ def _render_dashboard_body(summary: dict[str, object], profiles: tuple[ForwardCo
         "</div>",
         '<div class="forward-section forward-panel">'
         "<h3>Ingestion coverage</h3>"
-        "<p class=\"subtle\">Packaged fixture coverage for the supported slices.</p>"
+        '<p class="subtle">Packaged fixture coverage for the supported slices.</p>'
         f"{_render_coverage_table()}"
         f"{_render_coverage_details()}"
         "</div>",
@@ -485,8 +493,8 @@ def _render_dashboard_body(summary: dict[str, object], profiles: tuple[ForwardCo
         '<span class="forward-tag">Redacted support bundles</span>'
         '<span class="forward-tag">No source-field normalization</span>'
         "</div>"
-        f"<p class=\"subtle\">Default profile: {escape(default_profile_name)}</p>"
-        f"<p class=\"subtle\">Current policy: {escape(str(summary.get('current_policy') or default_policy))}</p>"
+        f'<p class="subtle">Default profile: {escape(default_profile_name)}</p>'
+        f'<p class="subtle">Current policy: {escape(str(summary.get("current_policy") or default_policy))}</p>'
         "</div>",
         '<div class="forward-section forward-panel">'
         "<h3>Actions</h3>"
@@ -497,22 +505,33 @@ def _render_dashboard_body(summary: dict[str, object], profiles: tuple[ForwardCo
         "</div>"
         "</div>",
     ]
-    return "<p class=\"subtle\">An operational view of the Forward SSoT integration in Nautobot 3.1.</p>" + "".join(sections)
+    return (
+        '<p class="subtle">An operational view of the Forward SSoT integration in Nautobot 3.1.</p>'
+        + "".join(sections)
+    )
 
 
-def _render_dashboard(summary: dict[str, object], profiles: tuple[ForwardConnectionProfileRecord, ...]) -> str:
+def _render_dashboard(
+    summary: dict[str, object], profiles: tuple[ForwardConnectionProfileRecord, ...]
+) -> str:
     return _render_page(
         "Forward Nautobot Dashboard",
         _render_dashboard_body(summary, profiles),
     )
 
 
-def _render_diagnostics_body(summary: dict[str, object], profiles: tuple[ForwardConnectionProfileRecord, ...]) -> str:
+def _render_diagnostics_body(
+    summary: dict[str, object], profiles: tuple[ForwardConnectionProfileRecord, ...]
+) -> str:
     coverage_by_slug = _fixture_coverage_by_slug()
-    default_profile = next((profile for profile in profiles if profile.is_default), profiles[0] if profiles else None)
-    default_profile_name = default_profile.name if default_profile is not None else "no saved profile"
+    default_profile = next(
+        (profile for profile in profiles if profile.is_default), profiles[0] if profiles else None
+    )
+    default_profile_name = (
+        default_profile.name if default_profile is not None else "no saved profile"
+    )
     sections = [
-        "<p class=\"subtle\">Operational coverage, readiness, and raw packaged row inspection for support and validation.</p>",
+        '<p class="subtle">Operational coverage, readiness, and raw packaged row inspection for support and validation.</p>',
         '<div class="forward-actions">'
         '<a class="forward-action" href="/plugins/forward_nautobot/">Overview</a>'
         '<a class="forward-action secondary" href="/plugins/forward_nautobot/status/">Status</a>'
@@ -529,8 +548,8 @@ def _render_diagnostics_body(summary: dict[str, object], profiles: tuple[Forward
         "</div>",
         '<div class="forward-section forward-panel">'
         "<h3>Ingestion coverage</h3>"
-        "<p class=\"subtle\">Packaged fixture coverage for the supported slices.</p>"
-        "<p class=\"subtle\">Raw packaged rows are available from each slice detail page.</p>"
+        '<p class="subtle">Packaged fixture coverage for the supported slices.</p>'
+        '<p class="subtle">Raw packaged rows are available from each slice detail page.</p>'
         f"{_render_coverage_table(coverage_by_slug)}"
         f"{_render_coverage_details(coverage_by_slug)}"
         "</div>",
@@ -554,8 +573,8 @@ def _render_slice_detail_body(model_slug: str) -> str:
     entry = coverage_by_slug.get(model_slug)
     if entry is None:
         return (
-            "<div class=\"forward-section forward-panel\">"
-            f"<p class=\"error\">Unknown slice: {escape(model_slug)}</p>"
+            '<div class="forward-section forward-panel">'
+            f'<p class="error">Unknown slice: {escape(model_slug)}</p>'
             '<div class="forward-actions">'
             '<a class="forward-action" href="/plugins/forward_nautobot/diagnostics/">Back to diagnostics</a>'
             "</div>"
@@ -563,15 +582,15 @@ def _render_slice_detail_body(model_slug: str) -> str:
         )
     sample_rows = tuple(entry.get("sample_rows", ()))
     raw_rows = "".join(
-        f"<pre class=\"forward-json\">{escape(json.dumps(row, indent=2, sort_keys=True))}</pre>"
+        f'<pre class="forward-json">{escape(json.dumps(row, indent=2, sort_keys=True))}</pre>'
         for row in sample_rows
     )
     if not raw_rows:
-        raw_rows = "<p class=\"subtle\">No packaged rows available for this slice.</p>"
+        raw_rows = '<p class="subtle">No packaged rows available for this slice.</p>'
     return (
         '<div class="forward-section forward-panel">'
         f"<h3>{escape(str(entry['slug']))}</h3>"
-        f"<p class=\"subtle\">{escape(str(entry['description']))}</p>"
+        f'<p class="subtle">{escape(str(entry["description"]))}</p>'
         f"<p><strong>Contract version:</strong> {escape(str(entry['contract_version']))}</p>"
         f"<p><strong>Row count:</strong> {int(entry['count'])}</p>"
         f"<p><strong>Sample key:</strong> {escape(str(entry['sample_key'] or 'none'))}</p>"
@@ -633,11 +652,11 @@ class ForwardStatusView(View):
         summary = configuration.status_summary()
         body = _render_page(
             "Forward Status",
-            "<p class=\"subtle\">A compact operational summary for reviews and troubleshooting.</p>"
+            '<p class="subtle">A compact operational summary for reviews and troubleshooting.</p>'
             + _render_dashboard_body(summary, profiles)
             + '<div class="forward-section forward-panel">'
             "<h3>Operational status</h3>"
-            "<p class=\"subtle\">Current profile readiness and support state.</p>"
+            '<p class="subtle">Current profile readiness and support state.</p>'
             "</div>"
             '<div class="forward-section forward-panel">'
             "<h3>Profile Status</h3>"
@@ -659,12 +678,12 @@ class ForwardConfigurationView(View):
         return HttpResponse(
             _render_page(
                 "Forward Configuration",
-                "<p class=\"subtle\">Persistent connection profiles are modeled in forward_nautobot.models.</p>"
+                '<p class="subtle">Persistent connection profiles are modeled in forward_nautobot.models.</p>'
                 '<div class="forward-section forward-panel">'
                 "<h3>Profile Editor</h3>"
-                f"<p class=\"subtle\">Profile fields: name, base_url, username, password, verify_tls, network_id, snapshot_id, enabled_models, query_contract_version, delete_policy, last_snapshot_id.</p>"
-                f"<p class=\"subtle\">Write prerequisites: {', '.join(WRITE_DEFAULT_FIELD_NAMES)}.</p>"
-                f"<p class=\"subtle\">Editable form fields: {', '.join(FORWARD_PROFILE_FORM_FIELDS)}</p>"
+                f'<p class="subtle">Profile fields: name, base_url, username, password, verify_tls, network_id, snapshot_id, enabled_models, query_contract_version, delete_policy, last_snapshot_id.</p>'
+                f'<p class="subtle">Write prerequisites: {", ".join(WRITE_DEFAULT_FIELD_NAMES)}.</p>'
+                f'<p class="subtle">Editable form fields: {", ".join(FORWARD_PROFILE_FORM_FIELDS)}</p>'
                 f"{_render_profile_editor(default_profile)}"
                 "</div>"
                 '<div class="forward-section forward-panel">'

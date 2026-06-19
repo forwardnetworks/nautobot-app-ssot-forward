@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import field
-from dataclasses import replace
 from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .integrations.forward.models import ForwardConnectionSettings
-from .integrations.forward.models import LATEST_PROCESSED_SNAPSHOT
+from .integrations.forward.models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings
 
 DELETE_POLICIES: tuple[str, ...] = ("ignore", "mark_inactive", "delete")
 WRITE_DEFAULT_FIELD_NAMES: tuple[str, ...] = (
@@ -32,11 +29,8 @@ def _coerce_models(value: Any) -> tuple[str, ...]:
         items = value
     else:
         items = str(value or "").split(",")
-    return tuple(
-        str(item).strip()
-        for item in items
-        if str(item).strip()
-    )
+    return tuple(str(item).strip() for item in items if str(item).strip())
+
 
 try:
     from django.db import models
@@ -122,33 +116,42 @@ class ForwardConnectionProfileRecord:
         data: Mapping[str, Any],
         *,
         default_name: str = "job-profile",
-        existing: "ForwardConnectionProfileRecord | None" = None,
-    ) -> "ForwardConnectionProfileRecord":
+        existing: ForwardConnectionProfileRecord | None = None,
+    ) -> ForwardConnectionProfileRecord:
         existing = existing or None
         base = existing.as_dict() if existing is not None else {}
         name = str(data.get("name") or base.get("name") or default_name).strip() or default_name
-        base_url = str(data.get("base_url") or base.get("base_url") or "https://fwd.app").strip() or "https://fwd.app"
+        base_url = (
+            str(data.get("base_url") or base.get("base_url") or "https://fwd.app").strip()
+            or "https://fwd.app"
+        )
         username = str(data.get("username") or base.get("username") or "").strip()
         password = str(data.get("password") or base.get("password") or "").strip()
         network_id = str(data.get("network_id") or base.get("network_id") or "").strip()
         verify_tls = _coerce_bool(
             data.get("verify_tls")
             if "verify_tls" in data
-            else base.get("verify_tls") if base.get("verify_tls") is not None else True
+            else base.get("verify_tls")
+            if base.get("verify_tls") is not None
+            else True
         )
-        snapshot_id = str(
-            data.get("snapshot_id") or base.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT
-        ).strip() or LATEST_PROCESSED_SNAPSHOT
-        enabled_models = _coerce_models(data.get("enabled_models") or base.get("enabled_models") or ())
-        query_contract_version = str(
-            data.get("query_contract_version")
-            or base.get("query_contract_version")
+        snapshot_id = (
+            str(
+                data.get("snapshot_id") or base.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT
+            ).strip()
+            or LATEST_PROCESSED_SNAPSHOT
+        )
+        enabled_models = _coerce_models(
+            data.get("enabled_models") or base.get("enabled_models") or ()
+        )
+        query_contract_version = (
+            str(
+                data.get("query_contract_version") or base.get("query_contract_version") or "v1"
+            ).strip()
             or "v1"
-        ).strip() or "v1"
+        )
         default_location_type_name = str(
-            data.get("default_location_type_name")
-            or base.get("default_location_type_name")
-            or ""
+            data.get("default_location_type_name") or base.get("default_location_type_name") or ""
         ).strip()
         default_location_status_name = str(
             data.get("default_location_status_name")
@@ -156,16 +159,15 @@ class ForwardConnectionProfileRecord:
             or ""
         ).strip()
         default_device_role_name = str(
-            data.get("default_device_role_name")
-            or base.get("default_device_role_name")
-            or ""
+            data.get("default_device_role_name") or base.get("default_device_role_name") or ""
         ).strip()
         default_device_status_name = str(
-            data.get("default_device_status_name")
-            or base.get("default_device_status_name")
-            or ""
+            data.get("default_device_status_name") or base.get("default_device_status_name") or ""
         ).strip()
-        delete_policy = str(data.get("delete_policy") or base.get("delete_policy") or "ignore").strip() or "ignore"
+        delete_policy = (
+            str(data.get("delete_policy") or base.get("delete_policy") or "ignore").strip()
+            or "ignore"
+        )
         is_default = _coerce_bool(data.get("is_default") or base.get("is_default") or False)
         return cls(
             name=name,
@@ -194,12 +196,10 @@ class ForwardConnectionProfileRecord:
                 or base.get("last_support_bundle")
                 or ""
             ),
-            last_query_mode=str(
-                data.get("last_query_mode")
-                or base.get("last_query_mode")
-                or ""
+            last_query_mode=str(data.get("last_query_mode") or base.get("last_query_mode") or ""),
+            last_snapshot_id=str(
+                data.get("last_snapshot_id") or base.get("last_snapshot_id") or ""
             ),
-            last_snapshot_id=str(data.get("last_snapshot_id") or base.get("last_snapshot_id") or ""),
         )
 
     def to_connection_settings(self) -> ForwardConnectionSettings:
@@ -215,11 +215,7 @@ class ForwardConnectionProfileRecord:
     def with_enabled_models(self, enabled_models: tuple[str, ...] | list[str]):
         return replace(
             self,
-            enabled_models=tuple(
-                str(name).strip()
-                for name in enabled_models
-                if str(name).strip()
-            ),
+            enabled_models=tuple(str(name).strip() for name in enabled_models if str(name).strip()),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -292,7 +288,7 @@ class ForwardConnectionProfileRecord:
         last_query_reference: str = "",
         last_query_mode: str = "",
         last_snapshot_id: str = "",
-    ) -> "ForwardConnectionProfileRecord":
+    ) -> ForwardConnectionProfileRecord:
         return replace(
             self,
             last_run_at=last_run_at,
@@ -367,9 +363,7 @@ class ForwardPluginConfiguration:
             "last_run": str(self.last_run_at or self.metadata.get("last_run") or "not recorded"),
             "last_failure": str(self.last_failure or self.metadata.get("last_failure") or ""),
             "last_support_bundle": str(
-                self.last_support_bundle
-                or self.metadata.get("last_support_bundle")
-                or ""
+                self.last_support_bundle or self.metadata.get("last_support_bundle") or ""
             ),
             "last_query_reference": str(
                 self.last_query_reference
@@ -391,7 +385,11 @@ class ForwardPluginConfiguration:
             ),
             "current_policy": str(
                 self.metadata.get("current_policy")
-                or (default_profile.effective_delete_policy if default_profile is not None else "ignore")
+                or (
+                    default_profile.effective_delete_policy
+                    if default_profile is not None
+                    else "ignore"
+                )
             ),
         }
 
@@ -404,7 +402,7 @@ class ForwardPluginConfiguration:
         last_query_reference: str = "",
         last_query_mode: str = "",
         last_snapshot_id: str = "",
-    ) -> "ForwardPluginConfiguration":
+    ) -> ForwardPluginConfiguration:
         updated_profiles = tuple(
             profile.with_run_history(
                 last_run_at=last_run_at,
@@ -483,9 +481,7 @@ if models is not None:
                 verify_tls=self.verify_tls,
                 snapshot_id=self.snapshot_id,
                 enabled_models=tuple(
-                    str(name).strip()
-                    for name in self.enabled_models
-                    if str(name).strip()
+                    str(name).strip() for name in self.enabled_models if str(name).strip()
                 ),
                 query_contract_version=self.query_contract_version,
                 default_location_type_name=self.default_location_type_name,

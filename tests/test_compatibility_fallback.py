@@ -9,7 +9,8 @@ def test_forward_integration_imports_without_diffsync():
     blocked_modules = {
         name: module
         for name, module in list(sys.modules.items())
-        if name == "diffsync" or name.startswith("diffsync.")
+        if name == "diffsync"
+        or name.startswith("diffsync.")
         or name.startswith("forward_nautobot.integrations.forward.adapters")
         or name.startswith("forward_nautobot.integrations.forward.diffsync_models")
     }

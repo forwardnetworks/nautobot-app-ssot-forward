@@ -5,6 +5,7 @@ from __future__ import annotations
 try:
     from diffsync import DiffSyncModel
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
+
     class DiffSyncModel:  # type: ignore[too-many-ancestors]
         """Fallback model base when DiffSync is not installed."""
 
@@ -18,9 +19,7 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
 
         def dict(self) -> dict[str, object]:
             return {
-                key: value
-                for key, value in self.__dict__.items()
-                if not str(key).startswith("_")
+                key: value for key, value in self.__dict__.items() if not str(key).startswith("_")
             }
 
 

@@ -3,10 +3,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import forward_nautobot.integrations.forward.write_executor as write_executor
-from forward_nautobot.integrations.forward.write_executor import ForwardNautobotWriteBackend
-from forward_nautobot.integrations.forward.write_executor import ForwardNautobotWriteExecutor
-from forward_nautobot.integrations.forward.write_path import ForwardWriteOperation
-from forward_nautobot.integrations.forward.write_path import ForwardWritePlan
+from forward_nautobot.integrations.forward.write_executor import (
+    ForwardNautobotWriteBackend,
+    ForwardNautobotWriteExecutor,
+)
+from forward_nautobot.integrations.forward.write_path import ForwardWriteOperation, ForwardWritePlan
 from forward_nautobot.models import ForwardConnectionProfileRecord
 
 
@@ -47,9 +48,7 @@ class _FakeManager:
         normalized = []
         for key, value in lookup.items():
             if isinstance(value, _FakeRecord):
-                normalized.append(
-                    (key, getattr(value, "name", getattr(value, "position", None)))
-                )
+                normalized.append((key, getattr(value, "name", getattr(value, "position", None))))
             else:
                 normalized.append((key, value))
         return tuple(sorted(normalized))
@@ -111,21 +110,89 @@ def _fake_model_resolver():
     models = {
         ("dcim", "LocationType"): _FakeModel(field_names=("name",), allowed_fields=("name",)),
         ("extras", "Status"): _FakeModel(field_names=("name",), allowed_fields=("name",)),
-        ("dcim", "Location"): _FakeModel(field_names=("name", "location_type", "status"), allowed_fields=("name", "location_type", "status")),
+        ("dcim", "Location"): _FakeModel(
+            field_names=("name", "location_type", "status"),
+            allowed_fields=("name", "location_type", "status"),
+        ),
         ("dcim", "Manufacturer"): _FakeModel(field_names=("name",), allowed_fields=("name",)),
-        ("dcim", "Platform"): _FakeModel(field_names=("name", "manufacturer"), allowed_fields=("name", "manufacturer")),
-        ("dcim", "DeviceType"): _FakeModel(field_names=("manufacturer", "model"), allowed_fields=("manufacturer", "model")),
+        ("dcim", "Platform"): _FakeModel(
+            field_names=("name", "manufacturer"), allowed_fields=("name", "manufacturer")
+        ),
+        ("dcim", "DeviceType"): _FakeModel(
+            field_names=("manufacturer", "model"), allowed_fields=("manufacturer", "model")
+        ),
         ("extras", "Role"): _FakeModel(field_names=("name",), allowed_fields=("name",)),
-        ("dcim", "Device"): _FakeModel(field_names=("name", "location", "platform", "device_type", "role", "status"), allowed_fields=("name", "location", "platform", "device_type", "role", "status")),
-        ("dcim", "Interface"): _FakeModel(field_names=("device", "name", "type", "enabled", "mtu", "description", "speed", "lag"), allowed_fields=("device", "name", "type", "enabled", "mtu", "description", "speed", "lag")),
-        ("ipam", "VLAN"): _FakeModel(field_names=("vid", "location", "name", "status"), allowed_fields=("vid", "location", "name", "status")),
-        ("ipam", "VRF"): _FakeModel(field_names=("name", "rd", "description", "enforce_unique"), allowed_fields=("name", "rd", "description", "enforce_unique")),
-        ("ipam", "Prefix"): _FakeModel(field_names=("prefix", "vrf", "status"), allowed_fields=("prefix", "vrf", "status")),
-        ("ipam", "IPAddress"): _FakeModel(field_names=("address", "vrf", "status", "assigned_object"), allowed_fields=("address", "vrf", "status", "assigned_object")),
-        ("dcim", "InventoryItem"): _FakeModel(field_names=("device", "name", "label", "part_id", "serial", "asset_tag", "status", "role", "manufacturer", "discovered", "description"), allowed_fields=("device", "name", "label", "part_id", "serial", "asset_tag", "status", "role", "manufacturer", "discovered", "description")),
-        ("dcim", "ModuleBay"): _FakeModel(field_names=("device", "position"), allowed_fields=("device", "position")),
-        ("dcim", "ModuleType"): _FakeModel(field_names=("manufacturer", "model", "part_number"), allowed_fields=("manufacturer", "model", "part_number")),
-        ("dcim", "Module"): _FakeModel(field_names=("device", "module_bay", "module_type", "status", "serial", "asset_tag"), allowed_fields=("device", "module_bay", "module_type", "status", "serial", "asset_tag")),
+        ("dcim", "Device"): _FakeModel(
+            field_names=("name", "location", "platform", "device_type", "role", "status"),
+            allowed_fields=("name", "location", "platform", "device_type", "role", "status"),
+        ),
+        ("dcim", "Interface"): _FakeModel(
+            field_names=("device", "name", "type", "enabled", "mtu", "description", "speed", "lag"),
+            allowed_fields=(
+                "device",
+                "name",
+                "type",
+                "enabled",
+                "mtu",
+                "description",
+                "speed",
+                "lag",
+            ),
+        ),
+        ("ipam", "VLAN"): _FakeModel(
+            field_names=("vid", "location", "name", "status"),
+            allowed_fields=("vid", "location", "name", "status"),
+        ),
+        ("ipam", "VRF"): _FakeModel(
+            field_names=("name", "rd", "description", "enforce_unique"),
+            allowed_fields=("name", "rd", "description", "enforce_unique"),
+        ),
+        ("ipam", "Prefix"): _FakeModel(
+            field_names=("prefix", "vrf", "status"), allowed_fields=("prefix", "vrf", "status")
+        ),
+        ("ipam", "IPAddress"): _FakeModel(
+            field_names=("address", "vrf", "status", "assigned_object"),
+            allowed_fields=("address", "vrf", "status", "assigned_object"),
+        ),
+        ("dcim", "InventoryItem"): _FakeModel(
+            field_names=(
+                "device",
+                "name",
+                "label",
+                "part_id",
+                "serial",
+                "asset_tag",
+                "status",
+                "role",
+                "manufacturer",
+                "discovered",
+                "description",
+            ),
+            allowed_fields=(
+                "device",
+                "name",
+                "label",
+                "part_id",
+                "serial",
+                "asset_tag",
+                "status",
+                "role",
+                "manufacturer",
+                "discovered",
+                "description",
+            ),
+        ),
+        ("dcim", "ModuleBay"): _FakeModel(
+            field_names=("device", "position"), allowed_fields=("device", "position")
+        ),
+        ("dcim", "ModuleType"): _FakeModel(
+            field_names=("manufacturer", "model", "part_number"),
+            allowed_fields=("manufacturer", "model", "part_number"),
+        ),
+        ("dcim", "Module"): _FakeModel(
+            field_names=("device", "module_bay", "module_type", "status", "serial", "asset_tag"),
+            allowed_fields=("device", "module_bay", "module_type", "status", "serial", "asset_tag"),
+        ),
     }
 
     def resolve(app_label: str, model_name: str):
@@ -213,7 +280,12 @@ def test_write_executor_applies_core_slices_with_fake_backend(monkeypatch):
             ),
         ),
         summary={"create": 4, "update": 0, "no-change": 0, "blocked": 0},
-        configuration_status={"profile_provided": True, "write_ready": True, "missing_defaults": [], "delete_policy": "ignore"},
+        configuration_status={
+            "profile_provided": True,
+            "write_ready": True,
+            "missing_defaults": [],
+            "delete_policy": "ignore",
+        },
     )
 
     execution = executor.execute(plan, profile)
@@ -294,7 +366,12 @@ def test_write_executor_honors_delete_policy(monkeypatch):
             ),
         ),
         summary={"create": 1, "update": 0, "no-change": 0, "blocked": 0},
-        configuration_status={"profile_provided": True, "write_ready": True, "missing_defaults": [], "delete_policy": "delete"},
+        configuration_status={
+            "profile_provided": True,
+            "write_ready": True,
+            "missing_defaults": [],
+            "delete_policy": "delete",
+        },
     )
 
     execution = executor.execute(plan, profile)
@@ -470,7 +547,12 @@ def test_write_executor_applies_expanded_slices_with_fake_backend(monkeypatch):
             ),
         ),
         summary={"create": 10, "update": 0, "no-change": 0, "blocked": 0},
-        configuration_status={"profile_provided": True, "write_ready": True, "missing_defaults": [], "delete_policy": "ignore"},
+        configuration_status={
+            "profile_provided": True,
+            "write_ready": True,
+            "missing_defaults": [],
+            "delete_policy": "ignore",
+        },
     )
 
     execution = executor.execute(plan, profile)
