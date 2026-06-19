@@ -105,6 +105,11 @@ def _scan_text(
     return findings
 
 
+# Files containing this marker are skipped by the static file scan. Used for the
+# guard's own test fixtures, which must embed matching strings to prove detection.
+ALLOW_FILE_MARKER = "sensitive-content: allow-file"
+
+
 def _scan_file(
     path: Path,
     *,
@@ -114,8 +119,11 @@ def _scan_file(
     data = path.read_bytes()
     if b"\x00" in data:
         return []
+    text = data.decode("utf-8", errors="replace")
+    if ALLOW_FILE_MARKER in text:
+        return []
     return _scan_text(
-        data.decode("utf-8", errors="replace"),
+        text,
         source=str(path.relative_to(repo_root)),
         patterns=patterns,
     )

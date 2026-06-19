@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# sensitive-content: allow-file — this file embeds sample matching strings to
+# prove the guard detects them; the static scan must skip itself.
 import sys
 from zipfile import ZipFile
 

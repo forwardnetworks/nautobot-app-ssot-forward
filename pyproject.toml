@@ -38,7 +38,10 @@ extend-exclude = ["forward_nautobot/integrations/forward/queries"]
 [tool.ruff.lint]
 # E/F pyflakes+pycodestyle, I import-sort, UP pyupgrade, B bugbear.
 select = ["E", "F", "I", "UP", "B"]
-ignore = ["E501"]  # line length handled by ruff-format, not enforced hard
+ignore = [
+    "E501",   # line length handled by ruff-format, not enforced hard
+    "UP038",  # isinstance(x, A | B) is slower at runtime than the tuple form; deprecated in newer ruff
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]
