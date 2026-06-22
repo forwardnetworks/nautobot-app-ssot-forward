@@ -60,7 +60,9 @@ def _require_target_tables(*model_names: str):
 
     missing = [name for name in requested if name not in existing_tables]
     if missing:
-        return
+        import pytest
+
+        pytest.skip(f"Nautobot tables not migrated in this env: {', '.join(missing)}")
 
 
 def test_planner_syncs_rows_with_diffsync():

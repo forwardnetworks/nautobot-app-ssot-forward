@@ -83,7 +83,7 @@ def _require_target_tables(*model_names: str):
 
     missing = [name for name in requested if name not in existing_tables]
     if missing:
-        return
+        pytest.skip(f"Nautobot tables not migrated in this env: {', '.join(missing)}")
 
 
 def test_plugin_config_metadata():

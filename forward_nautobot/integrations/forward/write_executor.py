@@ -103,7 +103,9 @@ class ForwardNautobotWriteBackend:
         self._location_dedup = {}
         self._location_dedup_seeded = False
 
-    def _resolve_location_dedup(self, name: str) -> tuple[Any, bool]:
+    def _resolve_location_dedup(
+        self, name: str, *, defaults: dict[str, Any] | None = None
+    ) -> tuple[Any, bool]:
         """Return (Location, created) for `name`, collapsing formatting variants
         of the same physical site to one object (first-seen name wins).
 
@@ -111,7 +113,8 @@ class ForwardNautobotWriteBackend:
         device whose raw location string is a variant links to the same Location
         the locations slice created rather than spawning a duplicate. `created`
         is True only when this call materializes a Location not already present
-        (in the DB or earlier in this run).
+        (in the DB or earlier in this run). `defaults` are applied on INSERT so
+        required columns (location_type, status) are populated atomically.
         """
         clean = str(name or "").strip()
         norm = normalize_location_key(clean)
@@ -132,7 +135,7 @@ class ForwardNautobotWriteBackend:
         manager = getattr(model, "objects", None)
         if manager is None:
             raise LookupError("Nautobot Location model has no manager.")
-        obj, created = manager.get_or_create(name=clean)
+        obj, created = manager.get_or_create(name=clean, defaults=dict(defaults or {}))
         self._location_dedup[norm] = obj
         return obj, bool(created)
 
@@ -506,7 +509,11 @@ class ForwardNautobotWriteBackend:
             content_type_target=("dcim", "Location"),
         )
         # Dedup variants of the same site to one Location (first-seen name wins).
-        obj, created = self._resolve_location_dedup(name)
+        # Pass the required FKs as INSERT defaults so a freshly-created Location is
+        # not written with a NULL location_type/status.
+        obj, created = self._resolve_location_dedup(
+            name, defaults={"location_type": location_type, "status": status}
+        )
         self._sync_fields(
             obj,
             {

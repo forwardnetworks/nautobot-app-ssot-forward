@@ -559,12 +559,13 @@ class NautobotTargetAdapter(Adapter):
         if manager is None or not hasattr(manager, "all"):
             return 0
         try:
-            instances = manager.all()
+            # Materialize inside the guard: the queryset is lazy, so the DB query
+            # executes here, not at .all(). A DB read error must NOT be swallowed
+            # into an empty target (that makes every existing object look absent,
+            # so the diff mass-classifies them as "create"). Fail loud so the run
+            # is recorded as a failure instead of silently re-creating the table.
+            instances = list(manager.all())
         except DjangoOperationalError as exc:
-            # A DB read error must NOT be swallowed into an empty target: that
-            # makes every existing object look absent, so the diff mass-classifies
-            # them as "create". Fail loud so the run is recorded as a failure
-            # instead of silently re-creating/churning the inventory.
             raise ForwardClientError(
                 f"Failed to load existing {mapping.slug} from Nautobot: {exc}"
             ) from exc
