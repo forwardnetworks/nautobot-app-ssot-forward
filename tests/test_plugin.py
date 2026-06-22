@@ -233,11 +233,66 @@ def test_ssot_data_source_uses_persisted_profile_selection(monkeypatch):
     assert captured["writes"] == 0
     assert result["source_summary"]["model_counts"]["devices"] == 2
     assert result["configuration_status"]["profile_provided"] is True
-    assert result["profile_status"]["last_failure"] == "clean"
+    assert result["profile_status"]["last_failure"] == ""  # clean run records no failure
     assert result["profile_status"]["last_support_bundle"] == "forward_devices.nqe"
     assert result["profile_status"]["last_query_reference"] == "forward_devices.nqe"
     assert result["profile_status"]["last_query_mode"] == "bundled_nqe_query_id"
     assert result["profile_status"]["last_snapshot_id"] == "snap-2"
+
+
+def test_run_ingestion_plan_persists_failure_on_hard_error(monkeypatch):
+    """A hard planner failure on a non-dryrun run records last_failure to the
+    profile and does NOT advance last_snapshot_id, then re-raises."""
+    _require_jobs_module()
+    _require_httpx()
+    from forward_nautobot.integrations.forward.exceptions import ForwardClientError
+
+    stored_profile = ForwardConnectionProfileRecord(
+        name="primary",
+        base_url="https://fwd.example",
+        username="alice",
+        password="secret",
+        network_id="net-1",
+        snapshot_id="snap-2",
+        enabled_models=("devices",),
+        last_snapshot_id="snap-1",
+        is_default=True,
+    )
+    saved = {}
+
+    class _FakeManager:
+        def all(self):
+            return [SimpleNamespace(to_record=lambda: stored_profile)]
+
+    class _BoomPlanner:
+        def __init__(self, client):
+            pass
+
+        def run(self, request):
+            raise ForwardClientError("bad credentials")
+
+    monkeypatch.setattr(
+        jobs_module, "ForwardConnectionProfile", SimpleNamespace(objects=_FakeManager())
+    )
+    monkeypatch.setattr(jobs_module, "ForwardClient", lambda settings: object(), raising=True)
+    monkeypatch.setattr(jobs_module, "ForwardIngestionPlanner", _BoomPlanner, raising=True)
+    monkeypatch.setattr(
+        jobs_module, "_save_profile_record", lambda prof: saved.setdefault("prof", prof)
+    )
+
+    with pytest.raises(ForwardClientError):
+        jobs_module._run_ingestion_plan(
+            dryrun=False,
+            profile_name="primary",
+            selected_models="",
+            snapshot_id="snap-2",
+            fetch_all=False,
+            limit=1,
+        )
+
+    assert "prof" in saved, "failed run must persist a profile record"
+    assert saved["prof"].last_failure.startswith("error:")
+    assert saved["prof"].last_snapshot_id == "snap-1"  # baseline not advanced on failure
 
 
 def test_build_ingestion_request_uses_profile_models_and_selected_overrides(monkeypatch):
@@ -565,7 +620,7 @@ def test_ssot_data_source_non_dryrun_applies_writes_and_persists_diff(monkeypatc
     assert result["failure_classification"] == "clean"
     assert job.sync.summary["create"] == 2
     assert job.sync.diff == result["support_bundle"]["diagnostics"]["diff_detail"]
-    assert result["profile_status"]["last_failure"] == "clean"
+    assert result["profile_status"]["last_failure"] == ""  # clean run records no failure
     assert result["profile_status"]["last_support_bundle"] == "forward_devices.nqe"
     assert result["profile_status"]["last_query_reference"] == "forward_devices.nqe"
     assert result["profile_status"]["last_query_mode"] == "bundled_nqe_query_id"

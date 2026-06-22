@@ -262,7 +262,20 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
     request = _build_ingestion_request(dryrun=dryrun, **data)
     client = ForwardClient(request.connection)
     planner = ForwardIngestionPlanner(client)
-    plan = planner.run(request)
+    try:
+        plan = planner.run(request)
+    except Exception as exc:
+        # A hard failure (auth/TLS/network/NQE) must leave a failure trace on the
+        # profile so the operator does not see a stale "last success". Record it
+        # without advancing last_snapshot_id, then re-raise so SSoT marks the job
+        # failed.
+        if not dryrun and request.connection_profile is not None:
+            failed = request.connection_profile.with_run_history(
+                last_run_at=datetime.now().isoformat(timespec="seconds"),
+                last_failure=f"error: {type(exc).__name__}: {exc}"[:500],
+            )
+            _save_profile_record(failed)
+        raise
     write_execution = {}
     if not dryrun:
         write_execution = (
@@ -326,15 +339,21 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
         )
         bundle = bundle.as_dict()
         if request.connection_profile is not None:
+            is_clean = failure_classification == "clean"
             prof = request.connection_profile.with_run_history(
                 last_run_at=str(bundle.get("generated_at") or ""),
-                last_failure=str(failure_classification or ""),
+                last_failure="" if is_clean else str(failure_classification or ""),
                 last_support_bundle=str(bundle.get("query_reference") or ""),
                 last_query_reference=str(bundle.get("query_reference") or ""),
                 last_query_mode=str(plan.reports[0].query_mode or ""),
-                last_snapshot_id=str(plan.reports[0].snapshot_id or ""),
+                # Only advance the snapshot baseline on a clean run. Advancing it on
+                # a failed/blocked run would let skip-if-same-snapshot skip
+                # re-syncing a snapshot whose write never succeeded.
+                last_snapshot_id=str(plan.reports[0].snapshot_id or "") if is_clean else "",
             )
-            if not dryrun and failure_classification == "clean":
+            # Persist run history on EVERY non-dryrun run (clean or not) so the
+            # Status/Diagnostics UI reflects failures instead of the last success.
+            if not dryrun:
                 saved_profile = _save_profile_record(prof)
                 if saved_profile is not None:
                     prof = saved_profile
