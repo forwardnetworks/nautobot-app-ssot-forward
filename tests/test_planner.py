@@ -688,3 +688,39 @@ def test_planner_diff_fallback_narrows_exception(monkeypatch):
     assert plan is not None
     loc_slice = plan.diff_detail.get("slices", {}).get("locations", {})
     assert "ForwardClientError" in str(loc_slice), f"Exception type not recorded: {loc_slice}"
+
+
+def test_compute_tiers_detects_query_parameter_cycle():
+    _require_planner()
+    from forward_nautobot.integrations.forward.exceptions import ForwardConfigurationError
+    from forward_nautobot.integrations.forward.registry import ForwardModelMapping
+
+    a = ForwardModelMapping(
+        slug="a",
+        forward_query_file="a.nqe",
+        description="",
+        query_parameters={"x": ("b",)},
+    )
+    b = ForwardModelMapping(
+        slug="b",
+        forward_query_file="b.nqe",
+        description="",
+        query_parameters={"y": ("a",)},
+    )
+    import pytest
+
+    with pytest.raises(ForwardConfigurationError, match="cycle"):
+        ForwardIngestionPlanner._compute_tiers((a, b))
+
+
+def test_compute_tiers_levels_default_slices():
+    _require_planner()
+    from forward_nautobot.integrations.forward.registry import get_model_mappings
+
+    mappings = get_model_mappings(("locations", "platforms", "device_types", "devices"))
+    tiers = ForwardIngestionPlanner._compute_tiers(mappings)
+    slugs_by_tier = [{m.slug for m in tier} for tier in tiers]
+    # locations first; platforms/device_types share a tier; devices last.
+    assert slugs_by_tier[0] == {"locations"}
+    assert {"platforms", "device_types"} <= slugs_by_tier[1]
+    assert "devices" in slugs_by_tier[-1]

@@ -10,7 +10,7 @@ from typing import Any
 from ...models import ForwardConnectionProfileRecord
 from .adapters import ForwardSourceAdapter, NautobotTargetAdapter
 from .client import ForwardClient
-from .exceptions import ForwardClientError
+from .exceptions import ForwardClientError, ForwardConfigurationError
 from .models import ForwardConnectionSettings, ForwardQuerySpec, ForwardSyncReport
 from .registry import ForwardModelMapping, get_model_mapping, get_model_mappings
 from .write_contract import ForwardWriteContractAdvisor
@@ -296,14 +296,37 @@ class ForwardIngestionPlanner:
         parameters can be computed.
         """
         selected_slugs = {m.slug for m in mappings}
-        levels: dict[str, int] = {}
+        deps_by_slug: dict[str, list[str]] = {}
         for m in mappings:
             param_source_deps = {
                 src_slug for src_slugs in m.query_parameters.values() for src_slug in src_slugs
             }
             all_deps = set(m.depends_on) | param_source_deps
-            selected_deps = [d for d in all_deps if d in selected_slugs]
-            levels[m.slug] = 1 + max((levels[d] for d in selected_deps), default=0)
+            deps_by_slug[m.slug] = [d for d in all_deps if d in selected_slugs]
+
+        # Longest-path levelling with explicit cycle detection. The registry only
+        # cycle-checks depends_on, so a cycle introduced via query_parameters must
+        # be caught here rather than KeyError-ing or mis-levelling at runtime.
+        levels: dict[str, int] = {}
+        resolving: set[str] = set()
+
+        def _level_of(slug: str) -> int:
+            cached = levels.get(slug)
+            if cached is not None:
+                return cached
+            if slug in resolving:
+                raise ForwardConfigurationError(
+                    f"Forward model dependency cycle detected involving `{slug}` "
+                    "(check depends_on and query_parameters)."
+                )
+            resolving.add(slug)
+            level = 1 + max((_level_of(d) for d in deps_by_slug[slug]), default=0)
+            resolving.discard(slug)
+            levels[slug] = level
+            return level
+
+        for m in mappings:
+            _level_of(m.slug)
         max_level = max(levels.values(), default=1)
         tiers: list[list[ForwardModelMapping]] = [[] for _ in range(max_level)]
         for m in mappings:

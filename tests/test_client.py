@@ -780,8 +780,10 @@ def test_client_caches_snapshot_listing_and_latest_processed_snapshot():
     assert calls["latest_processed"] == 1
 
 
-def test_client_retries_transient_http_errors_before_succeeding():
+def test_client_retries_transient_http_errors_before_succeeding(monkeypatch):
     _require_client()
+    slept: list[float] = []
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: slept.append(seconds))
     calls = {"nqe_runs": 0, "execution_results": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -833,6 +835,49 @@ def test_client_retries_transient_http_errors_before_succeeding():
     assert rows == [{"id": "r1"}]
     assert calls["nqe_runs"] == 2
     assert calls["execution_results"] == 1
+    # The 503 retry backed off once before the successful attempt.
+    assert len(slept) == 1
+    assert slept[0] > 0
+
+
+def test_client_honors_retry_after_header(monkeypatch):
+    _require_client()
+    slept: list[float] = []
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: slept.append(seconds))
+    calls = {"nqe_runs": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/snapshots/latestProcessed":
+            return httpx.Response(200, json={"id": "snap-2", "state": "processed"})
+        if path == "/api/networks/net-1/nqe-executions":
+            calls["nqe_runs"] += 1
+            if calls["nqe_runs"] == 1:
+                return httpx.Response(429, text="slow down", headers={"Retry-After": "7"})
+            return httpx.Response(
+                200, json={"executionKey": "e", "status": "COMPLETED", "outcome": "OK"}
+            )
+        if path == "/api/networks/net-1/nqe-executions/e/result":
+            return httpx.Response(
+                200, json={"items": [{"fields": {"id": "r1"}}], "totalNumItems": 1}
+            )
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            retries=1,
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    client.run_nqe_query(
+        query_spec=ForwardQuerySpec(query_text="select { id: string }"), fetch_all=False
+    )
+    # Retry-After: 7 is honored verbatim (not the exponential default).
+    assert slept == [7.0]
 
 
 def test_client_rejects_auth_failures_without_retry():

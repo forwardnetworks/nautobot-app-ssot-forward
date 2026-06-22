@@ -1,9 +1,11 @@
 """Forward API client for Nautobot sync jobs."""
 
 import json
+import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -13,6 +15,10 @@ from .exceptions import ForwardClientError, ForwardConfigurationError
 from .models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings, ForwardQuerySpec
 
 TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+# Exponential backoff bounds for retrying transient failures (separate from the
+# per-request min-interval throttle). Honors Retry-After when the server sends it.
+_RETRY_BACKOFF_BASE_SECONDS = 0.5
+_RETRY_BACKOFF_CAP_SECONDS = 8.0
 NQE_ASYNC_RESULT_ACCEPT = "application/x-ndjson, application/jsonl;q=0.9, application/json;q=0.1"
 
 
@@ -136,13 +142,48 @@ class ForwardClient:
                         f"Forward API request failed with HTTP {status_code}: {exc.response.text}"
                     ) from exc
                 last_error = exc
+                self._sleep_before_retry(attempt, exc.response.headers.get("Retry-After"))
             except (httpx.TimeoutException, httpx.RequestError) as exc:
                 self._last_request_completed_at = time.monotonic()
                 if attempt >= self.settings.retries:
                     raise ForwardClientError(f"Forward API request failed: {exc}") from exc
                 last_error = exc
+                self._sleep_before_retry(attempt, None)
 
         raise ForwardClientError("Forward API request failed.") from last_error
+
+    @staticmethod
+    def _retry_after_seconds(retry_after: str | None) -> float | None:
+        """Parse a Retry-After header value (delta-seconds or HTTP-date)."""
+        if not retry_after:
+            return None
+        value = str(retry_after).strip()
+        try:
+            return max(0.0, float(int(value)))
+        except (TypeError, ValueError):
+            pass
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        delta = when.timestamp() - time.time()
+        return max(0.0, delta)
+
+    def _sleep_before_retry(self, attempt: int, retry_after: str | None) -> None:
+        """Back off between retries: honor Retry-After, else exponential + jitter.
+
+        Decorrelated jitter matters because the planner fans requests across a
+        thread pool sharing this client; without it N workers would retry in
+        lockstep and re-stampede a throttled Forward API.
+        """
+        wait = self._retry_after_seconds(retry_after)
+        if wait is None:
+            backoff = min(_RETRY_BACKOFF_BASE_SECONDS * (2**attempt), _RETRY_BACKOFF_CAP_SECONDS)
+            wait = backoff + random.uniform(0.0, _RETRY_BACKOFF_BASE_SECONDS)
+        if wait > 0:
+            time.sleep(wait)
 
     def _respect_min_interval(self) -> None:
         minimum_interval = float(self.settings.request_min_interval_seconds or 0.0)
@@ -450,7 +491,14 @@ class ForwardClient:
             line = line.strip()
             if not line:
                 continue
-            parsed_line = json.loads(line)
+            try:
+                parsed_line = json.loads(line)
+            except json.JSONDecodeError as exc:
+                # Surface as the client's own error type so callers' ForwardClientError
+                # handling applies, instead of a raw ValueError aborting the run.
+                raise ForwardClientError(
+                    f"Forward NQE result contained a malformed ndjson line: {exc}"
+                ) from exc
             row = self._record_from_nqe_item(parsed_line)
             if row is not None:
                 rows.append(row)
@@ -550,7 +598,12 @@ class ForwardClient:
                         stripped = line.strip()
                         if not stripped:
                             continue
-                        parsed = json.loads(stripped)
+                        try:
+                            parsed = json.loads(stripped)
+                        except json.JSONDecodeError as exc:
+                            raise ForwardClientError(
+                                f"Forward NQE stream contained a malformed ndjson line: {exc}"
+                            ) from exc
                         row = self._record_from_nqe_item(parsed)
                         if row is not None:
                             rows.append(row)
