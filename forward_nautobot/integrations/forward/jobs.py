@@ -377,6 +377,29 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
     return result, plan, write_execution
 
 
+def _render_safe_diff(plan) -> dict:
+    """Translate a ForwardIngestionPlan into a DiffSync-Diff-shaped dict.
+
+    nautobot-ssot's diff renderer expects ``{model: {key: {"+": {...}, "-": {...}}}}``.
+    The planner's diff_detail is a richer custom shape (mode/slices/snapshots) that
+    crashes that template, so build the expected structure from the write
+    operations. Returns an empty dict when there is nothing to show.
+    """
+    diff: dict[str, dict[str, dict[str, dict]]] = {}
+    write_plan = getattr(plan, "write_plan", None)
+    for op in getattr(write_plan, "operations", ()) or ():
+        action = getattr(op, "action", "")
+        if action == "no-change":
+            continue
+        fields = dict(getattr(op, "fields", {}) or {})
+        if action == "delete":
+            entry = {"-": fields}
+        else:  # create / update (planner does not carry the prior state)
+            entry = {"+": fields}
+        diff.setdefault(op.model_slug, {})[op.record_key] = entry
+    return diff
+
+
 class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instance-attributes
     """SSoT DataSource wrapper for Forward inventory ingestion."""
 
@@ -662,6 +685,10 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
         self._forward_job_data = dict(kwargs)
         return super().run(*args, **kwargs)
 
+    @staticmethod
+    def _render_safe_diff(plan) -> dict:  # pragma: no cover - thin shim, see module fn
+        return _render_safe_diff(plan)
+
     def sync_data(self, memory_profiling=False):
         """Run the existing Forward planner under the SSoT DataSource lifecycle."""
         del memory_profiling
@@ -674,7 +701,11 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
         self.source_adapter = plan.source
         self.target_adapter = plan.target
         if getattr(self, "sync", None) is not None:
-            self.sync.diff = plan.diff_detail
+            # Feed the SSoT "View Diff" UI a DiffSync-Diff-shaped dict it can
+            # render. The planner's rich diff_detail (mode/slices/snapshots) would
+            # crash that template; it stays available in the result + support
+            # bundle for operators who need the full picture.
+            self.sync.diff = _render_safe_diff(plan)
             if hasattr(self.sync, "summary"):
                 self.sync.summary = plan.diff_summary
             self.sync.save()

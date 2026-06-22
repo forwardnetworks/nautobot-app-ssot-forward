@@ -240,6 +240,32 @@ def test_ssot_data_source_uses_persisted_profile_selection(monkeypatch):
     assert result["profile_status"]["last_snapshot_id"] == "snap-2"
 
 
+def test_render_safe_diff_shape():
+    _require_jobs_module()
+    op = lambda slug, key, action, fields: SimpleNamespace(  # noqa: E731
+        model_slug=slug, record_key=key, action=action, fields=fields
+    )
+    plan = SimpleNamespace(
+        write_plan=SimpleNamespace(
+            operations=(
+                op("locations", "A", "create", {"name": "A"}),
+                op("devices", "d1", "update", {"name": "d1", "location": "A"}),
+                op("devices", "d2", "delete", {"name": "d2"}),
+                op("devices", "d3", "no-change", {"name": "d3"}),
+            )
+        )
+    )
+    diff = jobs_module._render_safe_diff(plan)
+    assert diff["locations"]["A"] == {"+": {"name": "A"}}
+    assert diff["devices"]["d1"] == {"+": {"name": "d1", "location": "A"}}
+    assert diff["devices"]["d2"] == {"-": {"name": "d2"}}
+    assert "d3" not in diff["devices"]  # no-change is omitted
+    # Every entry is render-safe ({"+"/"-"} only).
+    for slice_diff in diff.values():
+        for entry in slice_diff.values():
+            assert set(entry).issubset({"+", "-"})
+
+
 def test_run_ingestion_plan_persists_failure_on_hard_error(monkeypatch):
     """A hard planner failure on a non-dryrun run records last_failure to the
     profile and does NOT advance last_snapshot_id, then re-raises."""
@@ -546,7 +572,14 @@ def test_ssot_data_source_dryrun_uses_bundled_contracts_and_persists_diff(monkey
     assert captured["writes"] == 0
     assert result["diff_summary"]["create"] == 2
     assert job.sync.summary["create"] == 2
-    assert job.sync.diff == result["support_bundle"]["diagnostics"]["diff_detail"]
+    # sync.diff is the render-safe DiffSync shape ({model: {key: {"+"/"-"}}}), not
+    # the rich custom diff_detail (which would crash the SSoT View Diff template).
+    assert isinstance(job.sync.diff, dict)
+    for slice_diff in job.sync.diff.values():
+        for entry in slice_diff.values():
+            assert set(entry).issubset({"+", "-"})
+    # The rich detail is still available to operators via the support bundle.
+    assert "diff_detail" in result["support_bundle"]["diagnostics"]
     assert result["configuration_status"]["profile_provided"] is False
     assert result["failure_classification"] == "clean"
 
@@ -619,7 +652,14 @@ def test_ssot_data_source_non_dryrun_applies_writes_and_persists_diff(monkeypatc
     assert result["write_execution"]["summary"]["created"] == 2
     assert result["failure_classification"] == "clean"
     assert job.sync.summary["create"] == 2
-    assert job.sync.diff == result["support_bundle"]["diagnostics"]["diff_detail"]
+    # sync.diff is the render-safe DiffSync shape ({model: {key: {"+"/"-"}}}), not
+    # the rich custom diff_detail (which would crash the SSoT View Diff template).
+    assert isinstance(job.sync.diff, dict)
+    for slice_diff in job.sync.diff.values():
+        for entry in slice_diff.values():
+            assert set(entry).issubset({"+", "-"})
+    # The rich detail is still available to operators via the support bundle.
+    assert "diff_detail" in result["support_bundle"]["diagnostics"]
     assert result["profile_status"]["last_failure"] == ""  # clean run records no failure
     assert result["profile_status"]["last_support_bundle"] == "forward_devices.nqe"
     assert result["profile_status"]["last_query_reference"] == "forward_devices.nqe"

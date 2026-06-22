@@ -130,6 +130,7 @@ from .diffsync_models import (
     ForwardVLAN,
     ForwardVRF,
 )
+from .exceptions import ForwardClientError
 from .registry import CORE_MODEL_MAPPINGS, CORE_MODEL_SLUGS, ForwardModelMapping, get_model_mappings
 
 
@@ -559,16 +560,25 @@ class NautobotTargetAdapter(Adapter):
             return 0
         try:
             instances = manager.all()
-            for instance in instances:
+        except DjangoOperationalError as exc:
+            # A DB read error must NOT be swallowed into an empty target: that
+            # makes every existing object look absent, so the diff mass-classifies
+            # them as "create". Fail loud so the run is recorded as a failure
+            # instead of silently re-creating/churning the inventory.
+            raise ForwardClientError(
+                f"Failed to load existing {mapping.slug} from Nautobot: {exc}"
+            ) from exc
+        for instance in instances:
+            # Skip and continue on a single malformed row (e.g. a blank identity
+            # field) rather than truncating the rest of the slice's target load,
+            # which would also make the remaining objects look absent.
+            try:
                 row = self._serialize_orm_row(mapping, instance)
                 if not row:
                     continue
-                loaded_rows = self.load_rows(mapping.slug, (row,))
-                loaded += len(loaded_rows)
-        except DjangoOperationalError:
-            return 0
-        except Exception:
-            return loaded
+                loaded += len(self.load_rows(mapping.slug, (row,)))
+            except (ValueError, KeyError, TypeError):
+                continue
         return loaded
 
     def slice_for_model(self, model_slug: str) -> NautobotTargetAdapter:
