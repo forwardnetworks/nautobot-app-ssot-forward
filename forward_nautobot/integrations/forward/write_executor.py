@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import re
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
 try:
     from django.apps import apps as django_apps
     from django.contrib.contenttypes.models import ContentType
+    from django.db import transaction as django_transaction
     from django.utils.text import slugify
 except Exception:  # pragma: no cover - local compatibility import path
     django_apps = None
     ContentType = None
+    django_transaction = None
     slugify = None
 
 from ...models import ForwardConnectionProfileRecord
@@ -77,6 +80,42 @@ class ForwardNautobotWriteBackend:
 
     def __init__(self, model_resolver=None):
         self.model_resolver = model_resolver or self._default_model_resolver
+        # Per-run resolution caches, reset by reset_run_caches() at execute() start.
+        # _named_cache: committed (app_label, model_name, name) -> obj
+        # _pending_named: objects resolved during the current operation's savepoint;
+        #   merged into _named_cache on success, discarded on rollback so a
+        #   rolled-back FK object is never served to a later row.
+        # _existing_index: slug -> {record_key -> instance}, built once per slice.
+        self._named_cache: dict[tuple[str, str, str], Any] = {}
+        self._pending_named: dict[tuple[str, str, str], Any] = {}
+        self._existing_index: dict[str, dict[str, Any]] = {}
+
+    def reset_run_caches(self) -> None:
+        self._named_cache = {}
+        self._pending_named = {}
+        self._existing_index = {}
+
+    @staticmethod
+    def _savepoint():
+        """A nested transaction savepoint when Django is available, else a no-op.
+
+        Used per write operation so an IntegrityError in one row rolls back only
+        that row's partial FK creations (not the whole run) and does not poison
+        the surrounding transaction.
+        """
+        if django_transaction is not None:
+            return django_transaction.atomic()
+        return nullcontext()
+
+    def _begin_op(self) -> None:
+        self._pending_named = {}
+
+    def _commit_op(self) -> None:
+        self._named_cache.update(self._pending_named)
+        self._pending_named = {}
+
+    def _rollback_op(self) -> None:
+        self._pending_named = {}
 
     @staticmethod
     def _default_model_resolver(app_label: str, model_name: str):
@@ -102,6 +141,14 @@ class ForwardNautobotWriteBackend:
         *,
         content_type_target: tuple[str, str] | None = None,
     ):
+        cache_key = (app_label, model_name, str(value))
+        cached = self._pending_named.get(cache_key)
+        if cached is None:
+            cached = self._named_cache.get(cache_key)
+        if cached is not None:
+            # Cache hit also short-circuits the content_types.add m2m write, which
+            # is established the first time a given name is resolved this run.
+            return cached
         model = self.resolve_model(app_label, model_name)
         manager = getattr(model, "objects", None)
         if manager is None:
@@ -114,9 +161,10 @@ class ForwardNautobotWriteBackend:
         ):
             target_model = self.resolve_model(*content_type_target)
             content_type = ContentType.objects.get_for_model(target_model)
-            manager = obj.content_types
-            if hasattr(manager, "add"):
-                manager.add(content_type)
+            ct_manager = obj.content_types
+            if hasattr(ct_manager, "add"):
+                ct_manager.add(content_type)
+        self._pending_named[cache_key] = obj
         return obj
 
     @staticmethod
@@ -154,16 +202,22 @@ class ForwardNautobotWriteBackend:
     @staticmethod
     def _sync_fields(instance, updates: dict[str, Any]) -> bool:
         allowed_fields = ForwardNautobotWriteBackend._model_field_names(instance)
-        changed = False
+        changed_fields: list[str] = []
         for field_name, value in updates.items():
             if allowed_fields and field_name not in allowed_fields:
                 continue
             if getattr(instance, field_name, None) != value:
                 setattr(instance, field_name, value)
-                changed = True
-        if changed:
-            instance.save()
-        return changed
+                changed_fields.append(field_name)
+        if changed_fields:
+            # Limit the write (and the signal/changelog surface) to the fields that
+            # actually changed. Safe because get_or_create already saved the row, so
+            # the instance has a pk, and changed_fields are concrete model fields.
+            try:
+                instance.save(update_fields=changed_fields)
+            except (TypeError, ValueError):  # managers/instances without update_fields
+                instance.save()
+        return bool(changed_fields)
 
     @staticmethod
     def _instance_value(value: Any) -> Any:
@@ -209,6 +263,22 @@ class ForwardNautobotWriteBackend:
             return list(manager.records.values())
         return ()
 
+    def _existing_index_for(self, model_slug: str) -> dict[str, Any]:
+        """record_key -> instance for a slice, materialized once per run.
+
+        Replaces the previous per-delete full-table scan (O(deletes x table))
+        with a single pass; reused by both explicit deletes and reconcile_missing.
+        """
+        index = self._existing_index.get(model_slug)
+        if index is None:
+            index = {}
+            for instance in self._iter_existing_instances(model_slug):
+                record_key = self._record_key_for_instance(model_slug, instance)
+                if record_key:
+                    index.setdefault(record_key, instance)
+            self._existing_index[model_slug] = index
+        return index
+
     def _mark_inactive(self, instance):
         if not hasattr(instance, "status"):
             raise ValueError("Model does not expose a status field for mark_inactive.")
@@ -225,8 +295,7 @@ class ForwardNautobotWriteBackend:
         if delete_policy not in {"delete", "mark_inactive"}:
             return ()
         items: list[ForwardWriteExecutionItem] = []
-        for instance in self._iter_existing_instances(model_slug):
-            record_key = self._record_key_for_instance(model_slug, instance)
+        for record_key, instance in self._existing_index_for(model_slug).items():
             if not record_key or record_key in source_keys:
                 continue
             try:
@@ -338,15 +407,15 @@ class ForwardNautobotWriteBackend:
         *,
         planned_action: str = "delete",
     ) -> ForwardWriteExecutionItem:
-        for instance in self._iter_existing_instances(model_slug):
-            if self._record_key_for_instance(model_slug, instance) == record_key:
-                return self._apply_delete_policy(
-                    model_slug=model_slug,
-                    record_key=record_key,
-                    instance=instance,
-                    delete_policy=delete_policy,
-                    planned_action=planned_action,
-                )
+        instance = self._existing_index_for(model_slug).get(record_key)
+        if instance is not None:
+            return self._apply_delete_policy(
+                model_slug=model_slug,
+                record_key=record_key,
+                instance=instance,
+                delete_policy=delete_policy,
+                planned_action=planned_action,
+            )
         return ForwardWriteExecutionItem(
             model_slug=model_slug,
             record_key=record_key,
@@ -971,20 +1040,26 @@ class ForwardNautobotWriteBackend:
                 getattr(profile, "effective_delete_policy", "ignore"),
                 planned_action=operation.action,
             )
+        mapping = self._mapping_for_slug(operation.model_slug)
+        handler_name = getattr(mapping, "write_handler", "") if mapping is not None else ""
+        handler = getattr(self, handler_name, None) if handler_name else None
+        if handler is None:
+            return ForwardWriteExecutionItem(
+                model_slug=operation.model_slug,
+                record_key=operation.record_key,
+                planned_action=operation.action,
+                status="skipped",
+                message="No Nautobot writer is registered for this slice yet.",
+            )
+        # Run the handler inside a savepoint so a failure rolls back this row's
+        # partial FK scaffolding instead of leaving orphans (and so a caught
+        # IntegrityError does not poison the surrounding run-level transaction).
+        self._begin_op()
         try:
-            mapping = self._mapping_for_slug(operation.model_slug)
-            handler_name = getattr(mapping, "write_handler", "") if mapping is not None else ""
-            handler = getattr(self, handler_name, None) if handler_name else None
-            if handler is None:
-                return ForwardWriteExecutionItem(
-                    model_slug=operation.model_slug,
-                    record_key=operation.record_key,
-                    planned_action=operation.action,
-                    status="skipped",
-                    message="No Nautobot writer is registered for this slice yet.",
-                )
-            obj, created = handler(operation, profile)
+            with self._savepoint():
+                obj, created = handler(operation, profile)
         except Exception as exc:  # pragma: no cover - exercised via targeted tests
+            self._rollback_op()
             return ForwardWriteExecutionItem(
                 model_slug=operation.model_slug,
                 record_key=operation.record_key,
@@ -992,6 +1067,7 @@ class ForwardNautobotWriteBackend:
                 status="error",
                 message=str(exc),
             )
+        self._commit_op()
         status = "created" if created else "updated"
         if operation.action == "no-change":
             status = "no-change"
@@ -1025,43 +1101,44 @@ class ForwardNautobotWriteExecutor:
             "deleted": 0,
             "deactivated": 0,
             "error": 0,
-            "errors": 0,
         }
         items: list[ForwardWriteExecutionItem] = []
         resolved_profile = profile or ForwardConnectionProfileRecord(name="runtime")
         source_keys_by_slug: dict[str, set[str]] = {}
-        for operation in plan.operations:
-            if operation.action != "delete":
-                source_keys_by_slug.setdefault(operation.model_slug, set()).add(
-                    operation.record_key
-                )
-            item = self.backend.apply_operation(operation, resolved_profile)
-            if item.status == "error":
-                summary["error"] += 1
-                summary["errors"] += 1
-            else:
-                summary[item.status] = summary.get(item.status, 0) + 1
+
+        def _tally(item: ForwardWriteExecutionItem) -> None:
+            summary[item.status] = summary.get(item.status, 0) + 1
             items.append(item)
-        delete_policy = getattr(resolved_profile, "effective_delete_policy", "ignore")
-        delta_models = set(getattr(plan, "delta_models", ()) or ())
-        if plan.delta_mode and not delta_models:
-            delta_models = set(source_keys_by_slug)
-        if delete_policy in {"delete", "mark_inactive"}:
-            for model_slug, source_keys in source_keys_by_slug.items():
-                if model_slug in delta_models:
-                    continue
-                reconciled_items = self.backend.reconcile_missing(
-                    model_slug,
-                    source_keys,
-                    delete_policy,
-                )
-                for item in reconciled_items:
-                    if item.status == "error":
-                        summary["error"] += 1
-                        summary["errors"] += 1
-                    else:
-                        summary[item.status] = summary.get(item.status, 0) + 1
-                    items.append(item)
+
+        # One run-level transaction so a hard failure (crash/OOM/IntegrityError that
+        # escapes a savepoint) rolls the whole sync back instead of leaving Nautobot
+        # half-written; per-operation savepoints inside apply_operation give per-row
+        # isolation within it. No-op context when Django is unavailable (unit tests).
+        self.backend.reset_run_caches()
+        run_atomic = (
+            django_transaction.atomic() if django_transaction is not None else nullcontext()
+        )
+        with run_atomic:
+            for operation in plan.operations:
+                if operation.action != "delete":
+                    source_keys_by_slug.setdefault(operation.model_slug, set()).add(
+                        operation.record_key
+                    )
+                _tally(self.backend.apply_operation(operation, resolved_profile))
+            delete_policy = getattr(resolved_profile, "effective_delete_policy", "ignore")
+            delta_models = set(getattr(plan, "delta_models", ()) or ())
+            if plan.delta_mode and not delta_models:
+                delta_models = set(source_keys_by_slug)
+            if delete_policy in {"delete", "mark_inactive"}:
+                for model_slug, source_keys in source_keys_by_slug.items():
+                    if model_slug in delta_models:
+                        continue
+                    for item in self.backend.reconcile_missing(
+                        model_slug,
+                        source_keys,
+                        delete_policy,
+                    ):
+                        _tally(item)
         failure_classification = (
             "clean"
             if summary["error"] == 0 and summary["blocked"] == 0

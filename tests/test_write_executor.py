@@ -42,6 +42,7 @@ class _FakeManager:
     def __init__(self, allowed_fields: tuple[str, ...] | None = None):
         self.records: dict[tuple[tuple[str, object], ...], _FakeRecord] = {}
         self.allowed_fields = set(allowed_fields or ())
+        self.get_or_create_calls = 0
 
     @staticmethod
     def _key(lookup: dict[str, object]) -> tuple[tuple[str, object], ...]:
@@ -61,6 +62,7 @@ class _FakeManager:
             raise AssertionError(f"unexpected field(s): {', '.join(unknown)}")
 
     def get_or_create(self, defaults=None, **lookup):
+        self.get_or_create_calls += 1
         self._validate(lookup)
         self._validate(defaults)
         key = self._key(lookup)
@@ -566,3 +568,162 @@ def test_write_executor_applies_expanded_slices_with_fake_backend(monkeypatch):
     assert execution.items[8].status == "created"
     assert execution.items[9].status == "created"
     assert execution.items[10].status == "created"
+
+
+def _device_op(name: str) -> ForwardWriteOperation:
+    return ForwardWriteOperation(
+        model_slug="devices",
+        record_key=name,
+        nautobot_scope="dcim.device",
+        action="create",
+        fields={
+            "name": name,
+            "location": "SITE-ALPHA",
+            "vendor": "Cisco",
+            "model": "NX-9000",
+            "device_type": "NX-9000",
+        },
+        contract_version="v1",
+    )
+
+
+def _profile(**kw) -> ForwardConnectionProfileRecord:
+    base = dict(
+        name="profile",
+        default_location_type_name="Building",
+        default_location_status_name="Active",
+        default_device_role_name="Access Switch",
+        default_device_status_name="Active",
+    )
+    base.update(kw)
+    return ForwardConnectionProfileRecord(**base)
+
+
+def test_write_executor_caches_fk_resolution_across_rows(monkeypatch):
+    """The run-constant Role/Status and shared Location/Manufacturer are resolved
+    once and reused, not re-fetched per device row."""
+    models, resolve = _fake_model_resolver()
+    monkeypatch.setattr(write_executor, "django_apps", object())
+    monkeypatch.setattr(write_executor, "ContentType", None)
+
+    backend = ForwardNautobotWriteBackend(model_resolver=resolve)
+    executor = ForwardNautobotWriteExecutor(backend=backend)
+    plan = ForwardWritePlan(
+        operations=(_device_op("device-1"), _device_op("device-2"), _device_op("device-3")),
+        summary={"create": 3, "update": 0, "no-change": 0, "blocked": 0},
+        configuration_status={"profile_provided": True, "write_ready": True},
+    )
+
+    execution = executor.execute(plan, _profile())
+
+    assert execution.summary["created"] == 3
+    # Role / Status / Location / Manufacturer are identical across all 3 devices:
+    # each named model is resolved exactly once thanks to the per-run cache.
+    assert models[("extras", "Role")].objects.get_or_create_calls == 1
+    assert models[("dcim", "Location")].objects.get_or_create_calls == 1
+    assert models[("dcim", "Manufacturer")].objects.get_or_create_calls == 1
+    # Status is shared by all device rows too (one name, one resolution).
+    assert models[("extras", "Status")].objects.get_or_create_calls == 1
+
+
+def test_write_executor_summary_has_single_error_key(monkeypatch):
+    models, resolve = _fake_model_resolver()
+    monkeypatch.setattr(write_executor, "django_apps", object())
+    monkeypatch.setattr(write_executor, "ContentType", None)
+    backend = ForwardNautobotWriteBackend(model_resolver=resolve)
+    executor = ForwardNautobotWriteExecutor(backend=backend)
+    plan = ForwardWritePlan(
+        operations=(_device_op("device-1"),),
+        summary={"create": 1, "update": 0, "no-change": 0, "blocked": 0},
+        configuration_status={"profile_provided": True, "write_ready": True},
+    )
+    execution = executor.execute(plan, _profile())
+    assert "error" in execution.summary
+    assert "errors" not in execution.summary
+
+
+def test_write_executor_builds_delete_index_once(monkeypatch):
+    """Multiple deletes against one slice materialize the existing-instance set a
+    single time instead of a full-table scan per delete."""
+    models, resolve = _fake_model_resolver()
+    monkeypatch.setattr(write_executor, "django_apps", object())
+    monkeypatch.setattr(write_executor, "ContentType", None)
+    backend = ForwardNautobotWriteBackend(model_resolver=resolve)
+
+    scans = {"count": 0}
+    real_iter = backend._iter_existing_instances
+
+    def _counting_iter(slug):
+        scans["count"] += 1
+        return real_iter(slug)
+
+    monkeypatch.setattr(backend, "_iter_existing_instances", _counting_iter)
+
+    loc = models[("dcim", "Location")].objects
+    loc.get_or_create(name="SITE-OLD-1")
+    loc.get_or_create(name="SITE-OLD-2")
+
+    executor = ForwardNautobotWriteExecutor(backend=backend)
+    plan = ForwardWritePlan(
+        operations=(
+            ForwardWriteOperation(
+                model_slug="locations",
+                record_key="SITE-OLD-1",
+                nautobot_scope="dcim.location",
+                action="delete",
+                fields={"name": "SITE-OLD-1"},
+                contract_version="v1",
+            ),
+            ForwardWriteOperation(
+                model_slug="locations",
+                record_key="SITE-OLD-2",
+                nautobot_scope="dcim.location",
+                action="delete",
+                fields={"name": "SITE-OLD-2"},
+                contract_version="v1",
+            ),
+        ),
+        summary={"create": 0, "update": 0, "no-change": 0, "blocked": 0},
+        configuration_status={"profile_provided": True, "write_ready": True},
+    )
+
+    execution = executor.execute(plan, _profile(delete_policy="delete"))
+
+    assert execution.summary.get("deleted") == 2
+    # Two deletes, but the existing-instance set is materialized only once.
+    assert scans["count"] == 1
+
+
+def test_write_executor_savepoint_isolates_failing_row(monkeypatch):
+    """A row that raises is recorded as error and does not abort sibling rows."""
+    models, resolve = _fake_model_resolver()
+    monkeypatch.setattr(write_executor, "django_apps", object())
+    monkeypatch.setattr(write_executor, "ContentType", None)
+    backend = ForwardNautobotWriteBackend(model_resolver=resolve)
+    executor = ForwardNautobotWriteExecutor(backend=backend)
+    plan = ForwardWritePlan(
+        operations=(
+            _device_op("device-1"),
+            # missing required `location` -> handler raises ValueError
+            ForwardWriteOperation(
+                model_slug="devices",
+                record_key="device-bad",
+                nautobot_scope="dcim.device",
+                action="create",
+                fields={
+                    "name": "device-bad",
+                    "vendor": "Cisco",
+                    "model": "NX-9000",
+                    "device_type": "NX-9000",
+                },
+                contract_version="v1",
+            ),
+            _device_op("device-2"),
+        ),
+        summary={"create": 3, "update": 0, "no-change": 0, "blocked": 0},
+        configuration_status={"profile_provided": True, "write_ready": True},
+    )
+    execution = executor.execute(plan, _profile())
+    assert execution.summary["created"] == 2
+    assert execution.summary["error"] == 1
+    assert [item.status for item in execution.items] == ["created", "error", "created"]
