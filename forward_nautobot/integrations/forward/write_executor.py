@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover - local compatibility import path
     slugify = None
 
 from ...models import ForwardConnectionProfileRecord
+from .normalize import normalize_location_key
 from .registry import get_model_mapping
 from .support import classify_failure
 from .write_path import ForwardWriteOperation, ForwardWritePlan
@@ -89,11 +90,51 @@ class ForwardNautobotWriteBackend:
         self._named_cache: dict[tuple[str, str, str], Any] = {}
         self._pending_named: dict[tuple[str, str, str], Any] = {}
         self._existing_index: dict[str, dict[str, Any]] = {}
+        # Maps a normalized location key -> the Location object to use, so
+        # formatting variants of one physical site (ST vs STREET, case, spacing)
+        # resolve to a single Nautobot Location instead of duplicates.
+        self._location_dedup: dict[str, Any] = {}
+        self._location_dedup_seeded = False
 
     def reset_run_caches(self) -> None:
         self._named_cache = {}
         self._pending_named = {}
         self._existing_index = {}
+        self._location_dedup = {}
+        self._location_dedup_seeded = False
+
+    def _resolve_location_dedup(self, name: str) -> tuple[Any, bool]:
+        """Return (Location, created) for `name`, collapsing formatting variants
+        of the same physical site to one object (first-seen name wins).
+
+        Used by both the locations slice and device location resolution so a
+        device whose raw location string is a variant links to the same Location
+        the locations slice created rather than spawning a duplicate. `created`
+        is True only when this call materializes a Location not already present
+        (in the DB or earlier in this run).
+        """
+        clean = str(name or "").strip()
+        norm = normalize_location_key(clean)
+        if not norm:
+            obj = self._get_or_create_named("dcim", "Location", clean)
+            return obj, False
+        if not self._location_dedup_seeded:
+            for instance in self._iter_existing_instances("locations"):
+                existing_name = getattr(instance, "name", None)
+                key = normalize_location_key(existing_name) if existing_name else ""
+                if key:
+                    self._location_dedup.setdefault(key, instance)
+            self._location_dedup_seeded = True
+        existing = self._location_dedup.get(norm)
+        if existing is not None:
+            return existing, False
+        model = self.resolve_model("dcim", "Location")
+        manager = getattr(model, "objects", None)
+        if manager is None:
+            raise LookupError("Nautobot Location model has no manager.")
+        obj, created = manager.get_or_create(name=clean)
+        self._location_dedup[norm] = obj
+        return obj, bool(created)
 
     @staticmethod
     def _savepoint():
@@ -291,11 +332,32 @@ class ForwardNautobotWriteBackend:
         model_slug: str,
         source_keys: set[str],
         delete_policy: str,
+        max_delete_fraction: float = 1.0,
     ) -> tuple[ForwardWriteExecutionItem, ...]:
         if delete_policy not in {"delete", "mark_inactive"}:
             return ()
+        index = self._existing_index_for(model_slug)
+        total = len(index)
+        would_remove = sum(1 for key in index if key and key not in source_keys)
+        # Safeguard against an under-collected slice (e.g. a mis-scoped child query
+        # that returns a fraction of reality) wiping most of the table. Refuse and
+        # record a warning instead of deleting beyond the configured fraction.
+        if total and 0.0 < max_delete_fraction < 1.0 and would_remove > total * max_delete_fraction:
+            return (
+                ForwardWriteExecutionItem(
+                    model_slug=model_slug,
+                    record_key="",
+                    planned_action=delete_policy,
+                    status="skipped",
+                    message=(
+                        f"Reconcile skipped: would {delete_policy} {would_remove} of "
+                        f"{total} existing objects (> {max_delete_fraction:.0%}); refusing "
+                        "as a partial-collection safeguard. Raise the threshold to override."
+                    ),
+                ),
+            )
         items: list[ForwardWriteExecutionItem] = []
-        for record_key, instance in self._existing_index_for(model_slug).items():
+        for record_key, instance in index.items():
             if not record_key or record_key in source_keys:
                 continue
             try:
@@ -443,17 +505,8 @@ class ForwardNautobotWriteBackend:
             profile.default_location_status_name,
             content_type_target=("dcim", "Location"),
         )
-        model = self.resolve_model("dcim", "Location")
-        manager = getattr(model, "objects", None)
-        if manager is None:
-            raise LookupError("Nautobot Location model has no manager.")
-        obj, created = manager.get_or_create(
-            name=name,
-            defaults={
-                "location_type": location_type,
-                "status": status,
-            },
-        )
+        # Dedup variants of the same site to one Location (first-seen name wins).
+        obj, created = self._resolve_location_dedup(name)
         self._sync_fields(
             obj,
             {
@@ -529,7 +582,7 @@ class ForwardNautobotWriteBackend:
             raise ValueError("Device row is missing `model`.")
         if not device_type_name:
             raise ValueError("Device row is missing `device_type`.")
-        location = self._get_or_create_named("dcim", "Location", location_name)
+        location, _ = self._resolve_location_dedup(location_name)
         platform = self._get_or_create_named("dcim", "Platform", platform_name)
         manufacturer = self._get_or_create_named("dcim", "Manufacturer", vendor_name)
         device_type = self._lookup_device_type(manufacturer, device_type_name)
@@ -1130,6 +1183,9 @@ class ForwardNautobotWriteExecutor:
             if plan.delta_mode and not delta_models:
                 delta_models = set(source_keys_by_slug)
             if delete_policy in {"delete", "mark_inactive"}:
+                max_delete_fraction = float(
+                    getattr(resolved_profile, "reconcile_max_delete_fraction", 0.5) or 0.5
+                )
                 for model_slug, source_keys in source_keys_by_slug.items():
                     if model_slug in delta_models:
                         continue
@@ -1137,6 +1193,7 @@ class ForwardNautobotWriteExecutor:
                         model_slug,
                         source_keys,
                         delete_policy,
+                        max_delete_fraction=max_delete_fraction,
                     ):
                         _tally(item)
         failure_classification = (

@@ -727,3 +727,79 @@ def test_write_executor_savepoint_isolates_failing_row(monkeypatch):
     assert execution.summary["created"] == 2
     assert execution.summary["error"] == 1
     assert [item.status for item in execution.items] == ["created", "error", "created"]
+
+
+def _location_op(name: str) -> ForwardWriteOperation:
+    return ForwardWriteOperation(
+        model_slug="locations",
+        record_key=name,
+        nautobot_scope="dcim.location",
+        action="create",
+        fields={"name": name},
+        contract_version="v1",
+    )
+
+
+def test_write_executor_dedups_location_name_variants(monkeypatch):
+    """Formatting variants of one physical site collapse to a single Location;
+    a genuinely different address stays distinct."""
+    models, resolve = _fake_model_resolver()
+    monkeypatch.setattr(write_executor, "django_apps", object())
+    monkeypatch.setattr(write_executor, "ContentType", None)
+    backend = ForwardNautobotWriteBackend(model_resolver=resolve)
+    executor = ForwardNautobotWriteExecutor(backend=backend)
+    plan = ForwardWritePlan(
+        operations=(
+            _location_op("8ng5+500 W 30TH ST+NEW YORK+NY+10001"),
+            _location_op("8ng5+500 W 30TH STREET+NEW YORK+NY+10001"),
+            _location_op("8ng5+500 W 33rd St+NY+NY+10001"),
+        ),
+        summary={"create": 3, "update": 0, "no-change": 0, "blocked": 0},
+        configuration_status={"profile_provided": True, "write_ready": True},
+    )
+
+    executor.execute(plan, _profile())
+
+    # Two ST/STREET variants -> one Location; the 33rd address -> a second.
+    assert len(models[("dcim", "Location")].objects.records) == 2
+
+
+def test_reconcile_missing_guards_partial_collection(monkeypatch):
+    """Reconcile refuses to remove more than the configured fraction of a table,
+    so an under-collected slice cannot wipe most of the inventory."""
+    models, resolve = _fake_model_resolver()
+    monkeypatch.setattr(write_executor, "django_apps", object())
+    monkeypatch.setattr(write_executor, "ContentType", None)
+    backend = ForwardNautobotWriteBackend(model_resolver=resolve)
+
+    loc = models[("dcim", "Location")].objects
+    for n in ("A", "B", "C", "D"):
+        loc.get_or_create(name=n)
+
+    # Source only knows "A"; reconcile would remove B/C/D = 3/4 = 75% > 50%.
+    items = backend.reconcile_missing("locations", {"A"}, "delete", max_delete_fraction=0.5)
+
+    assert len(items) == 1
+    assert items[0].status == "skipped"
+    assert "safeguard" in items[0].message
+    # Nothing was deleted.
+    assert len(loc.records) == 4
+
+
+def test_reconcile_missing_proceeds_under_threshold(monkeypatch):
+    models, resolve = _fake_model_resolver()
+    monkeypatch.setattr(write_executor, "django_apps", object())
+    monkeypatch.setattr(write_executor, "ContentType", None)
+    backend = ForwardNautobotWriteBackend(model_resolver=resolve)
+
+    loc = models[("dcim", "Location")].objects
+    for n in ("A", "B", "C", "D"):
+        loc.get_or_create(name=n)
+
+    # Source knows A/B/C; reconcile removes only D = 1/4 = 25% < 50%.
+    items = backend.reconcile_missing(
+        "locations", {"A", "B", "C"}, "delete", max_delete_fraction=0.5
+    )
+
+    assert [i.status for i in items] == ["deleted"]
+    assert len(loc.records) == 3
