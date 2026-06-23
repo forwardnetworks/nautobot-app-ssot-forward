@@ -72,3 +72,10 @@ class PlanScaffold(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlanScaffoldHygiene(unittest.TestCase):
+    def test_no_trailing_whitespace(self):
+        out = release.plan_scaffold("0.3.0", "summary", "2026-06-23")
+        offenders = [ln for ln in out.splitlines() if ln != ln.rstrip()]
+        self.assertEqual(offenders, [], f"trailing whitespace in scaffold: {offenders}")

@@ -83,10 +83,10 @@ def plan_scaffold(version: str, summary: str, date: str) -> str:
         f"Date: {date}\n"
         f"Summary: {summary}\n\n"
         "## Changes\n\n"
-        "- \n\n"
+        "- _TBD_\n\n"
         "## Verification\n\n"
         "- `python scripts/ci_local.py`\n"
-        "- Live WF smoke on 192.168.1.167 (locations write, skip path, diff path)\n\n"
+        "- Live WF smoke (locations write, skip path, diff path)\n\n"
         "## Rollout\n\n"
         f'- `python scripts/release.py {version} --summary "{summary}" --publish`\n'
     )
