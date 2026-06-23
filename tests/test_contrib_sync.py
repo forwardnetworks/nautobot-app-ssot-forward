@@ -1,6 +1,25 @@
 from __future__ import annotations
 
-from forward_nautobot.integrations.forward.contrib_sync import LocationCanonicalizer
+from forward_nautobot.integrations.forward.contrib_sync import (
+    LocationCanonicalizer,
+    cloud_provider_name,
+    cloud_resource_type_name,
+)
+
+
+def test_cloud_provider_name_maps_known_and_falls_back():
+    assert cloud_provider_name("AWS") == "Amazon Web Services"
+    assert cloud_provider_name("azure") == "Microsoft Azure"
+    assert cloud_provider_name("GCP") == "Google Cloud Platform"
+    assert cloud_provider_name("weird") == "WEIRD"
+    assert cloud_provider_name("") == "Cloud"
+
+
+def test_cloud_resource_type_name_pretty():
+    assert cloud_resource_type_name("AWS", "vpc") == "AWS VPC"
+    assert cloud_resource_type_name("aws", "subnet") == "AWS Subnet"
+    assert cloud_resource_type_name("AZURE", "load-balancer") == "AZURE Load Balancer"
+    assert cloud_resource_type_name("GCP", "nat-gateway") == "GCP NAT Gateway"
 
 
 def test_canonicalizer_collapses_variants_to_first_seen():

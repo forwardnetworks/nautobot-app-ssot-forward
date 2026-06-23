@@ -1,0 +1,38 @@
+/**
+ * @intent Forward cloud services
+ * @description Load balancer and NAT-gateway rows for Nautobot cloud.CloudService,
+ *   scoped to their account and VPC. service_kind drives the CloudResourceType.
+ * @contract-version v1
+ */
+
+cloud_load_balancers() =
+  foreach account in network.cloudAccounts
+  foreach vpc in account.vpcs
+  foreach lb in vpc.loadBalancers
+  select {
+    account_id: account.id,
+    cloud_type: toString(account.cloudType),
+    service_id: lb.id,
+    name: if isPresent(lb.name) && lb.name != "" then lb.name else lb.id,
+    vpc_id: vpc.id,
+    service_kind: "load-balancer"
+  };
+
+cloud_nat_gateways() =
+  foreach account in network.cloudAccounts
+  foreach vpc in account.vpcs
+  foreach nat in vpc.natGateways
+  select {
+    account_id: account.id,
+    cloud_type: toString(account.cloudType),
+    service_id: nat.id,
+    name: if isPresent(nat.name) && nat.name != "" then nat.name else nat.id,
+    vpc_id: vpc.id,
+    service_kind: "nat-gateway"
+  };
+
+@primaryKey(service_id)
+@query
+f() =
+foreach row in ( cloud_load_balancers() + cloud_nat_gateways() )
+select row;

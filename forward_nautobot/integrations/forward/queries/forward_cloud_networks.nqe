@@ -1,0 +1,38 @@
+/**
+ * @intent Forward cloud networks
+ * @description VPC/VNet and subnet rows for Nautobot cloud.CloudNetwork. VPC rows
+ *   have empty parent_id and kind="vpc"; subnet rows carry parent_id=<vpc id> and
+ *   kind="subnet". Identical shape so a single slice loads both levels.
+ * @contract-version v1
+ */
+
+cloud_vpcs() =
+  foreach account in network.cloudAccounts
+  foreach vpc in account.vpcs
+  select {
+    account_id: account.id,
+    cloud_type: toString(account.cloudType),
+    network_id: vpc.id,
+    name: if isPresent(vpc.name) && vpc.name != "" then vpc.name else vpc.id,
+    parent_id: "",
+    kind: "vpc"
+  };
+
+cloud_subnets() =
+  foreach account in network.cloudAccounts
+  foreach vpc in account.vpcs
+  foreach subnet in vpc.subnets
+  select {
+    account_id: account.id,
+    cloud_type: toString(account.cloudType),
+    network_id: subnet.id,
+    name: if isPresent(subnet.name) && subnet.name != "" then subnet.name else subnet.id,
+    parent_id: vpc.id,
+    kind: "subnet"
+  };
+
+@primaryKey(network_id)
+@query
+f() =
+foreach row in ( cloud_vpcs() + cloud_subnets() )
+select row;

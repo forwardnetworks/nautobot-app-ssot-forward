@@ -33,6 +33,7 @@ from .normalize import normalize_location_key
 try:
     from diffsync import Adapter
     from django.contrib.contenttypes.models import ContentType
+    from nautobot.cloud.models import CloudAccount, CloudNetwork, CloudResourceType, CloudService
     from nautobot.dcim.models import (
         Device,
         DeviceType,
@@ -47,6 +48,32 @@ try:
     CONTRIB_AVAILABLE = True
 except Exception:  # pragma: no cover - exercised only in a real Nautobot env
     CONTRIB_AVAILABLE = False
+
+
+# Provider Manufacturer names per Forward cloudType (readable, stable).
+_CLOUD_PROVIDER_NAMES = {
+    "AWS": "Amazon Web Services",
+    "AZURE": "Microsoft Azure",
+    "GCP": "Google Cloud Platform",
+    "IBM": "IBM Cloud",
+}
+
+
+def cloud_provider_name(cloud_type: str) -> str:
+    key = str(cloud_type or "").strip().upper()
+    return _CLOUD_PROVIDER_NAMES.get(key, key or "Cloud")
+
+
+def cloud_resource_type_name(cloud_type: str, kind: str) -> str:
+    """Readable CloudResourceType name, e.g. 'AWS vpc' -> 'AWS VPC'."""
+    ct = str(cloud_type or "").strip().upper()
+    pretty = {
+        "vpc": "VPC",
+        "subnet": "Subnet",
+        "load-balancer": "Load Balancer",
+        "nat-gateway": "NAT Gateway",
+    }.get(str(kind or "").strip(), str(kind or "").strip())
+    return f"{ct} {pretty}".strip()
 
 
 class LocationCanonicalizer:
@@ -235,6 +262,117 @@ if CONTRIB_AVAILABLE:
                     )
                 )
 
+    class ForwardContribCloudAccount(NautobotModel):
+        _model = CloudAccount
+        _modelname = "cloud_account"
+        _identifiers = ("name",)
+        _attributes = ("account_number", "provider__name")
+        name: str
+        account_number: str
+        provider__name: str
+
+    class ForwardContribCloudNetwork(NautobotModel):
+        _model = CloudNetwork
+        _modelname = "cloud_network"
+        _identifiers = ("name",)
+        _attributes = ("cloud_resource_type__name", "cloud_account__name")
+        name: str
+        cloud_resource_type__name: str
+        cloud_account__name: str
+
+    class ForwardContribCloudService(NautobotModel):
+        _model = CloudService
+        _modelname = "cloud_service"
+        _identifiers = ("name",)
+        _attributes = ("cloud_resource_type__name", "cloud_account__name")
+        name: str
+        cloud_resource_type__name: str
+        cloud_account__name: str
+
+    _CLOUD_TOP_LEVEL = ["cloud_account", "cloud_network", "cloud_service"]
+
+    class ForwardContribCloudTarget(NautobotAdapter):
+        top_level = _CLOUD_TOP_LEVEL
+        cloud_account = ForwardContribCloudAccount
+        cloud_network = ForwardContribCloudNetwork
+        cloud_service = ForwardContribCloudService
+
+    class ForwardContribCloudSource(Adapter):
+        top_level = _CLOUD_TOP_LEVEL
+        cloud_account = ForwardContribCloudAccount
+        cloud_network = ForwardContribCloudNetwork
+        cloud_service = ForwardContribCloudService
+
+        def __init__(
+            self,
+            *,
+            account_rows: list[dict[str, Any]],
+            network_rows: list[dict[str, Any]],
+            service_rows: list[dict[str, Any]],
+            **kwargs,
+        ):
+            super().__init__(**kwargs)
+            self._account_rows = account_rows
+            self._network_rows = network_rows
+            self._service_rows = service_rows
+
+        def load(self):
+            # Map account id -> account name so network/service rows (which carry
+            # only account_id) can reference the account by name for the FK lookup.
+            account_name_by_id: dict[str, str] = {}
+            seen_accounts: set[str] = set()
+            for row in self._account_rows:
+                acct_id = str(row.get("account_id") or "").strip()
+                name = str(row.get("name") or "").strip() or acct_id
+                cloud_type = str(row.get("cloud_type") or "").strip()
+                if not acct_id or name in seen_accounts:
+                    continue
+                seen_accounts.add(name)
+                account_name_by_id[acct_id] = name
+                self.add(
+                    ForwardContribCloudAccount(
+                        name=name,
+                        account_number=acct_id,
+                        provider__name=cloud_provider_name(cloud_type),
+                    )
+                )
+
+            seen_networks: set[str] = set()
+            for row in self._network_rows:
+                name = str(row.get("name") or "").strip()
+                acct_id = str(row.get("account_id") or "").strip()
+                cloud_type = str(row.get("cloud_type") or "").strip()
+                kind = str(row.get("kind") or "vpc").strip()
+                account_name = account_name_by_id.get(acct_id)
+                if not (name and account_name) or name in seen_networks:
+                    continue
+                seen_networks.add(name)
+                self.add(
+                    ForwardContribCloudNetwork(
+                        name=name,
+                        cloud_resource_type__name=cloud_resource_type_name(cloud_type, kind),
+                        cloud_account__name=account_name,
+                    )
+                )
+
+            seen_services: set[str] = set()
+            for row in self._service_rows:
+                name = str(row.get("name") or "").strip()
+                acct_id = str(row.get("account_id") or "").strip()
+                cloud_type = str(row.get("cloud_type") or "").strip()
+                kind = str(row.get("service_kind") or "").strip()
+                account_name = account_name_by_id.get(acct_id)
+                if not (name and account_name) or name in seen_services:
+                    continue
+                seen_services.add(name)
+                self.add(
+                    ForwardContribCloudService(
+                        name=name,
+                        cloud_resource_type__name=cloud_resource_type_name(cloud_type, kind),
+                        cloud_account__name=account_name,
+                    )
+                )
+
     class _StubJob:
         """Minimal job satisfying NautobotAdapter (logger + no metadata)."""
 
@@ -323,6 +461,80 @@ def run_contrib_core_sync(
         location_status_name=location_status_name,
         device_role_name=device_role_name,
         device_status_name=device_status_name,
+    )
+    source.load()
+    diff = source.diff_to(target)
+    summary = dict(diff.summary())
+    if not dryrun:
+        source.sync_to(target)
+    return summary
+
+
+def _ensure_cloud_resource_type(name: str, provider, content_model):
+    rt, _ = CloudResourceType.objects.get_or_create(name=name, defaults={"provider": provider})
+    if rt.provider_id != provider.pk:
+        rt.provider = provider
+        rt.save()
+    ct = ContentType.objects.get_for_model(content_model)
+    if not rt.content_types.filter(pk=ct.pk).exists():
+        rt.content_types.add(ct)
+    return rt
+
+
+def ensure_cloud_prerequisites(
+    *,
+    account_rows: list[dict[str, Any]],
+    network_rows: list[dict[str, Any]],
+    service_rows: list[dict[str, Any]],
+):
+    """Ensure provider Manufacturers and CloudResourceTypes (with content types)
+    that the cloud slices resolve by lookup."""
+    if not CONTRIB_AVAILABLE:  # pragma: no cover
+        raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
+    providers: dict[str, Any] = {}
+
+    def provider_for(cloud_type: str):
+        pname = cloud_provider_name(cloud_type)
+        if pname not in providers:
+            providers[pname], _ = Manufacturer.objects.get_or_create(name=pname)
+        return providers[pname]
+
+    for row in account_rows:
+        provider_for(row.get("cloud_type") or "")
+    for row in network_rows:
+        ct = row.get("cloud_type") or ""
+        kind = row.get("kind") or "vpc"
+        _ensure_cloud_resource_type(
+            cloud_resource_type_name(ct, kind), provider_for(ct), CloudNetwork
+        )
+    for row in service_rows:
+        ct = row.get("cloud_type") or ""
+        kind = row.get("service_kind") or ""
+        _ensure_cloud_resource_type(
+            cloud_resource_type_name(ct, kind), provider_for(ct), CloudService
+        )
+
+
+def run_contrib_cloud_sync(
+    *,
+    account_rows: list[dict[str, Any]],
+    network_rows: list[dict[str, Any]],
+    service_rows: list[dict[str, Any]],
+    dryrun: bool,
+    job: Any | None = None,
+) -> dict[str, int]:
+    """Sync Forward cloud accounts / networks / services into Nautobot's cloud app
+    via contrib CRUD. Returns the diffsync summary; dryrun computes without applying."""
+    if not CONTRIB_AVAILABLE:  # pragma: no cover
+        raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
+    ensure_cloud_prerequisites(
+        account_rows=account_rows, network_rows=network_rows, service_rows=service_rows
+    )
+    job = job or _StubJob()
+    target = ForwardContribCloudTarget(job=job)
+    target.load()
+    source = ForwardContribCloudSource(
+        account_rows=account_rows, network_rows=network_rows, service_rows=service_rows
     )
     source.load()
     diff = source.diff_to(target)

@@ -1,0 +1,15 @@
+/**
+ * @intent Forward cloud accounts
+ * @description Cloud account rows (AWS/Azure/GCP/IBM) for Nautobot cloud.CloudAccount.
+ * @contract-version v1
+ */
+
+@primaryKey(account_id)
+@query
+f() =
+foreach account in network.cloudAccounts
+select {
+  account_id: account.id,
+  name: if isPresent(account.name) && account.name != "" then account.name else account.id,
+  cloud_type: toString(account.cloudType)
+};
