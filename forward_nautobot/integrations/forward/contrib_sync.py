@@ -38,12 +38,14 @@ try:
         Device,
         DeviceType,
         Interface,
+        InventoryItem,
         Location,
         LocationType,
         Manufacturer,
         Platform,
     )
     from nautobot.extras.models import Role, Status
+    from nautobot.ipam.models import VLAN, VRF, IPAddress, Namespace, Prefix
     from nautobot_ssot.contrib import NautobotAdapter, NautobotModel
 
     CONTRIB_AVAILABLE = True
@@ -457,6 +459,185 @@ if CONTRIB_AVAILABLE:
                     )
                 )
 
+    class ForwardContribVRF(_ForwardContribDeleteMixin, NautobotModel):
+        _model = VRF
+        _modelname = "vrf"
+        _identifiers = ("name", "namespace__name")
+        _attributes = ("status__name",)
+        name: str
+        namespace__name: str
+        status__name: str
+
+    class ForwardContribVLAN(_ForwardContribDeleteMixin, NautobotModel):
+        _model = VLAN
+        _modelname = "vlan"
+        _identifiers = ("vid", "name")
+        _attributes = ("status__name",)
+        vid: int
+        name: str
+        status__name: str
+
+    class ForwardContribPrefix(_ForwardContribDeleteMixin, NautobotModel):
+        # Identity on the real DB fields (network/prefix_length) — `prefix` is a
+        # property and contrib's load/create call _meta.get_field, which fails on
+        # non-fields. create() rebuilds the cidr via the property.
+        _model = Prefix
+        _modelname = "prefix"
+        _identifiers = ("network", "prefix_length", "namespace__name")
+        _attributes = ("status__name",)
+        network: str
+        prefix_length: int
+        namespace__name: str
+        status__name: str
+
+        @classmethod
+        def create(cls, adapter, ids, attrs):
+            ns = Namespace.objects.get(name=ids["namespace__name"])
+            status = Status.objects.get(name=attrs["status__name"])
+            cidr = f"{ids['network']}/{ids['prefix_length']}"
+            obj, _ = Prefix.objects.get_or_create(
+                prefix=cidr, namespace=ns, defaults={"status": status}
+            )
+            model = super(NautobotModel, cls).create(adapter, ids=ids, attrs=attrs)
+            model.pk = obj.pk
+            return model
+
+    class ForwardContribIPAddress(_ForwardContribDeleteMixin, NautobotModel):
+        # Identity on real fields (host/mask_length); `address` is a property and
+        # IPAddress needs a namespace at construction, so create() is custom.
+        _model = IPAddress
+        _modelname = "ip_address"
+        _identifiers = ("host", "mask_length")
+        _attributes = ("status__name",)
+        host: str
+        mask_length: int
+        status__name: str
+
+        @classmethod
+        def create(cls, adapter, ids, attrs):
+            ns = Namespace.objects.get(name="Global")
+            status = Status.objects.get(name=attrs["status__name"])
+            address = f"{ids['host']}/{ids['mask_length']}"
+            obj = IPAddress.objects.filter(host=ids["host"]).first() or IPAddress.objects.create(
+                address=address, namespace=ns, status=status
+            )
+            model = super(NautobotModel, cls).create(adapter, ids=ids, attrs=attrs)
+            model.pk = obj.pk
+            return model
+
+    class ForwardContribInventoryItem(_ForwardContribDeleteMixin, NautobotModel):
+        _model = InventoryItem
+        _modelname = "inventory_item"
+        _identifiers = ("device__name", "name")
+        _attributes = ("manufacturer__name",)
+        device__name: str
+        name: str
+        manufacturer__name: str
+
+    # IPAM + assets sync after the device chain (devices must already exist).
+    _EXTENDED_TOP_LEVEL = ["vrf", "vlan", "prefix", "ip_address", "inventory_item"]
+
+    class ForwardContribExtendedTarget(NautobotAdapter):
+        top_level = _EXTENDED_TOP_LEVEL
+        vrf = ForwardContribVRF
+        vlan = ForwardContribVLAN
+        prefix = ForwardContribPrefix
+        ip_address = ForwardContribIPAddress
+        inventory_item = ForwardContribInventoryItem
+
+    class ForwardContribExtendedSource(Adapter):
+        top_level = _EXTENDED_TOP_LEVEL
+        vrf = ForwardContribVRF
+        vlan = ForwardContribVLAN
+        prefix = ForwardContribPrefix
+        ip_address = ForwardContribIPAddress
+        inventory_item = ForwardContribInventoryItem
+
+        def __init__(
+            self,
+            *,
+            vrf_rows: list[dict[str, Any]],
+            vlan_rows: list[dict[str, Any]],
+            prefix_rows: list[dict[str, Any]],
+            ipaddress_rows: list[dict[str, Any]],
+            inventory_rows: list[dict[str, Any]],
+            namespace_name: str = "Global",
+            status_name: str = "Active",
+            **kwargs,
+        ):
+            super().__init__(**kwargs)
+            self._vrf_rows = vrf_rows
+            self._vlan_rows = vlan_rows
+            self._prefix_rows = prefix_rows
+            self._ipaddress_rows = ipaddress_rows
+            self._inventory_rows = inventory_rows
+            self._namespace_name = namespace_name
+            self._status_name = status_name
+
+        def load(self):
+            seen: set = set()
+            for row in self._vrf_rows:
+                name = str(row.get("name") or "").strip()
+                if not name or ("vrf", name) in seen:
+                    continue
+                seen.add(("vrf", name))
+                self.add(
+                    ForwardContribVRF(
+                        name=name,
+                        namespace__name=self._namespace_name,
+                        status__name=self._status_name,
+                    )
+                )
+            for row in self._vlan_rows:
+                vid = row.get("vid")
+                name = str(row.get("name") or "").strip()
+                if vid is None or not name or ("vlan", vid, name) in seen:
+                    continue
+                seen.add(("vlan", vid, name))
+                self.add(
+                    ForwardContribVLAN(vid=int(vid), name=name, status__name=self._status_name)
+                )
+            for row in self._prefix_rows:
+                pfx = str(row.get("prefix") or "").strip()
+                net, _, plen = pfx.partition("/")
+                if not net or not plen.isdigit() or ("prefix", net, plen) in seen:
+                    continue
+                seen.add(("prefix", net, plen))
+                self.add(
+                    ForwardContribPrefix(
+                        network=net,
+                        prefix_length=int(plen),
+                        namespace__name=self._namespace_name,
+                        status__name=self._status_name,
+                    )
+                )
+            for row in self._ipaddress_rows:
+                host = str(row.get("host_ip") or "").strip()
+                mask = row.get("prefix_length")
+                if not host or mask is None:
+                    addr = str(row.get("address") or "").strip()
+                    h, _, m = addr.partition("/")
+                    host = host or h
+                    mask = int(m) if (mask is None and m.isdigit()) else mask
+                if not host or mask is None or ("ip", host, mask) in seen:
+                    continue
+                seen.add(("ip", host, mask))
+                self.add(
+                    ForwardContribIPAddress(
+                        host=host, mask_length=int(mask), status__name=self._status_name
+                    )
+                )
+            for row in self._inventory_rows:
+                dev = str(row.get("device") or "").strip()
+                name = str(row.get("name") or "").strip()
+                mfr = str(row.get("manufacturer") or "").strip()
+                if not (dev and name and mfr) or ("inv", dev, name) in seen:
+                    continue
+                seen.add(("inv", dev, name))
+                self.add(
+                    ForwardContribInventoryItem(device__name=dev, name=name, manufacturer__name=mfr)
+                )
+
     class _StubJob:
         """Minimal job satisfying NautobotAdapter (logger + no metadata)."""
 
@@ -550,6 +731,55 @@ def run_contrib_core_sync(
         device_status_name=device_status_name,
         interface_rows=interface_rows or [],
         interface_status_name=device_status_name,
+    )
+    source.load()
+    diff = source.diff_to(target)
+    summary = dict(diff.summary())
+    if not dryrun:
+        source.sync_to(target)
+    return summary
+
+
+def ensure_extended_prerequisites(*, namespace_name: str = "Global", status_name: str = "Active"):
+    """Ensure the Namespace + Status (with IPAM/asset content types) the extended
+    slices resolve by lookup."""
+    if not CONTRIB_AVAILABLE:  # pragma: no cover
+        raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
+    Namespace.objects.get_or_create(name=namespace_name)
+    _ensure_status_with_content_types(status_name, [VLAN, VRF, Prefix, IPAddress])
+
+
+def run_contrib_extended_sync(
+    *,
+    vrf_rows: list[dict[str, Any]] | None = None,
+    vlan_rows: list[dict[str, Any]] | None = None,
+    prefix_rows: list[dict[str, Any]] | None = None,
+    ipaddress_rows: list[dict[str, Any]] | None = None,
+    inventory_rows: list[dict[str, Any]] | None = None,
+    namespace_name: str = "Global",
+    status_name: str = "Active",
+    dryrun: bool,
+    allow_delete: bool = False,
+    job: Any | None = None,
+) -> dict[str, int]:
+    """Sync IPAM (VRF/VLAN/Prefix/IPAddress) + inventory items into Nautobot via
+    contrib CRUD. Devices must already exist (run the core sync first). Returns the
+    diffsync summary; dryrun computes without applying."""
+    if not CONTRIB_AVAILABLE:  # pragma: no cover
+        raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
+    ensure_extended_prerequisites(namespace_name=namespace_name, status_name=status_name)
+    job = job or _StubJob()
+    target = ForwardContribExtendedTarget(job=job)
+    target.allow_delete = bool(allow_delete)
+    target.load()
+    source = ForwardContribExtendedSource(
+        vrf_rows=vrf_rows or [],
+        vlan_rows=vlan_rows or [],
+        prefix_rows=prefix_rows or [],
+        ipaddress_rows=ipaddress_rows or [],
+        inventory_rows=inventory_rows or [],
+        namespace_name=namespace_name,
+        status_name=status_name,
     )
     source.load()
     diff = source.diff_to(target)
