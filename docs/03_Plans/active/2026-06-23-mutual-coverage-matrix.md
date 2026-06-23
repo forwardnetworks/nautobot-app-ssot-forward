@@ -38,13 +38,13 @@ support. This matrix is the evaluation; implementation lands as contrib
 | platform.vendor | dcim.Manufacturer | ✅ contrib (derived) | — |
 | platform.model | dcim.Platform | ✅ contrib (derived) | manufacturer |
 | platform.deviceType | dcim.DeviceType | ✅ contrib (derived) | manufacturer + model |
-| interfaces | dcim.Interface | ⏳ phase 3 | device; type/enabled/mtu/desc/speed |
-| components (inventory) | dcim.InventoryItem | ⏳ phase 3 | device; manufacturer |
-| components (modules) | dcim.Module | ⏳ phase 3 | device; ModuleBay/ModuleType |
-| vlans | ipam.VLAN | ⏳ phase 3 (IPAM) | status; location/VLANGroup |
-| vrfs | ipam.VRF | ⏳ phase 3 (IPAM) | namespace (2.x) |
-| FIB prefixes (v4/v6) | ipam.Prefix | ⏳ phase 3 (IPAM) | namespace; status; VRFPrefixAssignment |
-| interface IPs | ipam.IPAddress | ⏳ phase 3 (IPAM) | parent prefix/namespace; IPAddressToInterface |
+| interfaces | dcim.Interface | ✅ contrib | device; type/enabled/mtu/desc |
+| components (inventory) | dcim.InventoryItem | ✅ contrib | device; manufacturer |
+| components (modules) | dcim.Module | ✅ contrib | ModuleType + ModuleBay derived; parent_module_bay |
+| vlans | ipam.VLAN | ✅ contrib | status; (vid, name) identity |
+| vrfs | ipam.VRF | ✅ contrib | namespace (Global) |
+| FIB prefixes (v4/v6) | ipam.Prefix | ✅ contrib | network/prefix_length identity; namespace; status |
+| interface IPs | ipam.IPAddress | ✅ contrib | host/mask_length identity; namespace; auto-parent |
 | **cloudAccounts** | **cloud.CloudAccount** | 🟦 phase 3-cloud | name, account_number, provider→Manufacturer |
 | **vpcs** | **cloud.CloudNetwork** | 🟦 phase 3-cloud | cloud_resource_type, cloud_account |
 | **subnets** | **cloud.CloudNetwork** (parent=VPC) | 🟦 phase 3-cloud | + CloudNetworkPrefixAssignment for CIDRs |

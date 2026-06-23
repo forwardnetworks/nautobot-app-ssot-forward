@@ -75,18 +75,27 @@ reference it; contrib won't auto-create it).
 
 Implemented + live-validated on real PostgreSQL via contrib CRUD, all idempotent
 and delete-safe by default:
-- **Network:** locations, manufacturers, platforms, device_types, devices,
-  interfaces, vrfs, vlans, prefixes (v4/v6), ip_addresses, inventory_items.
+- **Network (complete):** locations, manufacturers, platforms, device_types,
+  devices, interfaces, vrfs, vlans, prefixes (v4/v6), ip_addresses,
+  inventory_items, module_types, module_bays, modules.
 - **Cloud:** cloud_account, cloud_network (VPC+subnet), cloud_service, with the
   three cloud NQEs authored and executing against the live tenant.
-- **Cutover wiring:** `run_contrib_full_sync` orchestrates the whole import; the
-  SSoT Job routes to it when `PLUGINS_CONFIG["forward_nautobot"]["use_contrib_sync"]`
-  is true (legacy write executor remains the default). Proven end to end: one call
-  imports dcim+ipam+assets, re-sync is all no-change.
+- **Cutover wiring + LIVE proof:** `run_contrib_full_sync` orchestrates the whole
+  import; the SSoT Job routes to it when
+  `PLUGINS_CONFIG["forward_nautobot"]["use_contrib_sync"]` is true (legacy executor
+  remains the default). Proven end to end against the live WF tenant: 100
+  locations + 100 devices fetched via NQE -> 218 Nautobot objects created through
+  contrib CRUD; re-sync 218 no-change; cloud NQEs executed (empty on a network
+  tenant). The full chain — Forward NQE fetch -> unified contrib -> Nautobot —
+  works.
 
-Remaining residuals: **modules** (need ModuleType+ModuleBay scaffolding); a
-**managed-object filter** so `allow_delete=True` is safe (delete is off by default
-today); and finally deleting the legacy write engine once the flag is promoted.
+Remaining residuals:
+- A **managed-object filter** so `allow_delete=True` is safe (delete is off by
+  default today); then delete the legacy write engine once the flag is promoted.
+- A few NQE slices (interfaces, inventory_items) **HTTP 500 server-side at WF
+  scale** on the inline path — a pre-existing Forward heavy-query issue that
+  affects the legacy engine identically; orthogonal to the redesign. Needs a
+  lighter/paged NQE or a published saved query.
 
 ## Phases
 
