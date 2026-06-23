@@ -77,6 +77,22 @@ def cloud_resource_type_name(cloud_type: str, kind: str) -> str:
     return f"{ct} {pretty}".strip()
 
 
+class _ForwardContribDeleteMixin:
+    """Skip ORM deletes unless the target adapter opts in (``allow_delete=True``).
+
+    contrib ``source.sync_to(target)`` delete-reconciles the whole target table:
+    any object the source lacks would be deleted. Since the plugin imports a
+    scoped subset, that default would wipe Nautobot objects it does not manage.
+    Defaulting deletes off makes every contrib runner create/update-safe; deletes
+    are opt-in once delete scoping (a managed-object filter) is in place.
+    """
+
+    def delete(self):
+        if not getattr(self.adapter, "allow_delete", False):
+            return self
+        return super().delete()
+
+
 class LocationCanonicalizer:
     """Map raw Forward location strings to one canonical name per physical site.
 
@@ -107,14 +123,14 @@ class LocationCanonicalizer:
 
 if CONTRIB_AVAILABLE:
 
-    class ForwardContribManufacturer(NautobotModel):
+    class ForwardContribManufacturer(_ForwardContribDeleteMixin, NautobotModel):
         _model = Manufacturer
         _modelname = "manufacturer"
         _identifiers = ("name",)
         _attributes = ()
         name: str
 
-    class ForwardContribLocation(NautobotModel):
+    class ForwardContribLocation(_ForwardContribDeleteMixin, NautobotModel):
         _model = Location
         _modelname = "location"
         _identifiers = ("name",)
@@ -123,7 +139,7 @@ if CONTRIB_AVAILABLE:
         location_type__name: str
         status__name: str
 
-    class ForwardContribPlatform(NautobotModel):
+    class ForwardContribPlatform(_ForwardContribDeleteMixin, NautobotModel):
         _model = Platform
         _modelname = "platform"
         _identifiers = ("name",)
@@ -131,7 +147,7 @@ if CONTRIB_AVAILABLE:
         name: str
         manufacturer__name: str
 
-    class ForwardContribDeviceType(NautobotModel):
+    class ForwardContribDeviceType(_ForwardContribDeleteMixin, NautobotModel):
         _model = DeviceType
         _modelname = "device_type"
         _identifiers = ("manufacturer__name", "model")
@@ -139,7 +155,7 @@ if CONTRIB_AVAILABLE:
         manufacturer__name: str
         model: str
 
-    class ForwardContribDevice(NautobotModel):
+    class ForwardContribDevice(_ForwardContribDeleteMixin, NautobotModel):
         _model = Device
         _modelname = "device"
         _identifiers = ("name",)
@@ -159,7 +175,7 @@ if CONTRIB_AVAILABLE:
         device_type__model: str
         platform__name: str
 
-    class ForwardContribInterface(NautobotModel):
+    class ForwardContribInterface(_ForwardContribDeleteMixin, NautobotModel):
         _model = Interface
         _modelname = "interface"
         _identifiers = ("device__name", "name")
@@ -330,7 +346,7 @@ if CONTRIB_AVAILABLE:
                     )
                 )
 
-    class ForwardContribCloudAccount(NautobotModel):
+    class ForwardContribCloudAccount(_ForwardContribDeleteMixin, NautobotModel):
         _model = CloudAccount
         _modelname = "cloud_account"
         _identifiers = ("name",)
@@ -339,7 +355,7 @@ if CONTRIB_AVAILABLE:
         account_number: str
         provider__name: str
 
-    class ForwardContribCloudNetwork(NautobotModel):
+    class ForwardContribCloudNetwork(_ForwardContribDeleteMixin, NautobotModel):
         _model = CloudNetwork
         _modelname = "cloud_network"
         _identifiers = ("name",)
@@ -348,7 +364,7 @@ if CONTRIB_AVAILABLE:
         cloud_resource_type__name: str
         cloud_account__name: str
 
-    class ForwardContribCloudService(NautobotModel):
+    class ForwardContribCloudService(_ForwardContribDeleteMixin, NautobotModel):
         _model = CloudService
         _modelname = "cloud_service"
         _identifiers = ("name",)
@@ -497,6 +513,7 @@ def run_contrib_core_sync(
     device_status_name: str,
     dryrun: bool,
     interface_rows: list[dict[str, Any]] | None = None,
+    allow_delete: bool = False,
     job: Any | None = None,
 ) -> dict[str, int]:
     """Sync locations + the device FK chain (+ interfaces) into Nautobot via
@@ -521,6 +538,7 @@ def run_contrib_core_sync(
 
     job = job or _StubJob()
     target = ForwardContribCoreTarget(job=job)
+    target.allow_delete = bool(allow_delete)
     target.load()
     source = ForwardContribCoreSource(
         location_rows=location_rows,
@@ -592,6 +610,7 @@ def run_contrib_cloud_sync(
     network_rows: list[dict[str, Any]],
     service_rows: list[dict[str, Any]],
     dryrun: bool,
+    allow_delete: bool = False,
     job: Any | None = None,
 ) -> dict[str, int]:
     """Sync Forward cloud accounts / networks / services into Nautobot's cloud app
@@ -603,6 +622,7 @@ def run_contrib_cloud_sync(
     )
     job = job or _StubJob()
     target = ForwardContribCloudTarget(job=job)
+    target.allow_delete = bool(allow_delete)
     target.load()
     source = ForwardContribCloudSource(
         account_rows=account_rows, network_rows=network_rows, service_rows=service_rows

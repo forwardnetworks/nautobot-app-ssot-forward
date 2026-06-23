@@ -104,6 +104,14 @@ Phase 4 MUST add delete scoping before the contrib path can drive a real Job:
 Until then the contrib runners are create/update-safe only when the target starts
 empty or the source is the full inventory.
 
+**RESOLVED (default-safe):** a `_ForwardContribDeleteMixin` on every contrib model
+skips the ORM delete unless the target adapter sets `allow_delete=True` (runners
+default it False). Proven on the box: a Cisco-only scoped sync left an unmanaged
+"Orphan Networks Inc" Manufacturer intact (no ProtectedError); the diff still
+*counts* would-deletes but none are applied. Remaining for full delete support:
+a managed-object filter (tag/custom-field stamped on create) so `allow_delete=True`
+removes only Forward-owned objects, plus the max-delete-fraction backstop.
+
 ## Test strategy
 
 - Unit: each NautobotModel's identity/attrs map; source normalization/dedup;
