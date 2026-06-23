@@ -1,10 +1,37 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from forward_nautobot.integrations.forward.contrib_sync import (
     LocationCanonicalizer,
+    _profile_defaults,
     cloud_provider_name,
     cloud_resource_type_name,
 )
+
+
+def test_profile_defaults_reads_profile_with_fallbacks():
+    prof = SimpleNamespace(
+        default_location_type_name="Building",
+        default_location_status_name="",
+        default_device_role_name="Core",
+        default_device_status_name=None,
+    )
+    d = _profile_defaults(prof)
+    assert d["location_type_name"] == "Building"
+    assert d["location_status_name"] == "Active"  # blank -> fallback
+    assert d["device_role_name"] == "Core"
+    assert d["device_status_name"] == "Active"  # None -> fallback
+
+
+def test_profile_defaults_all_fallbacks_for_empty_profile():
+    d = _profile_defaults(SimpleNamespace())
+    assert d == {
+        "location_type_name": "Site",
+        "location_status_name": "Active",
+        "device_role_name": "Network Device",
+        "device_status_name": "Active",
+    }
 
 
 def test_cloud_provider_name_maps_known_and_falls_back():

@@ -863,3 +863,110 @@ def run_contrib_cloud_sync(
     if not dryrun:
         source.sync_to(target)
     return summary
+
+
+def _profile_defaults(profile) -> dict[str, str]:
+    """Pull the contrib prerequisite names off a connection profile (with sane
+    fallbacks) so the runners can ensure them."""
+    g = lambda attr, default: str(getattr(profile, attr, "") or default)  # noqa: E731
+    return {
+        "location_type_name": g("default_location_type_name", "Site"),
+        "location_status_name": g("default_location_status_name", "Active"),
+        "device_role_name": g("default_device_role_name", "Network Device"),
+        "device_status_name": g("default_device_status_name", "Active"),
+    }
+
+
+def _cloud_query_rows(client, network_id, snapshot_id, query_file):
+    """Run a bundled cloud .nqe inline via the client and return its rows.
+
+    Cloud slices are not in the model registry/planner, so they are fetched here.
+    Returns [] on any client error (e.g. a tenant with no cloud data).
+    """
+    from importlib import resources
+
+    from .models import ForwardQuerySpec
+
+    pkg = resources.files("forward_nautobot.integrations.forward.queries")
+    raw = (pkg / query_file).read_text(encoding="utf-8").splitlines()
+    if raw and raw[0].startswith("/*"):
+        end = next((i for i, ln in enumerate(raw) if ln.rstrip().endswith("*/")), None)
+        if end is not None:
+            raw = raw[end + 1 :]
+    text = "\n".join(ln for ln in raw if not ln.strip().startswith("@primaryKey")).strip()
+    try:
+        return client.run_nqe_query(
+            query_spec=ForwardQuerySpec(query_text=text),
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            fetch_all=False,
+        )
+    except Exception:  # pragma: no cover - cloud-less tenant / transient
+        return []
+
+
+def run_contrib_full_sync(
+    *,
+    source_records: dict[str, Any],
+    profile,
+    dryrun: bool,
+    client=None,
+    network_id: str = "",
+    snapshot_id: str | None = None,
+    include_cloud: bool = True,
+    allow_delete: bool = False,
+    job: Any | None = None,
+) -> dict[str, dict[str, int]]:
+    """Drive the whole Forward->Nautobot import through contrib CRUD.
+
+    `source_records` is the planner's per-slice rows (slug -> list of field dicts).
+    Network slices come from there; cloud slices are fetched via `client` (if
+    given) using the bundled cloud NQEs. Returns per-domain diffsync summaries.
+    Delete-safe by default. This is the cutover entry point the SSoT Job calls
+    when the contrib path is enabled.
+    """
+    if not CONTRIB_AVAILABLE:  # pragma: no cover
+        raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
+
+    def rows(slug):
+        return [dict(r) for r in (source_records.get(slug) or [])]
+
+    defaults = _profile_defaults(profile)
+    job = job or _StubJob()
+    summaries: dict[str, dict[str, int]] = {}
+
+    summaries["core"] = run_contrib_core_sync(
+        location_rows=rows("locations"),
+        device_rows=rows("devices"),
+        interface_rows=rows("interfaces"),
+        dryrun=dryrun,
+        allow_delete=allow_delete,
+        job=job,
+        **defaults,
+    )
+    summaries["ipam_assets"] = run_contrib_extended_sync(
+        vrf_rows=rows("vrfs"),
+        vlan_rows=rows("vlans"),
+        prefix_rows=rows("ipv4_prefixes") + rows("ipv6_prefixes"),
+        ipaddress_rows=rows("ip_addresses"),
+        inventory_rows=rows("inventory_items"),
+        dryrun=dryrun,
+        allow_delete=allow_delete,
+        job=job,
+    )
+    if include_cloud and client is not None and network_id:
+        account_rows = _cloud_query_rows(client, network_id, snapshot_id, "forward_cloud_accounts.nqe")
+        if account_rows:
+            summaries["cloud"] = run_contrib_cloud_sync(
+                account_rows=account_rows,
+                network_rows=_cloud_query_rows(
+                    client, network_id, snapshot_id, "forward_cloud_networks.nqe"
+                ),
+                service_rows=_cloud_query_rows(
+                    client, network_id, snapshot_id, "forward_cloud_services.nqe"
+                ),
+                dryrun=dryrun,
+                allow_delete=allow_delete,
+                job=job,
+            )
+    return summaries

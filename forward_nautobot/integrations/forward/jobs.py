@@ -258,6 +258,22 @@ def _build_ingestion_request(*, dryrun: bool, **data):
     )
 
 
+def _use_contrib_sync() -> bool:
+    """Whether to write via the nautobot-ssot contrib CRUD path (cutover) instead
+    of the legacy write executor. Off by default; enable in PLUGINS_CONFIG:
+    ``PLUGINS_CONFIG = {"forward_nautobot": {"use_contrib_sync": True}}``."""
+    try:
+        from django.conf import settings
+
+        return bool(
+            (settings.PLUGINS_CONFIG or {})
+            .get("forward_nautobot", {})
+            .get("use_contrib_sync", False)
+        )
+    except Exception:
+        return False
+
+
 def _run_ingestion_plan(*, dryrun: bool, **data):
     request = _build_ingestion_request(dryrun=dryrun, **data)
     client = ForwardClient(request.connection)
@@ -278,14 +294,37 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
         raise
     write_execution = {}
     if not dryrun:
-        write_execution = (
-            ForwardNautobotWriteExecutor()
-            .execute(
-                plan.write_plan,
-                request.connection_profile,
+        if _use_contrib_sync():
+            # Cutover path: write through nautobot-ssot contrib CRUD (delete-safe)
+            # across the full network + cloud model set, instead of the hand-rolled
+            # write executor. Flag-gated via PLUGINS_CONFIG so the legacy path stays
+            # the default until the contrib path is promoted.
+            from . import contrib_sync
+
+            source_records = {
+                slug: [dict(rec.fields) for rec in recs.values()]
+                for slug, recs in plan.source.records.items()
+            }
+            write_execution = {
+                "engine": "contrib",
+                "summaries": contrib_sync.run_contrib_full_sync(
+                    source_records=source_records,
+                    profile=request.connection_profile,
+                    dryrun=False,
+                    client=client,
+                    network_id=str(request.connection.network_id or ""),
+                    snapshot_id=plan.diff_detail.get("current_snapshot_id"),
+                ),
+            }
+        else:
+            write_execution = (
+                ForwardNautobotWriteExecutor()
+                .execute(
+                    plan.write_plan,
+                    request.connection_profile,
+                )
+                .as_dict()
             )
-            .as_dict()
-        )
 
     failure_classification = (
         "clean"

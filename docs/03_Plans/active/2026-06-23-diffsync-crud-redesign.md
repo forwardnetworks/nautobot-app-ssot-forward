@@ -71,6 +71,23 @@ dict-equality `ForwardWritePlanner`), applied by a separate ~1,100-line
 \* manufacturers is likely a NEW synced model (devices/device_types/platforms all
 reference it; contrib won't auto-create it).
 
+## Status (2026-06-23)
+
+Implemented + live-validated on real PostgreSQL via contrib CRUD, all idempotent
+and delete-safe by default:
+- **Network:** locations, manufacturers, platforms, device_types, devices,
+  interfaces, vrfs, vlans, prefixes (v4/v6), ip_addresses, inventory_items.
+- **Cloud:** cloud_account, cloud_network (VPC+subnet), cloud_service, with the
+  three cloud NQEs authored and executing against the live tenant.
+- **Cutover wiring:** `run_contrib_full_sync` orchestrates the whole import; the
+  SSoT Job routes to it when `PLUGINS_CONFIG["forward_nautobot"]["use_contrib_sync"]`
+  is true (legacy write executor remains the default). Proven end to end: one call
+  imports dcim+ipam+assets, re-sync is all no-change.
+
+Remaining residuals: **modules** (need ModuleType+ModuleBay scaffolding); a
+**managed-object filter** so `allow_delete=True` is safe (delete is off by default
+today); and finally deleting the legacy write engine once the flag is promoted.
+
 ## Phases
 
 1. **PoC — locations end to end (this branch).** Add `_ensure_prerequisites`,
