@@ -7,10 +7,10 @@ from ipaddress import ip_interface
 from typing import Any
 
 try:
-    from django.db import OperationalError as DjangoOperationalError
+    from django.db import DatabaseError as DjangoDatabaseError
 except ModuleNotFoundError:  # pragma: no cover - local compatibility import path
 
-    class DjangoOperationalError(Exception):
+    class DjangoDatabaseError(Exception):
         """Fallback for environments without Django."""
 
         pass
@@ -564,7 +564,10 @@ class NautobotTargetAdapter(Adapter):
             # exploding — the mass-DELETE hazard from an under-loaded target is
             # handled separately by the reconcile max-delete-fraction guard.
             instances = list(manager.all())
-        except DjangoOperationalError:
+        except DjangoDatabaseError:
+            # Any DB-layer problem (connection down, unsupported backend feature
+            # like CollateAsChar on sqlite, etc.) -> return what we have rather
+            # than exploding. Genuine code bugs still propagate.
             return loaded
         for instance in instances:
             # Skip and continue on a single malformed row (e.g. a blank identity
@@ -575,7 +578,9 @@ class NautobotTargetAdapter(Adapter):
                 if not row:
                     continue
                 loaded += len(self.load_rows(mapping.slug, (row,)))
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, AttributeError, DjangoDatabaseError):
+                # Bad/blank identity, or a lazy-FK DB error during serialization:
+                # skip this row rather than truncating the rest of the slice.
                 continue
         return loaded
 

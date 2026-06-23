@@ -69,7 +69,7 @@ def test_target_adapter_tolerates_db_error_during_load(monkeypatch):
 
     class _BoomManager:
         def all(self):
-            raise adapters.DjangoOperationalError("unable to open database file")
+            raise adapters.DjangoDatabaseError("unable to open database file")
 
     class _FakeApps:
         def get_model(self, app_label, model_name):
