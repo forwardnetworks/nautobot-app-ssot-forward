@@ -87,6 +87,23 @@ reference it; contrib won't auto-create it).
    `write_executor.py`, `_build_delta_plan`, the fallback `Adapter.sync_to`
    shim, and the dict-equality planner diff. Update tests.
 
+## CRITICAL finding — delete scoping (gates cutover)
+
+`source.sync_to(target)` delete-reconciles the **entire** target table: any object
+the source does not contain is DELETED. Validated on the box — a device-only sync
+tried to delete cloud-provider Manufacturers (ProtectedError). At real scale this
+would wipe every Nautobot object the plugin does not manage (manually-added
+devices, other integrations' data, cloud providers).
+
+Phase 4 MUST add delete scoping before the contrib path can drive a real Job:
+- Filter each target adapter's queryset to only Forward-managed objects (e.g. by a
+  tag/custom-field the plugin stamps on create, or by the set of identities the
+  source produced this run), OR
+- Run a diff and apply only create/update (+ scoped deletes), reusing the
+  0.3.0 reconcile max-delete-fraction guard as a backstop.
+Until then the contrib runners are create/update-safe only when the target starts
+empty or the source is the full inventory.
+
 ## Test strategy
 
 - Unit: each NautobotModel's identity/attrs map; source normalization/dedup;

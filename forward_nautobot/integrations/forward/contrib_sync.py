@@ -37,6 +37,7 @@ try:
     from nautobot.dcim.models import (
         Device,
         DeviceType,
+        Interface,
         Location,
         LocationType,
         Manufacturer,
@@ -158,9 +159,43 @@ if CONTRIB_AVAILABLE:
         device_type__model: str
         platform__name: str
 
+    class ForwardContribInterface(NautobotModel):
+        _model = Interface
+        _modelname = "interface"
+        _identifiers = ("device__name", "name")
+        _attributes = ("type", "status__name", "enabled", "mtu", "description")
+        device__name: str
+        name: str
+        type: str
+        status__name: str
+        enabled: bool = True
+        mtu: int | None = None
+        description: str = ""
+
     # Dependency order: FK targets must be created before the objects that
     # reference them, since contrib resolves FKs by lookup.
-    _CORE_TOP_LEVEL = ["manufacturer", "location", "platform", "device_type", "device"]
+    _CORE_TOP_LEVEL = [
+        "manufacturer",
+        "location",
+        "platform",
+        "device_type",
+        "device",
+        "interface",
+    ]
+
+    # Nautobot Interface.type is a choice field; map unknown Forward types here.
+    _INTERFACE_TYPE_FALLBACK = "other"
+    _KNOWN_INTERFACE_TYPES = {
+        "virtual",
+        "lag",
+        "bridge",
+        "other",
+        "1000base-t",
+        "10gbase-x-sfpp",
+        "25gbase-x-sfp28",
+        "40gbase-x-qsfpp",
+        "100gbase-x-qsfp28",
+    }
 
     class ForwardContribCoreTarget(NautobotAdapter):
         top_level = _CORE_TOP_LEVEL
@@ -169,6 +204,7 @@ if CONTRIB_AVAILABLE:
         platform = ForwardContribPlatform
         device_type = ForwardContribDeviceType
         device = ForwardContribDevice
+        interface = ForwardContribInterface
 
     class ForwardContribCoreSource(Adapter):
         top_level = _CORE_TOP_LEVEL
@@ -177,6 +213,7 @@ if CONTRIB_AVAILABLE:
         platform = ForwardContribPlatform
         device_type = ForwardContribDeviceType
         device = ForwardContribDevice
+        interface = ForwardContribInterface
 
         def __init__(
             self,
@@ -188,6 +225,8 @@ if CONTRIB_AVAILABLE:
             location_status_name: str,
             device_role_name: str,
             device_status_name: str,
+            interface_rows: list[dict[str, Any]] | None = None,
+            interface_status_name: str = "Active",
             **kwargs,
         ):
             super().__init__(**kwargs)
@@ -198,6 +237,8 @@ if CONTRIB_AVAILABLE:
             self._location_status_name = location_status_name
             self._device_role_name = device_role_name
             self._device_status_name = device_status_name
+            self._interface_rows = interface_rows or []
+            self._interface_status_name = interface_status_name
 
         def load(self):
             # Manufacturers / platforms / device_types are derived from device
@@ -259,6 +300,33 @@ if CONTRIB_AVAILABLE:
                         device_type__manufacturer__name=vendor,
                         device_type__model=dtype,
                         platform__name=model,
+                    )
+                )
+
+            # Interfaces — only for devices that were synced (FK target exists).
+            seen_ifaces: set[tuple[str, str]] = set()
+            for row in self._interface_rows:
+                dev = str(row.get("device") or "").strip()
+                iname = str(row.get("name") or "").strip()
+                if not (dev and iname) or dev not in seen_devices:
+                    continue
+                key = (dev, iname)
+                if key in seen_ifaces:
+                    continue
+                seen_ifaces.add(key)
+                itype = str(row.get("type") or "").strip().lower()
+                if itype not in _KNOWN_INTERFACE_TYPES:
+                    itype = _INTERFACE_TYPE_FALLBACK
+                mtu = row.get("mtu")
+                self.add(
+                    ForwardContribInterface(
+                        device__name=dev,
+                        name=iname,
+                        type=itype,
+                        status__name=self._interface_status_name,
+                        enabled=bool(row.get("enabled", True)),
+                        mtu=int(mtu) if isinstance(mtu, int) else None,
+                        description=str(row.get("description") or ""),
                     )
                 )
 
@@ -411,7 +479,8 @@ def ensure_core_prerequisites(
     if not location_type.content_types.filter(pk=dev_ct.pk).exists():
         location_type.content_types.add(dev_ct)
     _ensure_status_with_content_types(location_status_name, [Location])
-    _ensure_status_with_content_types(device_status_name, [Device])
+    # Device status also covers interfaces (they reuse the same default status).
+    _ensure_status_with_content_types(device_status_name, [Device, Interface])
     role, _ = Role.objects.get_or_create(name=device_role_name, defaults={"color": "000000"})
     dev_ct = ContentType.objects.get_for_model(Device)
     if not role.content_types.filter(pk=dev_ct.pk).exists():
@@ -427,11 +496,11 @@ def run_contrib_core_sync(
     device_role_name: str,
     device_status_name: str,
     dryrun: bool,
+    interface_rows: list[dict[str, Any]] | None = None,
     job: Any | None = None,
 ) -> dict[str, int]:
-    """Sync locations + the device FK chain into Nautobot via contrib CRUD.
-
-    Returns the diffsync summary. On dryrun, computes the diff without applying.
+    """Sync locations + the device FK chain (+ interfaces) into Nautobot via
+    contrib CRUD. Returns the diffsync summary; dryrun computes without applying.
     """
     if not CONTRIB_AVAILABLE:  # pragma: no cover
         raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
@@ -461,6 +530,8 @@ def run_contrib_core_sync(
         location_status_name=location_status_name,
         device_role_name=device_role_name,
         device_status_name=device_status_name,
+        interface_rows=interface_rows or [],
+        interface_status_name=device_status_name,
     )
     source.load()
     diff = source.diff_to(target)
