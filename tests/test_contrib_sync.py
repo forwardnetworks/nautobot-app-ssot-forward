@@ -42,11 +42,19 @@ def test_cloud_provider_name_maps_known_and_falls_back():
     assert cloud_provider_name("") == "Cloud"
 
 
+def test_cloud_provider_name_strips_enum_prefix():
+    # Forward's toString yields "CloudType.AWS" etc.
+    assert cloud_provider_name("CloudType.AWS") == "Amazon Web Services"
+    assert cloud_provider_name("CloudType.GCP") == "Google Cloud Platform"
+    assert cloud_provider_name("CloudType.AZURE") == "Microsoft Azure"
+
+
 def test_cloud_resource_type_name_pretty():
     assert cloud_resource_type_name("AWS", "vpc") == "AWS VPC"
     assert cloud_resource_type_name("aws", "subnet") == "AWS Subnet"
     assert cloud_resource_type_name("AZURE", "load-balancer") == "AZURE Load Balancer"
     assert cloud_resource_type_name("GCP", "nat-gateway") == "GCP NAT Gateway"
+    assert cloud_resource_type_name("CloudType.AWS", "vpc") == "AWS VPC"
 
 
 def test_canonicalizer_collapses_variants_to_first_seen():

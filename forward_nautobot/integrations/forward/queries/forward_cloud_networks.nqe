@@ -15,7 +15,8 @@ cloud_vpcs() =
     network_id: vpc.id,
     name: if isPresent(vpc.name) && vpc.name != "" then vpc.name else vpc.id,
     parent_id: "",
-    kind: "vpc"
+    kind: "vpc",
+    cidrs: vpc.ipv4CidrBlocks
   };
 
 cloud_subnets() =
@@ -28,7 +29,8 @@ cloud_subnets() =
     network_id: subnet.id,
     name: if isPresent(subnet.name) && subnet.name != "" then subnet.name else subnet.id,
     parent_id: vpc.id,
-    kind: "subnet"
+    kind: "subnet",
+    cidrs: subnet.addresses
   };
 
 @primaryKey(network_id)
