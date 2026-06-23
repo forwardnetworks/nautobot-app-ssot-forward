@@ -42,6 +42,9 @@ try:
         Location,
         LocationType,
         Manufacturer,
+        Module,
+        ModuleBay,
+        ModuleType,
         Platform,
     )
     from nautobot.extras.models import Role, Status
@@ -534,8 +537,46 @@ if CONTRIB_AVAILABLE:
         name: str
         manufacturer__name: str
 
+    class ForwardContribModuleType(_ForwardContribDeleteMixin, NautobotModel):
+        _model = ModuleType
+        _modelname = "module_type"
+        _identifiers = ("manufacturer__name", "model")
+        _attributes = ()
+        manufacturer__name: str
+        model: str
+
+    class ForwardContribModuleBay(_ForwardContribDeleteMixin, NautobotModel):
+        _model = ModuleBay
+        _modelname = "module_bay"
+        _identifiers = ("parent_device__name", "name")
+        _attributes = ()
+        parent_device__name: str
+        name: str
+
+    class ForwardContribModule(_ForwardContribDeleteMixin, NautobotModel):
+        # A Module occupies a ModuleBay; identity is the bay (device + bay name).
+        _model = Module
+        _modelname = "module"
+        _identifiers = ("parent_module_bay__parent_device__name", "parent_module_bay__name")
+        _attributes = ("module_type__manufacturer__name", "module_type__model", "status__name")
+        parent_module_bay__parent_device__name: str
+        parent_module_bay__name: str
+        module_type__manufacturer__name: str
+        module_type__model: str
+        status__name: str
+
     # IPAM + assets sync after the device chain (devices must already exist).
-    _EXTENDED_TOP_LEVEL = ["vrf", "vlan", "prefix", "ip_address", "inventory_item"]
+    # module_type/module_bay precede module (FK targets created first).
+    _EXTENDED_TOP_LEVEL = [
+        "vrf",
+        "vlan",
+        "prefix",
+        "ip_address",
+        "inventory_item",
+        "module_type",
+        "module_bay",
+        "module",
+    ]
 
     class ForwardContribExtendedTarget(NautobotAdapter):
         top_level = _EXTENDED_TOP_LEVEL
@@ -544,6 +585,9 @@ if CONTRIB_AVAILABLE:
         prefix = ForwardContribPrefix
         ip_address = ForwardContribIPAddress
         inventory_item = ForwardContribInventoryItem
+        module_type = ForwardContribModuleType
+        module_bay = ForwardContribModuleBay
+        module = ForwardContribModule
 
     class ForwardContribExtendedSource(Adapter):
         top_level = _EXTENDED_TOP_LEVEL
@@ -552,6 +596,9 @@ if CONTRIB_AVAILABLE:
         prefix = ForwardContribPrefix
         ip_address = ForwardContribIPAddress
         inventory_item = ForwardContribInventoryItem
+        module_type = ForwardContribModuleType
+        module_bay = ForwardContribModuleBay
+        module = ForwardContribModule
 
         def __init__(
             self,
@@ -561,6 +608,7 @@ if CONTRIB_AVAILABLE:
             prefix_rows: list[dict[str, Any]],
             ipaddress_rows: list[dict[str, Any]],
             inventory_rows: list[dict[str, Any]],
+            module_rows: list[dict[str, Any]] | None = None,
             namespace_name: str = "Global",
             status_name: str = "Active",
             **kwargs,
@@ -571,6 +619,7 @@ if CONTRIB_AVAILABLE:
             self._prefix_rows = prefix_rows
             self._ipaddress_rows = ipaddress_rows
             self._inventory_rows = inventory_rows
+            self._module_rows = module_rows or []
             self._namespace_name = namespace_name
             self._status_name = status_name
 
@@ -636,6 +685,43 @@ if CONTRIB_AVAILABLE:
                 seen.add(("inv", dev, name))
                 self.add(
                     ForwardContribInventoryItem(device__name=dev, name=name, manufacturer__name=mfr)
+                )
+
+            # Modules: derive ModuleType (manufacturer+model) and ModuleBay
+            # (device+bay) first, then the Module occupying the bay.
+            module_types: set[tuple[str, str]] = set()
+            module_bays: set[tuple[str, str]] = set()
+            for row in self._module_rows:
+                dev = str(row.get("device") or "").strip()
+                bay = str(row.get("module_bay") or "").strip()
+                mfr = str(row.get("manufacturer") or "").strip()
+                model = str(row.get("model") or "").strip()
+                if dev and bay and ("mtype", mfr, model) not in module_types and mfr and model:
+                    module_types.add(("mtype", mfr, model))
+                    self.add(ForwardContribModuleType(manufacturer__name=mfr, model=model))
+            for row in self._module_rows:
+                dev = str(row.get("device") or "").strip()
+                bay = str(row.get("module_bay") or "").strip()
+                if dev and bay and ("mbay", dev, bay) not in module_bays:
+                    module_bays.add(("mbay", dev, bay))
+                    self.add(ForwardContribModuleBay(parent_device__name=dev, name=bay))
+            seen_modules: set[tuple[str, str]] = set()
+            for row in self._module_rows:
+                dev = str(row.get("device") or "").strip()
+                bay = str(row.get("module_bay") or "").strip()
+                mfr = str(row.get("manufacturer") or "").strip()
+                model = str(row.get("model") or "").strip()
+                if not (dev and bay and mfr and model) or (dev, bay) in seen_modules:
+                    continue
+                seen_modules.add((dev, bay))
+                self.add(
+                    ForwardContribModule(
+                        parent_module_bay__parent_device__name=dev,
+                        parent_module_bay__name=bay,
+                        module_type__manufacturer__name=mfr,
+                        module_type__model=model,
+                        status__name=self._status_name,
+                    )
                 )
 
     class _StubJob:
@@ -746,7 +832,7 @@ def ensure_extended_prerequisites(*, namespace_name: str = "Global", status_name
     if not CONTRIB_AVAILABLE:  # pragma: no cover
         raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
     Namespace.objects.get_or_create(name=namespace_name)
-    _ensure_status_with_content_types(status_name, [VLAN, VRF, Prefix, IPAddress])
+    _ensure_status_with_content_types(status_name, [VLAN, VRF, Prefix, IPAddress, Module])
 
 
 def run_contrib_extended_sync(
@@ -756,6 +842,7 @@ def run_contrib_extended_sync(
     prefix_rows: list[dict[str, Any]] | None = None,
     ipaddress_rows: list[dict[str, Any]] | None = None,
     inventory_rows: list[dict[str, Any]] | None = None,
+    module_rows: list[dict[str, Any]] | None = None,
     namespace_name: str = "Global",
     status_name: str = "Active",
     dryrun: bool,
@@ -778,6 +865,7 @@ def run_contrib_extended_sync(
         prefix_rows=prefix_rows or [],
         ipaddress_rows=ipaddress_rows or [],
         inventory_rows=inventory_rows or [],
+        module_rows=module_rows or [],
         namespace_name=namespace_name,
         status_name=status_name,
     )
@@ -950,12 +1038,15 @@ def run_contrib_full_sync(
         prefix_rows=rows("ipv4_prefixes") + rows("ipv6_prefixes"),
         ipaddress_rows=rows("ip_addresses"),
         inventory_rows=rows("inventory_items"),
+        module_rows=rows("modules"),
         dryrun=dryrun,
         allow_delete=allow_delete,
         job=job,
     )
     if include_cloud and client is not None and network_id:
-        account_rows = _cloud_query_rows(client, network_id, snapshot_id, "forward_cloud_accounts.nqe")
+        account_rows = _cloud_query_rows(
+            client, network_id, snapshot_id, "forward_cloud_accounts.nqe"
+        )
         if account_rows:
             summaries["cloud"] = run_contrib_cloud_sync(
                 account_rows=account_rows,
