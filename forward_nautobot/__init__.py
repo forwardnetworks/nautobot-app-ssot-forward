@@ -28,7 +28,7 @@ class ForwardNautobotConfig(NautobotAppConfig):
     name = "forward_nautobot"
     verbose_name = "Forward Networks SSoT"
     description = "Sync Forward Networks data into Nautobot through the SSoT app."
-    version = "0.2.0"
+    version = "0.3.0"
     author = "Forward Networks"
     author_email = "support@forwardnetworks.com"
     base_url = "forward"
