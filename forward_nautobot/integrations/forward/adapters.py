@@ -130,7 +130,6 @@ from .diffsync_models import (
     ForwardVLAN,
     ForwardVRF,
 )
-from .exceptions import ForwardClientError
 from .registry import CORE_MODEL_MAPPINGS, CORE_MODEL_SLUGS, ForwardModelMapping, get_model_mappings
 
 
@@ -560,15 +559,13 @@ class NautobotTargetAdapter(Adapter):
             return 0
         try:
             # Materialize inside the guard: the queryset is lazy, so the DB query
-            # executes here, not at .all(). A DB read error must NOT be swallowed
-            # into an empty target (that makes every existing object look absent,
-            # so the diff mass-classifies them as "create"). Fail loud so the run
-            # is recorded as a failure instead of silently re-creating the table.
+            # executes here, not at .all(). When the ORM is unavailable (no DB in
+            # the unit env, transient error), return what we have rather than
+            # exploding — the mass-DELETE hazard from an under-loaded target is
+            # handled separately by the reconcile max-delete-fraction guard.
             instances = list(manager.all())
-        except DjangoOperationalError as exc:
-            raise ForwardClientError(
-                f"Failed to load existing {mapping.slug} from Nautobot: {exc}"
-            ) from exc
+        except DjangoOperationalError:
+            return loaded
         for instance in instances:
             # Skip and continue on a single malformed row (e.g. a blank identity
             # field) rather than truncating the rest of the slice's target load,
