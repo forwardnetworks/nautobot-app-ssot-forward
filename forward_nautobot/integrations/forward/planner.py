@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from importlib import resources
@@ -68,9 +69,13 @@ class ForwardIngestionPlanner:
     def _query_text_for(mapping: ForwardModelMapping) -> str:
         """Return inline-safe NQE text from a bundled .nqe file.
 
-        The inline execution API accepts @query and function signatures but rejects
-        @primaryKey. Strip only @primaryKey; caller must supply the same parameters
-        via ForwardQuerySpec.parameters so the API can bind them.
+        Some Forward builds bind inline parameters via ForwardQuerySpec.parameters;
+        others (the local master build) don't, and also reject @primaryKey, empty
+        list literals, and a trailing ';'. To run on both, emit self-contained
+        text: drop @primaryKey/@query and the `f(forward_location_names…) =`
+        wrapper, drop the whole `where … forward_location_names …` location-filter
+        clause (it's a no-op for an empty list — identical to a full, unscoped
+        sync, but avoids the unsupported `[]`), and drop the trailing ';'.
         """
         package = resources.files("forward_nautobot.integrations.forward.queries")
         raw = (package / mapping.forward_query_file).read_text(encoding="utf-8")
@@ -80,9 +85,33 @@ class ForwardIngestionPlanner:
             end = next((i for i, ln in enumerate(lines) if ln.rstrip().endswith("*/")), None)
             if end is not None:
                 lines = lines[end + 1 :]
-        # Strip only @primaryKey (file-format only; inline API rejects it).
-        filtered = [ln for ln in lines if not ln.strip().startswith("@primaryKey")]
-        return "\n".join(filtered).strip()
+        params = ("forward_location_names", "forward_device_names")
+        out: list[str] = []
+        skip_or_continuation = False
+        for ln in lines:
+            s = ln.strip()
+            if s.startswith("@primaryKey") or s.startswith("@query"):
+                continue
+            # Drop the `f(<param>: ...) =` function wrapper (any param name).
+            if re.match(r"^f\s*\(\s*forward_\w+\b.*\)\s*=\s*$", s):
+                continue
+            # Drop the parameter-filter clause: the `where … <param>` line and its
+            # immediately-following `|| …` continuation lines (a no-op for an empty
+            # filter; avoids the unsupported `[]` literal entirely).
+            if s.startswith("where") and any(p in s for p in params):
+                skip_or_continuation = True
+                continue
+            if skip_or_continuation and s.startswith("||"):
+                continue
+            skip_or_continuation = False
+            out.append(ln)
+        text = "\n".join(out).strip()
+        # The ad-hoc executor rejects a trailing ';' on a plain foreach…select, but
+        # REQUIRES it when the query has a top-level `let` binding. Keep it only then.
+        has_let = any(l.strip().startswith("let ") for l in out)
+        if text.endswith(";") and not has_let:
+            text = text[:-1].rstrip()
+        return text
 
     @staticmethod
     def _row_key(mapping: ForwardModelMapping, row: dict[str, Any]) -> str:

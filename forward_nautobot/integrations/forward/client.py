@@ -785,17 +785,22 @@ class ForwardClient:
         if not query_spec.resolved_query_id:
             query_spec = self.resolve_query_spec(query_spec)
         payload: dict[str, Any] = {}
-        if query_spec.parameters:
-            payload["parameters"] = dict(query_spec.parameters)
         query_id = query_spec.resolved_query_id or query_spec.query_id
         commit_id = query_spec.resolved_commit_id or query_spec.commit_id
+        # Self-contained ad-hoc query text takes no parameters; only saved queries
+        # (queryId) bind them. Sending params with a bare main query is a 400.
+        if query_spec.parameters and query_id:
+            payload["parameters"] = dict(query_spec.parameters)
         if query_id:
             payload["queryId"] = query_id
             if commit_id:
                 payload["commitId"] = commit_id
         else:
             payload["query"] = query_spec.query_text
-        if query_spec.sort_keys:
+        # sortKeys only order results and are only honoured for saved queries
+        # (queryId). The ad-hoc /nqe-executions endpoint on some Forward builds
+        # rejects them outright, so send them only when running a saved query.
+        if query_spec.sort_keys and query_id:
             payload["sortKeys"] = [
                 {"columnName": col, "order": "ASC"} for col in query_spec.sort_keys
             ]
