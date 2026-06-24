@@ -234,6 +234,10 @@ class ForwardSourceAdapter(Adapter):
             if not isinstance(row, dict):
                 continue
             record_key = self._row_key(mapping, row)
+            # The same identity (e.g. a /30 link prefix, or VLAN 1) is advertised
+            # by several devices; DiffSync keys are global, so load each once.
+            if record_key in self.records[mapping.slug]:
+                continue
             model_class = getattr(self, mapping.slug, None)
             if model_class is not None:
                 self.add(model_class(**dict(row)))

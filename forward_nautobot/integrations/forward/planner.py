@@ -106,10 +106,9 @@ class ForwardIngestionPlanner:
             skip_or_continuation = False
             out.append(ln)
         text = "\n".join(out).strip()
-        # The ad-hoc executor rejects a trailing ';' on a plain foreach…select, but
-        # REQUIRES it when the query has a top-level `let` binding. Keep it only then.
-        has_let = any(l.strip().startswith("let ") for l in out)
-        if text.endswith(";") and not has_let:
+        # The ad-hoc /nqe-executions endpoint rejects the trailing ';' statement
+        # terminator (valid only for saved/decorated queries).
+        if text.endswith(";"):
             text = text[:-1].rstrip()
         return text
 
