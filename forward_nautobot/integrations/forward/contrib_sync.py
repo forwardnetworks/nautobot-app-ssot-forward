@@ -34,6 +34,7 @@ try:
     from diffsync import Adapter
     from django.contrib.contenttypes.models import ContentType
     from nautobot.cloud.models import CloudAccount, CloudNetwork, CloudResourceType, CloudService
+    from nautobot.dcim.choices import InterfaceTypeChoices
     from nautobot.dcim.models import (
         Device,
         DeviceType,
@@ -213,19 +214,11 @@ if CONTRIB_AVAILABLE:
         "interface",
     ]
 
-    # Nautobot Interface.type is a choice field; map unknown Forward types here.
+    # Nautobot Interface.type is a choice field; validate against the real choice
+    # set (not a hand-maintained subset) and fall back to "other" for anything
+    # Forward emits that Nautobot does not model.
     _INTERFACE_TYPE_FALLBACK = "other"
-    _KNOWN_INTERFACE_TYPES = {
-        "virtual",
-        "lag",
-        "bridge",
-        "other",
-        "1000base-t",
-        "10gbase-x-sfpp",
-        "25gbase-x-sfp28",
-        "40gbase-x-qsfpp",
-        "100gbase-x-qsfp28",
-    }
+    _KNOWN_INTERFACE_TYPES = set(InterfaceTypeChoices.values())
 
     class ForwardContribCoreTarget(NautobotAdapter):
         top_level = _CORE_TOP_LEVEL
@@ -577,9 +570,12 @@ if CONTRIB_AVAILABLE:
             ns = Namespace.objects.get(name="Global")
             status = Status.objects.get(name=attrs["status__name"])
             address = f"{ids['host']}/{ids['mask_length']}"
-            obj = IPAddress.objects.filter(host=ids["host"]).first() or IPAddress.objects.create(
-                address=address, namespace=ns, status=status
-            )
+            # Match on host AND mask within the same namespace — filter(host=)
+            # alone would treat 10.0.0.1/24 and 10.0.0.1/32 as identical, and an
+            # unscoped match could pick an IP from a different namespace.
+            obj = IPAddress.objects.filter(
+                host=ids["host"], mask_length=ids["mask_length"], parent__namespace=ns
+            ).first() or IPAddress.objects.create(address=address, namespace=ns, status=status)
             model = super(NautobotModel, cls).create(adapter, ids=ids, attrs=attrs)
             model.pk = obj.pk
             return model
@@ -732,11 +728,18 @@ if CONTRIB_AVAILABLE:
                         host=host, mask_length=int(mask), status__name=self._status_name
                     )
                 )
+            # Device-scoped slices reference devices by FK lookup; restrict to
+            # devices that actually exist (core sync runs first) so one missing
+            # device cannot fail the whole extended sync.
+            existing_devices = set(Device.objects.values_list("name", flat=True))
+
             for row in self._inventory_rows:
                 dev = str(row.get("device") or "").strip()
                 name = str(row.get("name") or "").strip()
                 mfr = str(row.get("manufacturer") or "").strip()
-                if not (dev and name and mfr) or ("inv", dev, name) in seen:
+                if not (dev and name and mfr) or dev not in existing_devices:
+                    continue
+                if ("inv", dev, name) in seen:
                     continue
                 seen.add(("inv", dev, name))
                 self.add(
@@ -752,12 +755,16 @@ if CONTRIB_AVAILABLE:
                 bay = str(row.get("module_bay") or "").strip()
                 mfr = str(row.get("manufacturer") or "").strip()
                 model = str(row.get("model") or "").strip()
+                if dev not in existing_devices:
+                    continue
                 if dev and bay and ("mtype", mfr, model) not in module_types and mfr and model:
                     module_types.add(("mtype", mfr, model))
                     self.add(ForwardContribModuleType(manufacturer__name=mfr, model=model))
             for row in self._module_rows:
                 dev = str(row.get("device") or "").strip()
                 bay = str(row.get("module_bay") or "").strip()
+                if dev not in existing_devices:
+                    continue
                 if dev and bay and ("mbay", dev, bay) not in module_bays:
                     module_bays.add(("mbay", dev, bay))
                     self.add(ForwardContribModuleBay(parent_device__name=dev, name=bay))
@@ -767,6 +774,8 @@ if CONTRIB_AVAILABLE:
                 bay = str(row.get("module_bay") or "").strip()
                 mfr = str(row.get("manufacturer") or "").strip()
                 model = str(row.get("model") or "").strip()
+                if dev not in existing_devices:
+                    continue
                 if not (dev and bay and mfr and model) or (dev, bay) in seen_modules:
                     continue
                 seen_modules.add((dev, bay))
@@ -844,12 +853,15 @@ def run_contrib_core_sync(
     """
     if not CONTRIB_AVAILABLE:  # pragma: no cover
         raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
-    ensure_core_prerequisites(
-        location_type_name=location_type_name,
-        location_status_name=location_status_name,
-        device_role_name=device_role_name,
-        device_status_name=device_status_name,
-    )
+    # Prerequisites mutate the DB, so only create them on a real (non-dryrun) run.
+    # The diff itself never calls create(), so dryrun needs nothing ensured.
+    if not dryrun:
+        ensure_core_prerequisites(
+            location_type_name=location_type_name,
+            location_status_name=location_status_name,
+            device_role_name=device_role_name,
+            device_status_name=device_status_name,
+        )
 
     # Canonical location set = union of the locations slice and every location a
     # device references, so each device's FK target exists.
@@ -910,7 +922,8 @@ def run_contrib_extended_sync(
     diffsync summary; dryrun computes without applying."""
     if not CONTRIB_AVAILABLE:  # pragma: no cover
         raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
-    ensure_extended_prerequisites(namespace_name=namespace_name, status_name=status_name)
+    if not dryrun:
+        ensure_extended_prerequisites(namespace_name=namespace_name, status_name=status_name)
     job = job or _StubJob()
     target = ForwardContribExtendedTarget(job=job)
     target.allow_delete = bool(allow_delete)
@@ -991,9 +1004,10 @@ def run_contrib_cloud_sync(
     via contrib CRUD. Returns the diffsync summary; dryrun computes without applying."""
     if not CONTRIB_AVAILABLE:  # pragma: no cover
         raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
-    ensure_cloud_prerequisites(
-        account_rows=account_rows, network_rows=network_rows, service_rows=service_rows
-    )
+    if not dryrun:
+        ensure_cloud_prerequisites(
+            account_rows=account_rows, network_rows=network_rows, service_rows=service_rows
+        )
     job = job or _StubJob()
     target = ForwardContribCloudTarget(job=job)
     target.allow_delete = bool(allow_delete)
@@ -1082,15 +1096,15 @@ def _cloud_query_rows(client, network_id, snapshot_id, query_file):
         if end is not None:
             raw = raw[end + 1 :]
     text = "\n".join(ln for ln in raw if not ln.strip().startswith("@primaryKey")).strip()
-    try:
-        return client.run_nqe_query(
-            query_spec=ForwardQuerySpec(query_text=text),
-            network_id=network_id,
-            snapshot_id=snapshot_id,
-            fetch_all=False,
-        )
-    except Exception:  # pragma: no cover - cloud-less tenant / transient
-        return []
+    # fetch_all so large tenants are not silently truncated to one page; the
+    # error propagates (a real API/permission failure must not look like
+    # "no cloud" — that's the caller's distinction to make).
+    return client.run_nqe_query(
+        query_spec=ForwardQuerySpec(query_text=text),
+        network_id=network_id,
+        snapshot_id=snapshot_id,
+        fetch_all=True,
+    )
 
 
 def run_contrib_full_sync(
@@ -1144,20 +1158,28 @@ def run_contrib_full_sync(
         job=job,
     )
     if include_cloud and client is not None and network_id:
-        account_rows = _cloud_query_rows(
-            client, network_id, snapshot_id, "forward_cloud_accounts.nqe"
-        )
-        if account_rows:
-            summaries["cloud"] = run_contrib_cloud_sync(
-                account_rows=account_rows,
-                network_rows=_cloud_query_rows(
-                    client, network_id, snapshot_id, "forward_cloud_networks.nqe"
-                ),
-                service_rows=_cloud_query_rows(
-                    client, network_id, snapshot_id, "forward_cloud_services.nqe"
-                ),
-                dryrun=dryrun,
-                allow_delete=allow_delete,
-                job=job,
+        # A cloud-fetch failure is isolated to the cloud domain — the network
+        # sync already succeeded, so record it as a skip reason rather than
+        # aborting the whole run. An empty result (no cloud accounts) is normal.
+        try:
+            account_rows = _cloud_query_rows(
+                client, network_id, snapshot_id, "forward_cloud_accounts.nqe"
             )
+            if account_rows:
+                summaries["cloud"] = run_contrib_cloud_sync(
+                    account_rows=account_rows,
+                    network_rows=_cloud_query_rows(
+                        client, network_id, snapshot_id, "forward_cloud_networks.nqe"
+                    ),
+                    service_rows=_cloud_query_rows(
+                        client, network_id, snapshot_id, "forward_cloud_services.nqe"
+                    ),
+                    dryrun=dryrun,
+                    allow_delete=allow_delete,
+                    job=job,
+                )
+            else:
+                summaries["cloud"] = {"skipped": "no cloud accounts"}
+        except Exception as exc:  # noqa: BLE001 - isolate cloud failure from network sync
+            summaries["cloud"] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
     return summaries

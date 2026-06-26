@@ -1,4 +1,4 @@
-"""Forward Networks SSoT integration for Nautobot."""
+"""Forward Field Integration — sync Forward Networks data into Nautobot via SSoT."""
 
 from __future__ import annotations
 
@@ -26,8 +26,10 @@ if TYPE_CHECKING:  # pragma: no cover - import-time hinting only
 
 class ForwardNautobotConfig(NautobotAppConfig):
     name = "forward_nautobot"
-    verbose_name = "Forward Networks SSoT"
-    description = "Sync Forward Networks data into Nautobot through the SSoT app."
+    verbose_name = "Forward Field Integration"
+    description = (
+        "Forward Field Integration — sync Forward Networks data into Nautobot through SSoT."
+    )
     version = "0.3.0"
     author = "Forward Networks"
     author_email = "support@forwardnetworks.com"

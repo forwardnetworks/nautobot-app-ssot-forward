@@ -274,6 +274,22 @@ def _use_contrib_sync() -> bool:
         return False
 
 
+def _contrib_include_cloud() -> bool:
+    """Whether the contrib path also syncs cloud accounts/networks/services.
+    On by default; disable in PLUGINS_CONFIG:
+    ``PLUGINS_CONFIG = {"forward_nautobot": {"contrib_include_cloud": False}}``."""
+    try:
+        from django.conf import settings
+
+        return bool(
+            (settings.PLUGINS_CONFIG or {})
+            .get("forward_nautobot", {})
+            .get("contrib_include_cloud", True)
+        )
+    except Exception:
+        return True
+
+
 def _run_ingestion_plan(*, dryrun: bool, **data):
     request = _build_ingestion_request(dryrun=dryrun, **data)
     client = ForwardClient(request.connection)
@@ -314,6 +330,7 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                     client=client,
                     network_id=str(request.connection.network_id or ""),
                     snapshot_id=plan.diff_detail.get("current_snapshot_id"),
+                    include_cloud=_contrib_include_cloud(),
                 ),
             }
         else:
@@ -443,9 +460,12 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
     """SSoT DataSource wrapper for Forward inventory ingestion."""
 
     class_path = f"{__name__}.ForwardInventoryDataSource"
-    name = "Forward Networks inventory"
-    grouping = "Forward Networks"
-    description = "Sync Forward Networks inventory data into Nautobot through the SSoT app."
+    name = "Forward Field Integration"
+    grouping = "Forward Field Integration"
+    description = (
+        "Forward Field Integration — sync Forward Networks inventory, IPAM, and cloud "
+        "data into Nautobot through the SSoT app."
+    )
     read_only = False
     console_log_default = False
     dryrun_default = True
@@ -532,8 +552,12 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
     )
 
     class Meta:
-        name = "Forward Networks inventory"
-        description = "Sync Forward Networks inventory data into Nautobot through the SSoT app."
+        name = "Forward Field Integration"
+        description = (
+            "Forward Field Integration — sync Forward Networks inventory, IPAM, and cloud "
+            "data into Nautobot through the SSoT app."
+        )
+        # data_source names the external system in the SSoT data-flow diagram.
         data_source = "Forward Networks"
         dryrun_default = True
 

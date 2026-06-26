@@ -1,1 +1,1 @@
-"""Integration packages for the Forward Networks SSoT integration."""
+"""Integration packages for Forward Field Integration."""

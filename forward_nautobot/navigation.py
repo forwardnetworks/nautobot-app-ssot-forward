@@ -1,4 +1,4 @@
-"""Navigation for the Forward Networks SSoT integration."""
+"""Navigation for Forward Field Integration."""
 
 try:
     from django.utils.translation import gettext_lazy as _
@@ -55,8 +55,8 @@ configuration = PluginMenuItem(
 )
 
 menu = PluginMenu(
-    label="Forward Networks",
-    icon_class="mdi mdi-cloud-sync",
+    label="Forward Field Integration",
+    icon_class="mdi mdi-fast-forward",
     groups=(
         ("SSoT", (overview, diagnostics, status)),
         ("Configuration", (configuration,)),

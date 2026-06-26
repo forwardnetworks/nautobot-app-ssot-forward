@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 64" role="img" aria-label="Forward Field Integration">
+  <defs>
+    <linearGradient id="ffi-mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff5a2b"/>
+      <stop offset="1" stop-color="#ff3506"/>
+    </linearGradient>
+  </defs>
+  <!-- Forward "fast-forward" mark -->
+  <rect x="2" y="6" width="52" height="52" rx="14" fill="url(#ffi-mark)"/>
+  <g fill="#fff">
+    <path d="M16 22 L28 32 L16 42 Z"/>
+    <path d="M28 22 L40 32 L28 42 Z"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="68" y="30" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif"
+        font-size="22" font-weight="700" letter-spacing="-0.2" fill="#102033">Forward</text>
+  <text x="69" y="48" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif"
+        font-size="12" font-weight="600" letter-spacing="3.2" fill="#ff3506">FIELD INTEGRATION</text>
+</svg>

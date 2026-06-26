@@ -1,10 +1,15 @@
-# Forward Networks SSoT for Nautobot
+<p align="center">
+  <img src="forward_nautobot/static/forward_nautobot/img/forward-field-integration.svg"
+       alt="Forward Field Integration" width="340">
+</p>
 
-Nautobot 3.1 app for syncing Forward Networks inventory and IPAM data through
-`nautobot-ssot`.
+# Forward Field Integration
 
-This plugin uses an SSoT job for run history, dry-run semantics, and
-support-bundle capture, with support for Forward async query execution.
+**Forward Field Integration** is a Nautobot 3.1 app that syncs Forward Networks
+inventory, IPAM, and cloud data into Nautobot through `nautobot-ssot`.
+
+It uses an SSoT job for run history, dry-run semantics, and support-bundle
+capture, with support for Forward async query execution.
 
 ## Release Compatibility
 

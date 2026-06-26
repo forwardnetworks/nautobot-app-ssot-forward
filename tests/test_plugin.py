@@ -89,12 +89,12 @@ def _require_target_tables(*model_names: str):
 def test_plugin_config_metadata():
     assert config.name == "forward_nautobot"
     assert config.base_url == "forward"
-    assert config.verbose_name == "Forward Networks SSoT"
+    assert config.verbose_name == "Forward Field Integration"
     assert config.jobs == "integrations.forward.jobs"
 
 
 def test_navigation_surface_exists():
-    assert menu.label == "Forward Networks"
+    assert menu.label == "Forward Field Integration"
     assert len(menu.groups) == 2
 
 
@@ -116,16 +116,17 @@ def test_ssot_data_source_metadata():
     _require_jobs_module()
     mappings = ForwardInventoryDataSource.data_mappings()
 
-    assert ForwardInventoryDataSource.Meta.name == "Forward Networks inventory"
+    assert ForwardInventoryDataSource.Meta.name == "Forward Field Integration"
     assert ForwardInventoryDataSource.Meta.data_source == "Forward Networks"
     assert (
         ForwardInventoryDataSource.class_path
         == "forward_nautobot.integrations.forward.jobs.ForwardInventoryDataSource"
     )
-    assert ForwardInventoryDataSource.name == "Forward Networks inventory"
-    assert ForwardInventoryDataSource.grouping == "Forward Networks"
+    assert ForwardInventoryDataSource.name == "Forward Field Integration"
+    assert ForwardInventoryDataSource.grouping == "Forward Field Integration"
     assert ForwardInventoryDataSource.description == (
-        "Sync Forward Networks inventory data into Nautobot through the SSoT app."
+        "Forward Field Integration — sync Forward Networks inventory, IPAM, and cloud "
+        "data into Nautobot through the SSoT app."
     )
     assert ForwardInventoryDataSource.console_log_default is False
     assert ForwardInventoryDataSource.dryrun_default is True

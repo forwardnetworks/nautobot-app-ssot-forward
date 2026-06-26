@@ -1,4 +1,4 @@
-# Forward Networks SSoT — End-to-End Flow
+# Forward Field Integration — End-to-End Flow
 
 This document shows how the plugin runs end to end across its three execution
 modes, the connection types and direction between components, and the Forward

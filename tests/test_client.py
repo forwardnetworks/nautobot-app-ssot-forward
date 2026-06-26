@@ -934,9 +934,13 @@ def test_request_nqe_execution_sends_sort_keys(monkeypatch):
         ),
         transport=httpx.MockTransport(handler),
     )
+    # sortKeys are only honoured for saved queries (queryId); the ad-hoc
+    # /nqe-executions endpoint rejects them, so they are sent only on the
+    # saved-query path. Use a pre-resolved query_id to exercise that path.
     client.request_nqe_execution(
         query_spec=ForwardQuerySpec(
-            query_text="foreach device in network.devices select { name: device.name }",
+            query_id="q-1",
+            resolved_query_id="q-1",
             sort_keys=("name",),
         ),
         network_id="net-1",

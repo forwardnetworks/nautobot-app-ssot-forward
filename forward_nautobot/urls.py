@@ -1,4 +1,4 @@
-"""URL routes for the Forward Networks SSoT integration."""
+"""URL routes for Forward Field Integration."""
 
 try:
     from django.urls import path

@@ -1,4 +1,4 @@
-"""UI views for the Forward Networks SSoT integration."""
+"""UI views for Forward Field Integration."""
 
 from __future__ import annotations
 
@@ -248,11 +248,22 @@ def _render_style_block() -> str:
 .forward-card h3 {
   margin: 0;
 }
+.forward-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.forward-mark {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+}
 .forward-kicker {
   text-transform: uppercase;
   letter-spacing: 0.12em;
   font-size: 12px;
-  color: #5f7386;
+  font-weight: 600;
+  color: #ff3506;
 }
 .forward-grid {
   display: grid;
@@ -283,7 +294,7 @@ def _render_style_block() -> str:
 .forward-action {
   display: inline-block;
   text-decoration: none;
-  background: #102033;
+  background: linear-gradient(135deg, #ff5a2b 0%, #ff3506 100%);
   color: #fff !important;
   padding: 10px 14px;
   border-radius: 999px;
@@ -351,12 +362,27 @@ def _render_style_block() -> str:
 """
 
 
-def _render_page(title: str, body: str, *, kicker: str = "Forward Networks SSoT") -> str:
+_BRAND_MARK = (
+    '<svg class="forward-mark" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" '
+    'aria-hidden="true">'
+    '<defs><linearGradient id="ffi-hero" x1="0" y1="0" x2="1" y2="1">'
+    '<stop offset="0" stop-color="#ff5a2b"/><stop offset="1" stop-color="#ff3506"/>'
+    "</linearGradient></defs>"
+    '<rect x="2" y="2" width="60" height="60" rx="16" fill="url(#ffi-hero)"/>'
+    '<g fill="#fff"><path d="M18 20 L32 32 L18 44 Z"/><path d="M32 20 L46 32 L32 44 Z"/></g>'
+    "</svg>"
+)
+
+
+def _render_page(title: str, body: str, *, kicker: str = "Forward Field Integration") -> str:
     return (
         _render_style_block()
         + '<div class="forward-shell">'
         + '<div class="forward-hero">'
+        + '<div class="forward-brand">'
+        + _BRAND_MARK
         + f'<div class="forward-kicker">{escape(kicker)}</div>'
+        + "</div>"
         + f"<h1>{escape(title)}</h1>"
         + "</div>"
         + body
