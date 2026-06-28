@@ -51,10 +51,24 @@ try:
     from nautobot.extras.models import Role, Status
     from nautobot.ipam.models import VLAN, VRF, IPAddress, Namespace, Prefix
     from nautobot_ssot.contrib import NautobotAdapter, NautobotModel
+    from pydantic import field_validator
 
     CONTRIB_AVAILABLE = True
 except Exception:  # pragma: no cover - exercised only in a real Nautobot env
     CONTRIB_AVAILABLE = False
+
+
+def _normalize_mac(value: Any) -> str | None:
+    """Canonicalize a MAC to colon-lowercase, or None when absent.
+
+    Both sides must agree for idempotence: Nautobot's ORM returns a netaddr ``EUI``
+    (hyphen-formatted by default) for a populated MAC and ``None`` for an empty one,
+    while Forward emits a colon string. Normalize everything to ``aa:bb:cc:dd:ee:ff``.
+    """
+    if value in (None, ""):
+        return None
+    text = str(value).strip().replace("-", ":").lower()
+    return text or None
 
 
 # Provider Manufacturer names per Forward cloudType (readable, stable).
@@ -202,10 +216,16 @@ if CONTRIB_AVAILABLE:
         enabled: bool = True
         mtu: int | None = None
         description: str = ""
-        # Nautobot's MACAddressCharField stores an absent MAC as NULL, so the
-        # contrib field must be Optional — a plain str annotation makes the target
-        # adapter raise when it loads a MAC-less interface (None for a str field).
+        # Nautobot's MACAddressCharField stores an absent MAC as NULL and returns a
+        # netaddr EUI (hyphen-formatted) for a populated one. Accept Optional and
+        # normalize both the loaded EUI and the Forward colon string to one canonical
+        # form so the diff matches (no phantom update) and pydantic doesn't reject EUI.
         mac_address: str | None = None
+
+        @field_validator("mac_address", mode="before")
+        @classmethod
+        def _coerce_mac(cls, value):
+            return _normalize_mac(value)
 
     # Dependency order: FK targets must be created before the objects that
     # reference them, since contrib resolves FKs by lookup.

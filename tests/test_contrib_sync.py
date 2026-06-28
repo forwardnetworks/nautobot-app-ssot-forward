@@ -8,10 +8,25 @@ import forward_nautobot.integrations.forward.contrib_sync as contrib_sync
 from forward_nautobot.integrations.forward.contrib_sync import (
     CONTRIB_AVAILABLE,
     LocationCanonicalizer,
+    _normalize_mac,
     _profile_defaults,
     cloud_provider_name,
     cloud_resource_type_name,
 )
+
+
+def test_normalize_mac_converges_eui_and_colon_forms():
+    # The ORM returns a hyphenated EUI; Forward sends a colon string. Both must
+    # canonicalize to the same value or every sync re-updates the interface.
+    assert _normalize_mac("00-11-22-33-44-55") == "00:11:22:33:44:55"
+    assert _normalize_mac("00:11:22:33:44:55") == "00:11:22:33:44:55"
+    assert _normalize_mac("AA:BB:CC:DD:EE:FF") == "aa:bb:cc:dd:ee:ff"
+
+
+def test_normalize_mac_absent_is_none():
+    assert _normalize_mac(None) is None
+    assert _normalize_mac("") is None
+    assert _normalize_mac("   ") is None
 
 
 @pytest.mark.skipif(not CONTRIB_AVAILABLE, reason="contrib models require nautobot")
