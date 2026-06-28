@@ -2,12 +2,25 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+import forward_nautobot.integrations.forward.contrib_sync as contrib_sync
 from forward_nautobot.integrations.forward.contrib_sync import (
+    CONTRIB_AVAILABLE,
     LocationCanonicalizer,
     _profile_defaults,
     cloud_provider_name,
     cloud_resource_type_name,
 )
+
+
+@pytest.mark.skipif(not CONTRIB_AVAILABLE, reason="contrib models require nautobot")
+def test_interface_slice_carries_mac_address():
+    """The MAC learning is an attribute on the existing Interface slice (Nautobot 3.1
+    has no standalone MACAddress model), so it must be in _attributes."""
+    iface = contrib_sync.ForwardContribInterface
+    assert "mac_address" in iface._attributes
+    assert "mac_address" in iface.__annotations__
 
 
 def test_profile_defaults_reads_profile_with_fallbacks():

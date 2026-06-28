@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from importlib import resources
@@ -361,6 +362,17 @@ class ForwardIngestionPlanner:
             tiers[levels[m.slug] - 1].append(m)
         return tiers
 
+    @staticmethod
+    def _slice_fetch_error(
+        mapping: ForwardModelMapping, exc: ForwardClientError
+    ) -> ForwardClientError:
+        """Re-raise a slice fetch failure with the failing slice + Forward query
+        attributed, so the operator sees *what* broke (domain data only we hold)
+        instead of a bare transport error."""
+        return ForwardClientError(
+            f"slice '{mapping.slug}' (query {mapping.forward_query_file}) failed: {exc}"
+        )
+
     def _fetch_slice(
         self,
         *,
@@ -380,8 +392,15 @@ class ForwardIngestionPlanner:
         tuple[str, ...],  # notes
         bool,  # is_diff
         dict[str, Any] | None,  # diff_fallback_detail
+        float,  # query_runtime_ms
+        str,  # commit_id
     ]:
         """Run the network I/O for a single slice. Thread-safe — no shared state writes."""
+        _t0 = time.perf_counter()
+
+        def _elapsed_ms() -> float:
+            return round((time.perf_counter() - _t0) * 1000, 1)
+
         query_spec = ForwardQuerySpec(
             query_path=mapping.forward_query_path,
             parameters=parameters,
@@ -424,10 +443,15 @@ class ForwardIngestionPlanner:
                 notes,
                 is_diff,
                 diff_fallback_detail,
+                _elapsed_ms(),
+                "",  # no resolved query id => no commit on the inline path
             )
 
         query_mode = "bundled_nqe_query_id"
         resolved_query_reference = resolved_query_spec.reference
+        commit_id = str(
+            resolved_query_spec.resolved_commit_id or resolved_query_spec.commit_id or ""
+        )
         if (
             baseline_snapshot_id
             and baseline_snapshot_id != current_snapshot_id
@@ -490,6 +514,8 @@ class ForwardIngestionPlanner:
             notes,
             is_diff,
             diff_fallback_detail,
+            _elapsed_ms(),
+            commit_id,
         )
 
     def run(self, request: ForwardIngestionRequest) -> ForwardIngestionPlan:
@@ -583,12 +609,15 @@ class ForwardIngestionPlanner:
                     }
                     tier_fetch: dict[str, tuple] = {}
                     for future in as_completed(futures):
-                        slug = futures[future].slug
-                        tier_fetch[slug] = future.result()
+                        failed_mapping = futures[future]
+                        try:
+                            tier_fetch[failed_mapping.slug] = future.result()
+                        except ForwardClientError as exc:
+                            raise self._slice_fetch_error(failed_mapping, exc) from exc
             else:
                 m = tier[0]
-                tier_fetch = {
-                    m.slug: self._fetch_slice(
+                try:
+                    slice_result = self._fetch_slice(
                         mapping=m,
                         parameters=tier_params[m.slug],
                         network_id=network_id,
@@ -598,7 +627,9 @@ class ForwardIngestionPlanner:
                         offset=request.offset,
                         fetch_all=request.fetch_all,
                     )
-                }
+                except ForwardClientError as exc:
+                    raise self._slice_fetch_error(m, exc) from exc
+                tier_fetch = {m.slug: slice_result}
 
             # Process results in topo order (mutates source — must be sequential).
             for mapping in tier:
@@ -610,6 +641,8 @@ class ForwardIngestionPlanner:
                     notes,
                     is_diff,
                     diff_fallback_detail,
+                    query_runtime_ms,
+                    commit_id,
                 ) = tier_fetch[mapping.slug]
                 query_contract_version = mapping.contract_version
                 report_rows: list[dict[str, Any]] = []
@@ -637,6 +670,8 @@ class ForwardIngestionPlanner:
                         "query_mode": query_mode,
                         "query_reference": query_reference,
                         "resolved_query_reference": resolved_query_reference,
+                        "query_runtime_ms": query_runtime_ms,
+                        "commit_id": commit_id,
                         "summary": dict(slice_write_plan.summary),
                     }
                 else:
@@ -654,6 +689,8 @@ class ForwardIngestionPlanner:
                         "query_mode": query_mode,
                         "query_reference": query_reference,
                         "resolved_query_reference": resolved_query_reference,
+                        "query_runtime_ms": query_runtime_ms,
+                        "commit_id": commit_id,
                         "rows": rows,
                         "diff_summary": dict(slice_diff_summary),
                         "diff_detail": slice_diff_detail,

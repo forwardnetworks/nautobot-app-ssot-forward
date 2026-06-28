@@ -726,3 +726,20 @@ def test_compute_tiers_levels_default_slices():
     assert slugs_by_tier[0] == {"locations"}
     assert {"platforms", "device_types"} <= slugs_by_tier[1]
     assert "devices" in slugs_by_tier[-1]
+
+
+def test_slice_fetch_error_attributes_slice_and_query():
+    """A fetch failure is re-raised naming the failing slice + Forward query so the
+    operator sees what broke, not a bare transport error."""
+    _require_planner()
+    from types import SimpleNamespace
+
+    from forward_nautobot.integrations.forward.exceptions import ForwardClientError
+
+    mapping = SimpleNamespace(slug="devices", forward_query_file="forward_devices.nqe")
+    err = ForwardIngestionPlanner._slice_fetch_error(mapping, ForwardClientError("HTTP 500: boom"))
+    assert isinstance(err, ForwardClientError)
+    message = str(err)
+    assert "devices" in message
+    assert "forward_devices.nqe" in message
+    assert "boom" in message

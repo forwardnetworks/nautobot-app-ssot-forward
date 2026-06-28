@@ -24,6 +24,7 @@ QUERY_CONTRACT_FIELDS: dict[str, tuple[str, ...]] = {
         "mtu",
         "description",
         "speed",
+        "mac_address",
     ),
     "forward_vlans.nqe": ("site", "vid", "name", "status"),
     "forward_vrfs.nqe": ("name", "rd", "description", "enforce_unique"),

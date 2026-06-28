@@ -39,5 +39,6 @@ select {
   enabled: interface.operStatus == OperStatus.UP,
   mtu: interface.mtu,
   description: if isPresent(interface.description) then interface.description else "",
-  speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer
+  speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer,
+  mac_address: if is_ethernet && isPresent(interface.ethernet.macAddress) then toString(interface.ethernet.macAddress) else ""
 };

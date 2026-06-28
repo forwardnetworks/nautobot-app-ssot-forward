@@ -2,6 +2,7 @@
 
 import json
 import random
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -15,6 +16,43 @@ from .exceptions import ForwardClientError, ForwardConfigurationError
 from .models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings, ForwardQuerySpec
 
 TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+
+
+@dataclass
+class ForwardClientCounters:
+    """Forward-API transport telemetry for one client lifetime.
+
+    nautobot-ssot tracks DiffSync object CRUD but knows nothing about the Forward
+    REST transport, so silent throttling/retries are invisible. These counters
+    make them a shareable signal (surfaced in the support bundle). Increments are
+    locked because the planner fans slice fetches across a thread pool sharing one
+    client.
+    """
+
+    http_attempts: int = 0
+    http_transient: int = 0
+    http_429: int = 0
+    http_retries: int = 0
+    nqe_query_calls: int = 0
+    throttle_sleep_seconds: float = 0.0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def bump(self, name: str, amount: float = 1) -> None:
+        with self._lock:
+            setattr(self, name, getattr(self, name) + amount)
+
+    def as_dict(self) -> dict[str, float | int]:
+        with self._lock:
+            return {
+                "http_attempts": self.http_attempts,
+                "http_transient": self.http_transient,
+                "http_429": self.http_429,
+                "http_retries": self.http_retries,
+                "nqe_query_calls": self.nqe_query_calls,
+                "throttle_sleep_seconds": round(self.throttle_sleep_seconds, 3),
+            }
+
+
 # Exponential backoff bounds for retrying transient failures (separate from the
 # per-request min-interval throttle). Honors Retry-After when the server sends it.
 _RETRY_BACKOFF_BASE_SECONDS = 0.5
@@ -48,6 +86,9 @@ class ForwardClient:
     )
     _last_request_completed_at: float | None = field(default=None, init=False, repr=False)
     _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
+    counters: ForwardClientCounters = field(
+        default_factory=ForwardClientCounters, init=False, repr=False
+    )
 
     def _get_http_client(self) -> httpx.Client:
         if self._http_client is None:
@@ -114,6 +155,7 @@ class ForwardClient:
         for attempt in range(self.settings.retries + 1):
             try:
                 self._respect_min_interval()
+                self.counters.bump("http_attempts")
                 response = self._get_http_client().request(
                     method,
                     self._api_url(path),
@@ -123,6 +165,9 @@ class ForwardClient:
                     auth=self.auth,
                 )
                 if response.status_code in TRANSIENT_HTTP_STATUS_CODES:
+                    self.counters.bump("http_transient")
+                    if response.status_code == 429:
+                        self.counters.bump("http_429")
                     raise httpx.HTTPStatusError(
                         f"transient HTTP {response.status_code}",
                         request=response.request,
@@ -178,11 +223,13 @@ class ForwardClient:
         thread pool sharing this client; without it N workers would retry in
         lockstep and re-stampede a throttled Forward API.
         """
+        self.counters.bump("http_retries")
         wait = self._retry_after_seconds(retry_after)
         if wait is None:
             backoff = min(_RETRY_BACKOFF_BASE_SECONDS * (2**attempt), _RETRY_BACKOFF_CAP_SECONDS)
             wait = backoff + random.uniform(0.0, _RETRY_BACKOFF_BASE_SECONDS)
         if wait > 0:
+            self.counters.bump("throttle_sleep_seconds", wait)
             time.sleep(wait)
 
     def _respect_min_interval(self) -> None:
@@ -195,6 +242,7 @@ class ForwardClient:
         elapsed = time.monotonic() - last_completed_at
         remaining = minimum_interval - elapsed
         if remaining > 0:
+            self.counters.bump("throttle_sleep_seconds", remaining)
             time.sleep(remaining)
 
     def get_networks(self) -> list[dict[str, Any]]:
@@ -631,6 +679,7 @@ class ForwardClient:
         offset: int = 0,
         fetch_all: bool = False,
     ) -> list[dict[str, Any]]:
+        self.counters.bump("nqe_query_calls")
         network_id = str(network_id or self.settings.network_id or "").strip()
         if not network_id:
             raise ForwardConfigurationError("Forward network ID is required.")

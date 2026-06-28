@@ -978,3 +978,69 @@ def test_request_nqe_execution_omits_sort_keys_when_empty(monkeypatch):
         snapshot_id="snap-1",
     )
     assert "sortKeys" not in captured_payload
+
+
+def test_counters_track_attempts_retries_and_429():
+    """Transport-level telemetry is accumulated on the client for the support bundle."""
+    _require_client()
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/networks":
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(429, json={"error": "slow down"})
+            return httpx.Response(200, json={"networks": [{"id": "net-1", "name": "n"}]})
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            retries=2,
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    client.get_networks()
+    usage = client.counters.as_dict()
+    assert usage["http_attempts"] == 2  # one 429, one success
+    assert usage["http_transient"] == 1
+    assert usage["http_429"] == 1
+    assert usage["http_retries"] == 1
+
+
+def test_counters_count_nqe_query_calls():
+    _require_client()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/snapshots":
+            return httpx.Response(200, json={"snapshots": [{"id": "snap-1", "state": "PROCESSED"}]})
+        if path == "/api/networks/net-1/nqe-executions":
+            return httpx.Response(
+                200,
+                json={"executionKey": "exec-1", "status": "COMPLETED", "outcome": "OK"},
+            )
+        if path == "/api/networks/net-1/nqe-executions/exec-1/result":
+            return httpx.Response(200, json={"items": [], "totalNumItems": 0})
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            snapshot_id="snap-1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    client.run_nqe_query(
+        query_spec=ForwardQuerySpec(
+            query_text="foreach d in network.devices select { name: d.name }"
+        ),
+        fetch_all=False,
+    )
+    assert client.counters.as_dict()["nqe_query_calls"] == 1

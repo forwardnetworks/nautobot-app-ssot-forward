@@ -194,7 +194,7 @@ if CONTRIB_AVAILABLE:
         _model = Interface
         _modelname = "interface"
         _identifiers = ("device__name", "name")
-        _attributes = ("type", "status__name", "enabled", "mtu", "description")
+        _attributes = ("type", "status__name", "enabled", "mtu", "description", "mac_address")
         device__name: str
         name: str
         type: str
@@ -202,6 +202,7 @@ if CONTRIB_AVAILABLE:
         enabled: bool = True
         mtu: int | None = None
         description: str = ""
+        mac_address: str = ""
 
     # Dependency order: FK targets must be created before the objects that
     # reference them, since contrib resolves FKs by lookup.
@@ -341,6 +342,10 @@ if CONTRIB_AVAILABLE:
                 if itype not in _KNOWN_INTERFACE_TYPES:
                     itype = _INTERFACE_TYPE_FALLBACK
                 mtu = row.get("mtu")
+                # Nautobot normalizes MAC to colon EUI form; only pass a value
+                # that looks like a MAC so a blank/garbage source never churns.
+                raw_mac = str(row.get("mac_address") or "").strip()
+                mac = raw_mac if ":" in raw_mac else ""
                 self.add(
                     ForwardContribInterface(
                         device__name=dev,
@@ -350,6 +355,7 @@ if CONTRIB_AVAILABLE:
                         enabled=bool(row.get("enabled", True)),
                         mtu=int(mtu) if isinstance(mtu, int) else None,
                         description=str(row.get("description") or ""),
+                        mac_address=mac,
                     )
                 )
 

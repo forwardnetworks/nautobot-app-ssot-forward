@@ -191,10 +191,12 @@ def _render_status_lines(summary: dict[str, object]) -> str:
             "<p>Write readiness: no persisted profiles</p>"
             "<p>Current policy: ignore</p>"
         )
+    last_failure = str(summary.get("last_failure") or "")
+    run_outcome = "clean" if not last_failure else "failed"
     lines = [
         f"<p>Last run: {escape(str(summary.get('last_run') or 'not recorded'))}</p>",
-        f"<p>Last failure: {escape(str(summary.get('last_failure') or 'none'))}</p>",
-        f"<p>Run outcome: {escape(str(summary.get('last_failure') or 'none'))}</p>",
+        f"<p>Run outcome: {escape(run_outcome)}</p>",
+        f"<p>Last failure: {escape(last_failure or 'none')}</p>",
         f"<p>Last support bundle: {escape(str(summary.get('last_support_bundle') or 'none'))}</p>",
         f"<p>Last query reference: {escape(str(summary.get('last_query_reference') or 'none'))}</p>",
         f"<p>Last query mode: {escape(str(summary.get('last_query_mode') or 'none'))}</p>",
@@ -204,7 +206,7 @@ def _render_status_lines(summary: dict[str, object]) -> str:
         f"<p>Needs attention: {int(summary.get('needs_attention_profiles') or 0)}</p>",
     ]
     rows = [
-        "<tr><th>Name</th><th>Last run</th><th>Run outcome</th><th>Support bundle</th><th>Query reference</th><th>Query mode</th><th>Ready</th><th>Missing defaults</th><th>Delete policy</th></tr>"
+        "<tr><th>Name</th><th>Last run</th><th>Last failure</th><th>Support bundle</th><th>Query reference</th><th>Query mode</th><th>Ready</th><th>Missing defaults</th><th>Delete policy</th></tr>"
     ]
     for profile in profiles:
         missing_defaults = ", ".join(profile.get("missing_defaults", [])) or "none"

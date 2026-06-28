@@ -302,9 +302,21 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
         # without advancing last_snapshot_id, then re-raise so SSoT marks the job
         # failed.
         if not dryrun and request.connection_profile is not None:
+            # The exception already carries the failing slice + Forward query
+            # (planner._slice_fetch_error); append a compact API-usage tail so the
+            # operator sees whether throttling/retries contributed. Never let
+            # telemetry access crash the failure-recording path itself.
+            counters = getattr(client, "counters", None)
+            usage_note = ""
+            if counters is not None:
+                usage = counters.as_dict()
+                usage_note = (
+                    f" [api: {usage['nqe_query_calls']} nqe, {usage['http_retries']} retries, "
+                    f"{usage['http_429']} 429s]"
+                )
             failed = request.connection_profile.with_run_history(
                 last_run_at=datetime.now().isoformat(timespec="seconds"),
-                last_failure=f"error: {type(exc).__name__}: {exc}"[:500],
+                last_failure=(f"error: {type(exc).__name__}: {exc}"[:440] + usage_note),
             )
             _save_profile_record(failed)
         raise
@@ -389,6 +401,9 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                 "write_policy": plan.write_plan.slice_policies,
                 "diff_detail": plan.diff_detail,
                 "write_execution_summary": write_execution.get("summary", {}),
+                # Forward REST transport telemetry (retries/throttle/429/NQE calls)
+                # — invisible to nautobot-ssot, which only tracks object CRUD.
+                "api_usage": client.counters.as_dict(),
             },
             sharing_profile=str(data.get("support_bundle_sharing_profile") or "external").strip()
             or "external",
