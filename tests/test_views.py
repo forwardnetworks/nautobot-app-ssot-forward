@@ -221,3 +221,41 @@ def test_configuration_view_rejects_invalid_profile(monkeypatch):
     assert response.status_code == 200
     assert "Saved profile" not in text
     assert manager.rows == {}
+
+
+def test_bundle_record_roundtrip_persists_and_preserves_json():
+    """The persisted bundle JSON survives from_mapping/as_dict and is preserved by
+    with_run_history when a later (skipped/failed) run does not supply a new one."""
+    rec = ForwardConnectionProfileRecord(name="p", last_support_bundle_json='{"a":1}')
+    rehydrated = ForwardConnectionProfileRecord.from_mapping(rec.as_dict())
+    assert rehydrated.last_support_bundle_json == '{"a":1}'
+    # A run that supplies no bundle keeps the previous one.
+    after_skip = rehydrated.with_run_history(last_run_at="t")
+    assert after_skip.last_support_bundle_json == '{"a":1}'
+    # A run that supplies a new bundle overwrites.
+    after_run = rehydrated.with_run_history(last_support_bundle_json='{"b":2}')
+    assert after_run.last_support_bundle_json == '{"b":2}'
+
+
+def test_support_bundle_download_serves_persisted_bundle(monkeypatch):
+    default = ForwardConnectionProfileRecord(
+        name="primary", is_default=True, last_support_bundle_json='{"ok":true}'
+    )
+    other = ForwardConnectionProfileRecord(name="secondary", last_support_bundle_json='{"x":1}')
+    monkeypatch.setattr(views, "_iter_persisted_profile_records", lambda: (default, other))
+
+    response = views.ForwardSupportBundleDownloadView().get(request=SimpleNamespace(GET={}))
+    assert response.status_code == 200
+    assert _content_text(response) == '{"ok":true}'
+
+    # explicit ?profile= selects that profile
+    picked = views.ForwardSupportBundleDownloadView().get(
+        request=SimpleNamespace(GET={"profile": "secondary"})
+    )
+    assert _content_text(picked) == '{"x":1}'
+
+
+def test_support_bundle_download_404_when_no_bundle(monkeypatch):
+    monkeypatch.setattr(views, "_iter_persisted_profile_records", lambda: ())
+    response = views.ForwardSupportBundleDownloadView().get(request=SimpleNamespace(GET={}))
+    assert response.status_code == 404

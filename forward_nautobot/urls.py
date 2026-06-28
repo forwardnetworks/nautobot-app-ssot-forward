@@ -14,6 +14,7 @@ from .views import (
     ForwardHomeView,
     ForwardSliceDetailView,
     ForwardStatusView,
+    ForwardSupportBundleDownloadView,
 )
 
 urlpatterns = [
@@ -22,4 +23,9 @@ urlpatterns = [
     path("status/", ForwardStatusView.as_view(), name="status"),
     path("configuration/", ForwardConfigurationView.as_view(), name="configuration"),
     path("slices/<slug:model_slug>/", ForwardSliceDetailView.as_view(), name="slice-detail"),
+    path(
+        "support-bundle/",
+        ForwardSupportBundleDownloadView.as_view(),
+        name="support-bundle-download",
+    ),
 ]

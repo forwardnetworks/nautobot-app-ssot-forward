@@ -106,6 +106,7 @@ class ForwardConnectionProfileRecord:
     last_run_at: str = ""
     last_failure: str = ""
     last_support_bundle: str = ""
+    last_support_bundle_json: str = ""
     last_query_reference: str = ""
     last_query_mode: str = ""
     last_snapshot_id: str = ""
@@ -190,6 +191,9 @@ class ForwardConnectionProfileRecord:
             last_support_bundle=str(
                 data.get("last_support_bundle") or base.get("last_support_bundle") or ""
             ),
+            last_support_bundle_json=str(
+                data.get("last_support_bundle_json") or base.get("last_support_bundle_json") or ""
+            ),
             last_query_reference=str(
                 data.get("last_query_reference")
                 or base.get("last_query_reference")
@@ -238,6 +242,7 @@ class ForwardConnectionProfileRecord:
             "last_run_at": self.last_run_at,
             "last_failure": self.last_failure,
             "last_support_bundle": self.last_support_bundle,
+            "last_support_bundle_json": self.last_support_bundle_json,
             "last_query_reference": self.last_query_reference,
             "last_query_mode": self.last_query_mode,
             "last_snapshot_id": self.last_snapshot_id,
@@ -285,6 +290,7 @@ class ForwardConnectionProfileRecord:
         last_run_at: str = "",
         last_failure: str = "",
         last_support_bundle: str = "",
+        last_support_bundle_json: str = "",
         last_query_reference: str = "",
         last_query_mode: str = "",
         last_snapshot_id: str = "",
@@ -294,6 +300,9 @@ class ForwardConnectionProfileRecord:
             last_run_at=last_run_at,
             last_failure=last_failure,
             last_support_bundle=last_support_bundle,
+            # Preserve the last good bundle JSON across skipped/failed runs that
+            # don't produce a new one, so the download link keeps working.
+            last_support_bundle_json=last_support_bundle_json or self.last_support_bundle_json,
             last_query_reference=last_query_reference,
             last_query_mode=last_query_mode,
             last_snapshot_id=last_snapshot_id or self.last_snapshot_id,
@@ -464,6 +473,7 @@ if models is not None:
         last_run_at = models.CharField(max_length=128, blank=True, default="")
         last_failure = models.TextField(blank=True, default="")
         last_support_bundle = models.CharField(max_length=255, blank=True, default="")
+        last_support_bundle_json = models.TextField(blank=True, default="")
         last_query_reference = models.CharField(max_length=255, blank=True, default="")
         last_query_mode = models.CharField(max_length=64, blank=True, default="")
         last_snapshot_id = models.CharField(max_length=128, blank=True, default="")
@@ -493,6 +503,7 @@ if models is not None:
                 last_run_at=self.last_run_at,
                 last_failure=self.last_failure,
                 last_support_bundle=self.last_support_bundle,
+                last_support_bundle_json=self.last_support_bundle_json,
                 last_query_reference=self.last_query_reference,
                 last_query_mode=self.last_query_mode,
                 last_snapshot_id=self.last_snapshot_id,

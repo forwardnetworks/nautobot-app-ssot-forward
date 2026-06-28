@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections import namedtuple
 from dataclasses import replace
@@ -415,6 +416,10 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                 last_run_at=str(bundle.get("generated_at") or ""),
                 last_failure="" if is_clean else str(failure_classification or ""),
                 last_support_bundle=str(bundle.get("query_reference") or ""),
+                # Persist the redacted bundle so the Status page can offer a
+                # one-click download (the full bundle otherwise lives only in the
+                # transient job result). Useful on failures too, not just clean runs.
+                last_support_bundle_json=json.dumps(shared_bundle, separators=(",", ":")),
                 last_query_reference=str(bundle.get("query_reference") or ""),
                 last_query_mode=str(plan.reports[0].query_mode or ""),
                 # Only advance the snapshot baseline on a clean run. Advancing it on

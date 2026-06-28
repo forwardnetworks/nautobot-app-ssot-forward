@@ -197,6 +197,8 @@ def _render_status_lines(summary: dict[str, object]) -> str:
         f"<p>Last run: {escape(str(summary.get('last_run') or 'not recorded'))}</p>",
         f"<p>Run outcome: {escape(run_outcome)}</p>",
         f"<p>Last failure: {escape(last_failure or 'none')}</p>",
+        '<p><a class="forward-action secondary" '
+        'href="/plugins/forward_nautobot/support-bundle/">Download support bundle</a></p>',
         f"<p>Last support bundle: {escape(str(summary.get('last_support_bundle') or 'none'))}</p>",
         f"<p>Last query reference: {escape(str(summary.get('last_query_reference') or 'none'))}</p>",
         f"<p>Last query mode: {escape(str(summary.get('last_query_mode') or 'none'))}</p>",
@@ -692,6 +694,56 @@ class ForwardStatusView(View):
             "</div>",
         )
         return HttpResponse(body)
+
+
+def _select_profile_for_bundle(profiles, requested_name: str = ""):
+    """Pick the profile whose persisted bundle to serve: an explicit ?profile=,
+    else the default profile, else the first with a stored bundle, else None."""
+    profiles = list(profiles)
+    if requested_name:
+        for profile in profiles:
+            if getattr(profile, "name", "") == requested_name:
+                return profile
+        return None
+    for profile in profiles:
+        if getattr(profile, "is_default", False) and getattr(
+            profile, "last_support_bundle_json", ""
+        ):
+            return profile
+    for profile in profiles:
+        if getattr(profile, "last_support_bundle_json", ""):
+            return profile
+    return None
+
+
+class ForwardSupportBundleDownloadView(View):
+    """Serve the last persisted (redacted) support bundle as a JSON download.
+
+    nautobot-ssot keeps the JobResult, but the Forward support bundle otherwise
+    lives only transiently in that result; persisting + serving it gives operators
+    a one-click, shareable artifact for troubleshooting.
+    """
+
+    def get(self, request=None, *args, **kwargs):
+        requested = ""
+        params = getattr(request, "GET", None)
+        if params is not None:
+            requested = str(params.get("profile") or "").strip()
+        profile = _select_profile_for_bundle(_iter_persisted_profile_records(), requested)
+        payload = getattr(profile, "last_support_bundle_json", "") if profile is not None else ""
+        if not payload:
+            return HttpResponse(
+                "No support bundle has been captured yet. Run a sync first.",
+                status=404,
+                content_type="text/plain",
+            )
+        filename = f"forward-support-bundle-{getattr(profile, 'name', 'profile')}.json"
+        response = HttpResponse(payload, content_type="application/json")
+        try:
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        except TypeError:  # pragma: no cover - stub HttpResponse without __setitem__
+            pass
+        return response
 
 
 class ForwardConfigurationView(View):
