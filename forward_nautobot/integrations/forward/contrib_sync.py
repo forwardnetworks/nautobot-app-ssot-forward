@@ -202,7 +202,10 @@ if CONTRIB_AVAILABLE:
         enabled: bool = True
         mtu: int | None = None
         description: str = ""
-        mac_address: str = ""
+        # Nautobot's MACAddressCharField stores an absent MAC as NULL, so the
+        # contrib field must be Optional — a plain str annotation makes the target
+        # adapter raise when it loads a MAC-less interface (None for a str field).
+        mac_address: str | None = None
 
     # Dependency order: FK targets must be created before the objects that
     # reference them, since contrib resolves FKs by lookup.
@@ -342,10 +345,10 @@ if CONTRIB_AVAILABLE:
                 if itype not in _KNOWN_INTERFACE_TYPES:
                     itype = _INTERFACE_TYPE_FALLBACK
                 mtu = row.get("mtu")
-                # Nautobot normalizes MAC to colon EUI form; only pass a value
-                # that looks like a MAC so a blank/garbage source never churns.
+                # Use None (not "") for an absent MAC so it matches Nautobot's NULL
+                # storage and does not churn; only pass a value that looks like a MAC.
                 raw_mac = str(row.get("mac_address") or "").strip()
-                mac = raw_mac if ":" in raw_mac else ""
+                mac = raw_mac if ":" in raw_mac else None
                 self.add(
                     ForwardContribInterface(
                         device__name=dev,
