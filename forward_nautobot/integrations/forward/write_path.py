@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -9,6 +10,11 @@ from ...models import ForwardConnectionProfileRecord
 from .adapters import ForwardSourceAdapter, NautobotTargetAdapter
 from .registry import ForwardModelMapping
 from .write_contract import ForwardWriteContractAdvisor
+
+# Fields excluded from the changed-field rollup as housekeeping noise rather than
+# meaningful drift. (Our planner field dicts carry Forward source attrs, not ORM
+# timestamps, so this is usually empty — kept for forward-compatibility.)
+_ROLLUP_NOISE_FIELDS = frozenset({"last_updated", "created"})
 
 
 @dataclass(slots=True)
@@ -86,7 +92,8 @@ class ForwardWritePlanner:
         operations: list[ForwardWriteOperation] = []
         summary = {"create": 0, "update": 0, "no-change": 0, "blocked": 0}
         diff_summary = {"create": 0, "update": 0, "no-change": 0}
-        diff_detail: dict[str, Any] = {"models": {}}
+        diff_detail: dict[str, Any] = {"models": {}, "changed_fields": {}}
+        all_changed_fields: Counter[str] = Counter()
         configuration_status: dict[str, Any] = {
             "profile_provided": profile is not None,
             "write_ready": bool(profile.write_ready) if profile is not None else False,
@@ -111,6 +118,7 @@ class ForwardWritePlanner:
                 for item in target.get_all(mapping.slug)
             }
             model_diff_summary = {"create": 0, "update": 0, "no-change": 0}
+            changed_fields: Counter[str] = Counter()
             for record_key, record in source.records.get(mapping.slug, {}).items():
                 readiness = advisor.readiness_for(
                     mapping,
@@ -122,6 +130,13 @@ class ForwardWritePlanner:
                     action = "create"
                 elif target_fields != record.fields:
                     action = "update"
+                    # Record WHICH fields actually changed (names only — never
+                    # values — so the rollup stays redaction-safe).
+                    for key, value in record.fields.items():
+                        if key in _ROLLUP_NOISE_FIELDS:
+                            continue
+                        if target_fields.get(key) != value:
+                            changed_fields[key] += 1
                 else:
                     action = "no-change"
                 summary[action] += 1
@@ -141,6 +156,12 @@ class ForwardWritePlanner:
                     )
                 )
             diff_detail["models"][mapping.slug] = model_diff_summary
+            if changed_fields:
+                diff_detail["changed_fields"][mapping.slug] = dict(changed_fields.most_common())
+                all_changed_fields.update(changed_fields)
+        # Overall "top changed fields across the run" — the scan-by-eye aggregate
+        # nautobot-ssot's object-by-object diff cannot produce.
+        diff_detail["changed_fields_top"] = dict(all_changed_fields.most_common(20))
         return ForwardWritePlan(
             operations=tuple(operations),
             summary=summary,

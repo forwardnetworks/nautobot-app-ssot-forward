@@ -405,6 +405,10 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                 # Forward REST transport telemetry (retries/throttle/429/NQE calls)
                 # — invisible to nautobot-ssot, which only tracks object CRUD.
                 "api_usage": client.counters.as_dict(),
+                # "Top changed fields across the run" rollup (names + counts only) —
+                # the scan-by-eye aggregate ssot's object-by-object diff cannot give.
+                "changed_fields_top": plan.write_plan.diff_detail.get("changed_fields_top", {}),
+                "changed_fields_by_model": plan.write_plan.diff_detail.get("changed_fields", {}),
             },
             sharing_profile=str(data.get("support_bundle_sharing_profile") or "external").strip()
             or "external",
