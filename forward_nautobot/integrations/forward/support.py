@@ -257,6 +257,108 @@ def classify_failure(
     return "clean"
 
 
+# Default thresholds for grade_support_bundle. Tuned for our domain metrics only —
+# forward-netbox's branching / bulk-ORM pushdown / fallback-pressure checks do not
+# apply to a single-pass DiffSync sync and are intentionally omitted.
+DEFAULT_GRADE_THRESHOLDS: dict[str, float] = {
+    "delete_fraction_warn": 0.25,
+    "delete_fraction_fail": 0.50,
+    "http_429_warn": 1,
+    "http_retries_warn": 5,
+    "min_row_count_warn": 1,
+}
+
+_GRADE_RANK = {"pass": 0, "warn": 1, "fail": 2}
+
+
+def grade_support_bundle(
+    bundle: dict[str, Any], *, thresholds: dict[str, float] | None = None
+) -> dict[str, Any]:
+    """Grade a support bundle dict against thresholds → pass / warn / fail.
+
+    Pure and offline: operates on the bundle dict alone so an operator can pipe a
+    saved/redacted bundle through it. nautobot-ssot gives run history but no
+    thresholded quality verdict over Forward-domain metrics. Returns a dict with an
+    overall ``status``, per-check results, and ``first_order_actions``.
+    """
+    th = {**DEFAULT_GRADE_THRESHOLDS, **(thresholds or {})}
+    checks: list[dict[str, str]] = []
+    actions: list[str] = []
+
+    def record(name: str, status: str, detail: str, action: str = "") -> None:
+        checks.append({"name": name, "status": status, "detail": detail})
+        if action and status != "pass":
+            actions.append(action)
+
+    # 1. Run health — the run's own failure classification.
+    classification = str(bundle.get("failure_classification") or "clean")
+    if classification == "clean":
+        record("run_health", "pass", "clean")
+    else:
+        record(
+            "run_health",
+            "fail",
+            classification,
+            f"Run was {classification}; check last_failure for the failing slice + Forward query.",
+        )
+
+    # 2. Delete pressure — a high delete fraction usually means the source returned
+    #    a partial result set, not that the network actually shrank.
+    diff = bundle.get("diff_summary") or {}
+    deletes = int(diff.get("delete", 0) or 0)
+    total = sum(int(v or 0) for v in diff.values())
+    fraction = (deletes / total) if total else 0.0
+    detail = f"{deletes}/{total} ({fraction:.0%}) deletes"
+    if fraction >= th["delete_fraction_fail"]:
+        record(
+            "delete_pressure",
+            "fail",
+            detail,
+            "Delete fraction above fail threshold — verify the source returned a full "
+            "result set before applying deletions.",
+        )
+    elif fraction >= th["delete_fraction_warn"]:
+        record("delete_pressure", "warn", detail, "Elevated delete fraction — review the diff.")
+    else:
+        record("delete_pressure", "pass", detail)
+
+    # 3. Forward API throttling — silent slowness made visible by the usage counters.
+    api = (bundle.get("diagnostics") or {}).get("api_usage") or {}
+    http_429 = int(api.get("http_429", 0) or 0)
+    http_retries = int(api.get("http_retries", 0) or 0)
+    usage_detail = f"{http_429} 429s, {http_retries} retries"
+    if http_429 >= th["http_429_warn"] or http_retries >= th["http_retries_warn"]:
+        record(
+            "api_throttling",
+            "warn",
+            usage_detail,
+            "Forward API was throttled — raise request_min_interval_seconds or reduce "
+            "slice concurrency.",
+        )
+    else:
+        record("api_throttling", "pass", usage_detail)
+
+    # 4. Empty result — a configured run that fetched nothing is suspicious.
+    row_count = int(bundle.get("row_count", 0) or 0)
+    if row_count < th["min_row_count_warn"]:
+        record(
+            "result_volume",
+            "warn",
+            f"{row_count} rows",
+            "No rows fetched — check the snapshot, query binding, and scope filters.",
+        )
+    else:
+        record("result_volume", "pass", f"{row_count} rows")
+
+    overall = max((c["status"] for c in checks), key=lambda s: _GRADE_RANK[s], default="pass")
+    return {
+        "status": overall,
+        "checks": checks,
+        "first_order_actions": actions,
+        "thresholds": th,
+    }
+
+
 def build_support_bundle(
     report: ForwardSyncReport,
     *,
