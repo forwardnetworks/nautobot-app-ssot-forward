@@ -11,9 +11,7 @@ def test_security_policy_documents_enterprise_credential_handling():
 
 
 def test_validation_matrix_pins_blake_regression_and_live_gate():
-    matrix = Path("docs/00_Project_Knowledge/validation-matrix.md").read_text(
-        encoding="utf-8"
-    )
+    matrix = Path("docs/00_Project_Knowledge/validation-matrix.md").read_text(encoding="utf-8")
 
     assert "ForwardInventoryDataSource" in matrix
     assert "FORWARD_LIVE_ASYNC_QUERY_PATH" in matrix

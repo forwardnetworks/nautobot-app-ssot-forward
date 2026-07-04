@@ -375,8 +375,7 @@ class ForwardIngestionPlanner:
                 query_id=resolved_query_spec.resolved_query_id
                 or resolved_query_spec.query_id
                 or "",
-                commit_id=resolved_query_spec.resolved_commit_id
-                or resolved_query_spec.commit_id,
+                commit_id=resolved_query_spec.resolved_commit_id or resolved_query_spec.commit_id,
                 parameters=resolved_query_spec.parameters,
                 before_snapshot_id=baseline_snapshot_id,
                 after_snapshot_id=current_snapshot_id,

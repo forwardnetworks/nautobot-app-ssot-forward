@@ -60,7 +60,9 @@ def test_forward_password_encrypts_and_decrypts_with_secret_key():
     assert encrypted.startswith(PASSWORD_ENCRYPTION_PREFIX)
     assert "secret" not in encrypted
     assert _decrypt_password(encrypted, secret_key="unit-test-secret") == "secret"
-    assert _decrypt_password("legacy-cleartext", secret_key="unit-test-secret") == "legacy-cleartext"
+    assert (
+        _decrypt_password("legacy-cleartext", secret_key="unit-test-secret") == "legacy-cleartext"
+    )
     assert _encrypt_password(encrypted, secret_key="unit-test-secret") == encrypted
 
 

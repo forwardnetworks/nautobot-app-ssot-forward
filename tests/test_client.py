@@ -876,9 +876,7 @@ def test_client_honors_retry_after_header(monkeypatch):
         ),
         transport=httpx.MockTransport(handler),
     )
-    client.run_nqe_query(
-        query_spec=ForwardQuerySpec(query_id="query-123"), fetch_all=False
-    )
+    client.run_nqe_query(query_spec=ForwardQuerySpec(query_id="query-123"), fetch_all=False)
     # Retry-After: 7 is honored verbatim (not the exponential default).
     assert slept == [7.0]
 
