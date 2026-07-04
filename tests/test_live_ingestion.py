@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from importlib import resources
 
 import pytest
 
@@ -58,9 +57,8 @@ def _live_settings() -> ForwardConnectionSettings | None:
     )
 
 
-def _load_query_text(filename: str) -> str:
-    package = resources.files("forward_nautobot.integrations.forward.queries")
-    return (package / filename).read_text(encoding="utf-8")
+def _query_path_for(filename: str) -> str:
+    return f"/forward_nautobot_validation/{filename.removesuffix('.nqe')}"
 
 
 _LIVE_LOCATION_NAMES_CACHE: dict[tuple[str, str, str], tuple[str, ...]] = {}
@@ -82,15 +80,15 @@ def _run_live_query(
     if ForwardClient is None:  # pragma: no cover - local shell without test deps
         pytest.skip("live Forward ingestion tests require the full dependency set")
     client = ForwardClient(settings)
-    query_text = _load_query_text(filename)
+    query_path = _query_path_for(filename)
     rows = client.run_nqe_query(
-        query_spec=ForwardQuerySpec(query_text=query_text, parameters=parameters or {}),
+        query_spec=ForwardQuerySpec(query_path=query_path, parameters=parameters or {}),
         network_id=settings.network_id,
         snapshot_id=os.environ.get("FORWARD_LIVE_SNAPSHOT_ID", "latestProcessed"),
         fetch_all=fetch_all,
         limit=limit,
     )
-    return client, query_text, rows
+    return client, query_path, rows
 
 
 def _live_location_names(settings: ForwardConnectionSettings) -> tuple[str, ...]:
@@ -599,11 +597,10 @@ def test_live_preview_sync_smoke_is_bounded(monkeypatch):
     )
 
     runner = ForwardSyncRunner(client)
-    query_text = _load_query_text("forward_locations.nqe")
     spec = ForwardSyncSpec(
         mode="preview",
         connection=settings,
-        query=ForwardQuerySpec(query_text=query_text),
+        query=ForwardQuerySpec(query_path=_query_path_for("forward_locations.nqe")),
         fetch_all=False,
         limit=1,
         model_names=("locations",),
@@ -617,7 +614,7 @@ def test_live_preview_sync_smoke_is_bounded(monkeypatch):
     assert preview_report.query_reference == sync_report.query_reference
     assert preview_report.planned_models == ("locations",)
     assert sync_report.planned_models == ("locations",)
-    assert calls.get(("GET", "/nqe/repos/org/commits/head/queries"), 0) == 0
+    assert calls.get(("GET", "/nqe/repos/org/commits/head/queries"), 0) == 1
     assert calls[("GET", f"/networks/{settings.network_id}/snapshots/latestProcessed")] == 1
     assert calls[("GET", f"/snapshots/{preview_report.snapshot_id}/metrics")] == 1
     assert calls[("GET", f"/networks/{settings.network_id}/snapshots")] == 1
@@ -650,12 +647,11 @@ def test_live_preview_sync_smoke_for_devices_is_bounded(monkeypatch):
     )
 
     runner = ForwardSyncRunner(client)
-    query_text = _load_query_text("forward_devices.nqe")
     spec = ForwardSyncSpec(
         mode="preview",
         connection=settings,
         query=ForwardQuerySpec(
-            query_text=query_text,
+            query_path=_query_path_for("forward_devices.nqe"),
             parameters={"forward_location_names": [location_name]},
         ),
         fetch_all=False,
@@ -671,7 +667,7 @@ def test_live_preview_sync_smoke_for_devices_is_bounded(monkeypatch):
     assert preview_report.query_reference == sync_report.query_reference
     assert preview_report.planned_models == ("devices",)
     assert sync_report.planned_models == ("devices",)
-    assert calls.get(("GET", "/nqe/repos/org/commits/head/queries"), 0) == 0
+    assert calls.get(("GET", "/nqe/repos/org/commits/head/queries"), 0) == 1
     assert calls[("GET", f"/networks/{settings.network_id}/snapshots/latestProcessed")] == 1
     assert calls[("GET", f"/snapshots/{preview_report.snapshot_id}/metrics")] == 1
     assert calls[("GET", f"/networks/{settings.network_id}/snapshots")] == 1

@@ -596,24 +596,24 @@ def test_planner_propagates_sort_keys_to_nqe(monkeypatch):
     assert "name" in captured_sort_keys, f"sort_keys not propagated; captured: {captured_sort_keys}"
 
 
-def test_planner_diff_fallback_narrows_exception(monkeypatch):
-    """Bare Exception in diff fallback replaced with ForwardClientError only."""
+def test_planner_diff_error_is_attributed_without_full_query_fallback(monkeypatch):
+    """Diff failures must be attributed and must not silently refetch full rows."""
     _require_planner()
+    import pytest
+
     from forward_nautobot.integrations.forward.exceptions import ForwardClientError
 
     def _resolve_snapshot(self, network_id, snapshot_id):
         return "snap-new"
 
     def _mock_run_nqe(self, *, query_spec, **kwargs):
-        return []
+        raise AssertionError("run_nqe_query should not be used as a diff fallback")
 
     def _mock_run_diff(*args, **kwargs):
         raise ForwardClientError("diff-unavailable")
 
     def _mock_resolve_query_spec(self, qs):
-        from dataclasses import replace
-
-        return replace(qs, resolved_query_id="q-123", query_path=None, query_text="select { x: 1 }")
+        return qs.with_query_id("q-123", "commit-abc")
 
     monkeypatch.setattr(ForwardClient, "resolve_snapshot_id", _resolve_snapshot)
     monkeypatch.setattr(ForwardClient, "run_nqe_query", _mock_run_nqe)
@@ -634,26 +634,24 @@ def test_planner_diff_fallback_narrows_exception(monkeypatch):
         )
     )
     planner = ForwardIngestionPlanner(client)
-    plan = planner.run(
-        ForwardIngestionRequest(
-            connection=ForwardConnectionSettings(
-                base_url="https://fwd.example",
-                username="alice",
-                password="secret",
-                network_id="net-1",
-            ),
-            model_names=("locations",),
-            fetch_all=False,
-            connection_profile=ForwardConnectionProfileRecord(
-                name="primary",
-                network_id="net-1",
-                last_snapshot_id="snap-old",
-            ),
+    with pytest.raises(ForwardClientError, match="slice 'locations'.*diff-unavailable"):
+        planner.run(
+            ForwardIngestionRequest(
+                connection=ForwardConnectionSettings(
+                    base_url="https://fwd.example",
+                    username="alice",
+                    password="secret",
+                    network_id="net-1",
+                ),
+                model_names=("locations",),
+                fetch_all=False,
+                connection_profile=ForwardConnectionProfileRecord(
+                    name="primary",
+                    network_id="net-1",
+                    last_snapshot_id="snap-old",
+                ),
+            )
         )
-    )
-    assert plan is not None
-    loc_slice = plan.diff_detail.get("slices", {}).get("locations", {})
-    assert "ForwardClientError" in str(loc_slice), f"Exception type not recorded: {loc_slice}"
 
 
 def test_compute_tiers_detects_query_parameter_cycle():

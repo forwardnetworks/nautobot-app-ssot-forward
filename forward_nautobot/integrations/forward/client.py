@@ -621,8 +621,9 @@ class ForwardClient:
     ) -> list[dict[str, Any]]:
         """GET url with ndjson Accept preference.
 
-        Streams line-by-line when the server returns ndjson/jsonl (no full-body buffer).
-        Falls back to buffered JSON parsing when the server returns application/json.
+        Streams line-by-line when the server returns ndjson/jsonl. The async
+        result endpoint also supports paged JSON, so retain parser support for
+        that response type without re-running the query through a different API.
         """
         self._respect_min_interval()
         rows: list[dict[str, Any]] = []
@@ -679,7 +680,6 @@ class ForwardClient:
         offset: int = 0,
         fetch_all: bool = False,
     ) -> list[dict[str, Any]]:
-        self.counters.bump("nqe_query_calls")
         network_id = str(network_id or self.settings.network_id or "").strip()
         if not network_id:
             raise ForwardConfigurationError("Forward network ID is required.")
@@ -836,20 +836,17 @@ class ForwardClient:
         payload: dict[str, Any] = {}
         query_id = query_spec.resolved_query_id or query_spec.query_id
         commit_id = query_spec.resolved_commit_id or query_spec.commit_id
-        # Self-contained ad-hoc query text takes no parameters; only saved queries
-        # (queryId) bind them. Sending params with a bare main query is a 400.
-        if query_spec.parameters and query_id:
+        if not query_id:
+            raise ForwardConfigurationError(
+                "Forward 26.6+ async NQE execution requires a resolved query ID. "
+                "Publish the NQE and use `query_path` or `query_id`."
+            )
+        if query_spec.parameters:
             payload["parameters"] = dict(query_spec.parameters)
-        if query_id:
-            payload["queryId"] = query_id
-            if commit_id:
-                payload["commitId"] = commit_id
-        else:
-            payload["query"] = query_spec.query_text
-        # sortKeys only order results and are only honoured for saved queries
-        # (queryId). The ad-hoc /nqe-executions endpoint on some Forward builds
-        # rejects them outright, so send them only when running a saved query.
-        if query_spec.sort_keys and query_id:
+        payload["queryId"] = query_id
+        if commit_id:
+            payload["commitId"] = commit_id
+        if query_spec.sort_keys:
             payload["sortKeys"] = [
                 {"columnName": col, "order": "ASC"} for col in query_spec.sort_keys
             ]
@@ -881,6 +878,7 @@ class ForwardClient:
         poll_interval_seconds: float = 5.0,
         max_polls: int = 60,
     ) -> list[dict[str, Any]]:
+        self.counters.bump("nqe_query_calls")
         network_id = str(network_id or self.settings.network_id or "").strip()
         if not network_id:
             raise ForwardConfigurationError("Forward network ID is required.")

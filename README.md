@@ -133,11 +133,11 @@ proxies when needed.
 
 ## Async NQE and Query Identity
 
-All query execution in this branch is async where possible and resolves query
-IDs before execution, which is required for Forward 26.6+ hosts that support
-that transport.
+All full-snapshot query execution uses Forward 26.6+ async query-ID execution.
+Inline/raw NQE execution is not supported at runtime; publish bundled NQEs into
+the Forward repository and reference them by query path or direct query ID.
 
-- Runtime query references are resolved on demand from profile path settings.
+- Runtime query references are resolved on demand from repository query paths.
 - Live and fixture paths stay versioned and validated in CI through query-contract checks.
 - Snapshot resolution supports explicit snapshot IDs and `latestProcessed`.
 

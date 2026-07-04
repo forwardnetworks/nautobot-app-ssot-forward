@@ -49,7 +49,7 @@ forward_nautobot/
 
 The most useful hardening patterns for this repo are contractual rather than platform-specific:
 
-- Query identity is a contract. Inline NQE remains valid for simple runs, but repository-path and direct query-ID runs should resolve and record the live query ID and commit ID before execution, and use `nqe-diffs` whenever the snapshot pair is available.
+- Query identity is a contract. Runtime NQE execution requires repository-path or direct query-ID references, resolves and records the live query ID and commit ID before execution, and uses `nqe-diffs` whenever the snapshot pair is available.
 - Bundled query sources should stay versioned and drift-checked in CI so query shape changes are visible before release.
 - Support bundles should remain the canonical troubleshooting artifact, with both the full payload and a redacted shareable view.
 - Replay tooling should be able to rebuild a dry run from a saved fixture or exported bundle without requiring live credentials.

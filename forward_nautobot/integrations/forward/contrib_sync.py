@@ -1109,27 +1109,21 @@ def _profile_defaults(profile) -> dict[str, str]:
 
 
 def _cloud_query_rows(client, network_id, snapshot_id, query_file):
-    """Run a bundled cloud .nqe inline via the client and return its rows.
+    """Run a published bundled cloud .nqe query path and return its rows.
 
     Cloud slices are not in the model registry/planner, so they are fetched here.
-    Returns [] on any client error (e.g. a tenant with no cloud data).
+    Returns [] on any client error (e.g. a tenant with no cloud data or an
+    unpublished optional cloud query path).
     """
-    from importlib import resources
-
     from .models import ForwardQuerySpec
 
-    pkg = resources.files("forward_nautobot.integrations.forward.queries")
-    raw = (pkg / query_file).read_text(encoding="utf-8").splitlines()
-    if raw and raw[0].startswith("/*"):
-        end = next((i for i, ln in enumerate(raw) if ln.rstrip().endswith("*/")), None)
-        if end is not None:
-            raw = raw[end + 1 :]
-    text = "\n".join(ln for ln in raw if not ln.strip().startswith("@primaryKey")).strip()
     # fetch_all so large tenants are not silently truncated to one page; the
     # error propagates (a real API/permission failure must not look like
     # "no cloud" — that's the caller's distinction to make).
     return client.run_nqe_query(
-        query_spec=ForwardQuerySpec(query_text=text),
+        query_spec=ForwardQuerySpec(
+            query_path=f"/forward_nautobot_validation/{query_file.removesuffix('.nqe')}"
+        ),
         network_id=network_id,
         snapshot_id=snapshot_id,
         fetch_all=True,

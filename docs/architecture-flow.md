@@ -54,9 +54,10 @@ flowchart TB
 
 ## Mode 2 — Full snapshot sync
 
-Runs when there is no prior baseline, or when the saved NQE query path cannot
-be resolved in the Forward repository (inline NQE fallback). Fetches the
-complete row set for every selected model slice.
+Runs when there is no prior baseline. Each bundled NQE must resolve to a saved
+Forward repository query path/query ID; unresolved paths fail the run instead of
+falling back to raw inline NQE. Fetches the complete row set for every selected
+model slice through async query-ID execution.
 
 ```mermaid
 flowchart TB
@@ -129,17 +130,16 @@ flowchart TB
     subgraph client["ForwardClient"]
         resolve_snap["GET /snapshots/latestProcessed\ncurrent = Y  (baseline = X)"]
         prewarm["GET /nqe/repos/org/commits/head/queries\nresolve saved query → queryId + commitId"]
-        diff["POST /nqe-executions\nqueryId + commitId\nbeforeSnapshotId=X, snapshotId=Y\nreturns added / removed / unchanged rows"]
-        fallback["fallback: full snapshot query\nif diff fails (ForwardClientError)"]
+        diff["POST /nqe-diffs/{X}/{Y}\nqueryId + commitId\nreturns added / removed / unchanged rows"]
+        fail["fail run with slice attribution"]
     end
 
     job --> planner
     planner --> resolve_snap
     planner --> prewarm
     prewarm -- "queryId resolved" --> diff
-    diff -- "ForwardClientError" --> fallback
+    diff -- "ForwardClientError" --> fail
     diff --> planner
-    fallback --> planner
     planner --> executor
     executor --> db
 
@@ -151,7 +151,7 @@ flowchart TB
     class job,planner,executor neutral;
     class resolve_snap,prewarm,diff fwdnode;
     class db nbnode;
-    class fallback warn;
+    class fail warn;
 ```
 
 ---
@@ -167,23 +167,23 @@ flowchart LR
     start(["_fetch_slice\nfor one model"])
 
     try_resolve["resolve_query_spec\nlook up query path in repo index"]
-    inline["bundled_nqe_inline\nsend query text in POST body\n(no repo dependency)"]
-    saved_snap["bundled_nqe_query_id\nfull snapshot via saved queryId"]
+    fail["fail run\nquery path must be published"]
+    saved_snap["bundled_nqe_query_id_async\nfull snapshot via async queryId"]
     saved_diff["bundled_nqe_query_id_diff\ndiff via saved queryId\n(fastest incremental)"]
 
     start --> try_resolve
-    try_resolve -- "ForwardClientError\n(path not in repo)" --> inline
+    try_resolve -- "ForwardClientError\n(path not in repo)" --> fail
     try_resolve -- "resolved\nbaseline == current\nor no baseline" --> saved_snap
     try_resolve -- "resolved\nbaseline != current" --> saved_diff
-    saved_diff -- "ForwardClientError" --> saved_snap
+    saved_diff -- "ForwardClientError" --> fail
 
     classDef neutral fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A;
     classDef fwdnode fill:#E6F1FB,stroke:#185FA5,color:#042C53;
     classDef warn fill:#FAEEDA,stroke:#854F0B,color:#412402;
 
     class start,try_resolve neutral;
-    class inline,saved_snap warn;
-    class saved_diff fwdnode;
+    class fail warn;
+    class saved_snap,saved_diff fwdnode;
 ```
 
 ---

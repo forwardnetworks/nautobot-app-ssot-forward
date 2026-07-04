@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from importlib import resources
 from typing import Any
 
 from ...models import ForwardConnectionProfileRecord
@@ -65,53 +63,6 @@ class ForwardIngestionPlanner:
 
     def __init__(self, client: ForwardClient):
         self.client = client
-
-    @staticmethod
-    def _query_text_for(mapping: ForwardModelMapping) -> str:
-        """Return inline-safe NQE text from a bundled .nqe file.
-
-        Some Forward builds bind inline parameters via ForwardQuerySpec.parameters;
-        others (the local master build) don't, and also reject @primaryKey, empty
-        list literals, and a trailing ';'. To run on both, emit self-contained
-        text: drop @primaryKey/@query and the `f(forward_location_names…) =`
-        wrapper, drop the whole `where … forward_location_names …` location-filter
-        clause (it's a no-op for an empty list — identical to a full, unscoped
-        sync, but avoids the unsupported `[]`), and drop the trailing ';'.
-        """
-        package = resources.files("forward_nautobot.integrations.forward.queries")
-        raw = (package / mapping.forward_query_file).read_text(encoding="utf-8")
-        lines = raw.splitlines()
-        # Drop leading /* ... */ doc comment block.
-        if lines and lines[0].startswith("/*"):
-            end = next((i for i, ln in enumerate(lines) if ln.rstrip().endswith("*/")), None)
-            if end is not None:
-                lines = lines[end + 1 :]
-        params = ("forward_location_names", "forward_device_names")
-        out: list[str] = []
-        skip_or_continuation = False
-        for ln in lines:
-            s = ln.strip()
-            if s.startswith("@primaryKey") or s.startswith("@query"):
-                continue
-            # Drop the `f(<param>: ...) =` function wrapper (any param name).
-            if re.match(r"^f\s*\(\s*forward_\w+\b.*\)\s*=\s*$", s):
-                continue
-            # Drop the parameter-filter clause: the `where … <param>` line and its
-            # immediately-following `|| …` continuation lines (a no-op for an empty
-            # filter; avoids the unsupported `[]` literal entirely).
-            if s.startswith("where") and any(p in s for p in params):
-                skip_or_continuation = True
-                continue
-            if skip_or_continuation and s.startswith("||"):
-                continue
-            skip_or_continuation = False
-            out.append(ln)
-        text = "\n".join(out).strip()
-        # The ad-hoc /nqe-executions endpoint rejects the trailing ';' statement
-        # terminator (valid only for saved/decorated queries).
-        if text.endswith(";"):
-            text = text[:-1].rstrip()
-        return text
 
     @staticmethod
     def _row_key(mapping: ForwardModelMapping, row: dict[str, Any]) -> str:
@@ -391,7 +342,6 @@ class ForwardIngestionPlanner:
         str,  # resolved_query_reference
         tuple[str, ...],  # notes
         bool,  # is_diff
-        dict[str, Any] | None,  # diff_fallback_detail
         float,  # query_runtime_ms
         str,  # commit_id
     ]:
@@ -406,48 +356,12 @@ class ForwardIngestionPlanner:
             parameters=parameters,
             sort_keys=mapping.identity_fields,
         )
-        query_mode = "bundled_nqe"
+        query_mode = "bundled_nqe_query_id_async"
         query_reference = mapping.forward_query_file
         notes: tuple[str, ...] = (f"Loaded {mapping.slug} rows from bundled NQE.",)
-        resolved_query_reference = ""
-        diff_fallback_detail: dict[str, Any] | None = None
         is_diff = False
 
-        try:
-            resolved_query_spec = self.client.resolve_query_spec(query_spec)
-        except ForwardClientError as exc:
-            query_text = self._query_text_for(mapping)
-            rows = self.client.run_nqe_query(
-                query_spec=ForwardQuerySpec(
-                    query_text=query_text,
-                    parameters=parameters,
-                    sort_keys=mapping.identity_fields,
-                ),
-                network_id=network_id,
-                snapshot_id=current_snapshot_id,
-                limit=limit,
-                offset=offset,
-                fetch_all=fetch_all,
-            )
-            query_mode = "bundled_nqe_inline"
-            query_reference = mapping.forward_query_file
-            notes = notes + (
-                f"Bundled query path resolution failed ({type(exc).__name__}: {exc}); "
-                "inline NQE was used.",
-            )
-            return (
-                rows,
-                query_mode,
-                query_reference,
-                resolved_query_reference,
-                notes,
-                is_diff,
-                diff_fallback_detail,
-                _elapsed_ms(),
-                "",  # no resolved query id => no commit on the inline path
-            )
-
-        query_mode = "bundled_nqe_query_id"
+        resolved_query_spec = self.client.resolve_query_spec(query_spec)
         resolved_query_reference = resolved_query_spec.reference
         commit_id = str(
             resolved_query_spec.resolved_commit_id or resolved_query_spec.commit_id or ""
@@ -457,45 +371,21 @@ class ForwardIngestionPlanner:
             and baseline_snapshot_id != current_snapshot_id
             and (resolved_query_spec.resolved_query_id or resolved_query_spec.query_id)
         ):
-            try:
-                rows = self.client.run_nqe_diff(
-                    query_id=resolved_query_spec.resolved_query_id
-                    or resolved_query_spec.query_id
-                    or "",
-                    commit_id=resolved_query_spec.resolved_commit_id
-                    or resolved_query_spec.commit_id,
-                    parameters=resolved_query_spec.parameters,
-                    before_snapshot_id=baseline_snapshot_id,
-                    after_snapshot_id=current_snapshot_id,
-                    limit=limit,
-                    offset=offset,
-                    fetch_all=fetch_all,
-                )
-                query_mode = "bundled_nqe_query_id_diff"
-                is_diff = True
-            except ForwardClientError as diff_error:
-                notes = notes + (
-                    f"Diff execution failed ({type(diff_error).__name__}: {diff_error}); "
-                    "using query ID-backed full query instead.",
-                )
-                rows = self.client.run_nqe_query(
-                    query_spec=resolved_query_spec,
-                    network_id=network_id,
-                    snapshot_id=current_snapshot_id,
-                    limit=limit,
-                    offset=offset,
-                    fetch_all=fetch_all,
-                )
-                query_mode = "bundled_nqe_query_id"
-                diff_fallback_detail = {
-                    "mode": "snapshot",
-                    "query_mode": query_mode,
-                    "query_reference": query_reference,
-                    "fallback": "diff-unavailable",
-                    "error": str(diff_error),
-                    "error_type": type(diff_error).__name__,
-                    "rows": rows,
-                }
+            rows = self.client.run_nqe_diff(
+                query_id=resolved_query_spec.resolved_query_id
+                or resolved_query_spec.query_id
+                or "",
+                commit_id=resolved_query_spec.resolved_commit_id
+                or resolved_query_spec.commit_id,
+                parameters=resolved_query_spec.parameters,
+                before_snapshot_id=baseline_snapshot_id,
+                after_snapshot_id=current_snapshot_id,
+                limit=limit,
+                offset=offset,
+                fetch_all=fetch_all,
+            )
+            query_mode = "bundled_nqe_query_id_diff"
+            is_diff = True
         else:
             rows = self.client.run_nqe_query(
                 query_spec=resolved_query_spec,
@@ -513,7 +403,6 @@ class ForwardIngestionPlanner:
             resolved_query_reference,
             notes,
             is_diff,
-            diff_fallback_detail,
             _elapsed_ms(),
             commit_id,
         )
@@ -581,10 +470,7 @@ class ForwardIngestionPlanner:
         # Warm the NQE query index cache before parallel tier dispatch.
         # All bundled mappings share org:head — one fetch fills the cache so
         # N parallel workers don't race on the same endpoint.
-        try:
-            self.client.get_nqe_repository_query_index(repository="org", commit_id="head")
-        except ForwardClientError:
-            pass  # per-slice inline fallback handles resolution failures
+        self.client.get_nqe_repository_query_index(repository="org", commit_id="head")
 
         for tier in tiers:
             # Compute query parameters for each slice in this tier (reads source, sequential).
@@ -640,7 +526,6 @@ class ForwardIngestionPlanner:
                     resolved_query_reference,
                     notes,
                     is_diff,
-                    diff_fallback_detail,
                     query_runtime_ms,
                     commit_id,
                 ) = tier_fetch[mapping.slug]
@@ -696,9 +581,6 @@ class ForwardIngestionPlanner:
                         "diff_detail": slice_diff_detail,
                         "summary": dict(slice_write_plan.summary),
                     }
-                    if diff_fallback_detail is not None:
-                        diff_detail_slices[mapping.slug].update(diff_fallback_detail)
-
                 aggregate_operations.extend(slice_write_plan.operations)
                 aggregate_summary = self._merge_counts(aggregate_summary, slice_write_plan.summary)
                 reports.append(

@@ -795,17 +795,17 @@ def test_client_retries_transient_http_errors_before_succeeding(monkeypatch):
             if calls["nqe_runs"] == 1:
                 return httpx.Response(503, text="temporarily unavailable")
             payload = json.loads(request.content.decode("utf-8"))
-            assert payload["query"] == "select { id: string }"
-            assert "parameters" not in payload
+            assert payload["queryId"] == "query-123"
+            assert "query" not in payload
             return httpx.Response(
                 200,
                 json={
-                    "executionKey": "execution-inline",
+                    "executionKey": "execution-query-id",
                     "status": "COMPLETED",
                     "outcome": "OK",
                 },
             )
-        if path == "/api/networks/net-1/nqe-executions/execution-inline/result":
+        if path == "/api/networks/net-1/nqe-executions/execution-query-id/result":
             calls["execution_results"] += 1
             return httpx.Response(
                 200,
@@ -828,7 +828,7 @@ def test_client_retries_transient_http_errors_before_succeeding(monkeypatch):
     )
 
     rows = client.run_nqe_query(
-        query_spec=ForwardQuerySpec(query_text="select { id: string }"),
+        query_spec=ForwardQuerySpec(query_id="query-123"),
         fetch_all=False,
     )
 
@@ -854,6 +854,9 @@ def test_client_honors_retry_after_header(monkeypatch):
             calls["nqe_runs"] += 1
             if calls["nqe_runs"] == 1:
                 return httpx.Response(429, text="slow down", headers={"Retry-After": "7"})
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["queryId"] == "query-123"
+            assert "query" not in payload
             return httpx.Response(
                 200, json={"executionKey": "e", "status": "COMPLETED", "outcome": "OK"}
             )
@@ -874,7 +877,7 @@ def test_client_honors_retry_after_header(monkeypatch):
         transport=httpx.MockTransport(handler),
     )
     client.run_nqe_query(
-        query_spec=ForwardQuerySpec(query_text="select { id: string }"), fetch_all=False
+        query_spec=ForwardQuerySpec(query_id="query-123"), fetch_all=False
     )
     # Retry-After: 7 is honored verbatim (not the exponential default).
     assert slept == [7.0]
@@ -906,7 +909,7 @@ def test_client_rejects_auth_failures_without_retry():
 
     with pytest.raises(ForwardClientError, match="HTTP 401"):
         client.run_nqe_query(
-            query_spec=ForwardQuerySpec(query_text="select { id: string }"),
+            query_spec=ForwardQuerySpec(query_id="query-123"),
             fetch_all=False,
         )
 
@@ -934,9 +937,6 @@ def test_request_nqe_execution_sends_sort_keys(monkeypatch):
         ),
         transport=httpx.MockTransport(handler),
     )
-    # sortKeys are only honoured for saved queries (queryId); the ad-hoc
-    # /nqe-executions endpoint rejects them, so they are sent only on the
-    # saved-query path. Use a pre-resolved query_id to exercise that path.
     client.request_nqe_execution(
         query_spec=ForwardQuerySpec(
             query_id="q-1",
@@ -972,12 +972,23 @@ def test_request_nqe_execution_omits_sort_keys_when_empty(monkeypatch):
     )
     client.request_nqe_execution(
         query_spec=ForwardQuerySpec(
-            query_text="foreach device in network.devices select { name: device.name }"
+            query_id="q-2",
+            resolved_query_id="q-2",
         ),
         network_id="net-1",
         snapshot_id="snap-1",
     )
     assert "sortKeys" not in captured_payload
+    assert captured_payload["queryId"] == "q-2"
+    assert "query" not in captured_payload
+
+
+def test_forward_query_spec_rejects_inline_query_text():
+    _require_client()
+    with pytest.raises(ValueError, match="Inline NQE query text is not supported"):
+        ForwardQuerySpec(
+            query_text="foreach device in network.devices select { name: device.name }"
+        )
 
 
 def test_counters_track_attempts_retries_and_429():
@@ -1039,7 +1050,8 @@ def test_counters_count_nqe_query_calls():
     )
     client.run_nqe_query(
         query_spec=ForwardQuerySpec(
-            query_text="foreach d in network.devices select { name: d.name }"
+            query_id="query-123",
+            resolved_query_id="query-123",
         ),
         fetch_all=False,
     )

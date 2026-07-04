@@ -125,11 +125,11 @@ For large result sets, consume `response.iter_lines()` to cut peak memory.
 
 ### 9. Narrow the planner's bare except
 
-`planner.py:411` catches bare `Exception` and silently falls back to inline NQE. This masks
+Older planner code caught broad failures and silently fell back to inline NQE. This masks
 auth/network failures as "query path resolution failed."
 
-**Action**: narrow to the expected resolution errors, and record which exception triggered
-the fallback in the slice notes / support bundle.
+**Action**: remove inline fallback, fail fast when repository query identity cannot be
+resolved, and surface the failing slice/query in the job error.
 
 ---
 
@@ -148,5 +148,5 @@ the fallback in the slice notes / support bundle.
 - Unit: `python3 -m pytest tests/test_client.py tests/test_runner.py tests/test_planner.py`
 - Live: load `.env` (Wells Fargo `FORWARD_WELLS_*`, mapped to `FORWARD_LIVE_*`), run
   `tests/test_live_ingestion.py -m integration`. The WF `org` repo does not publish the
-  `/forward_nautobot_validation/*` paths, so live coverage relies on inline NQE or on
-  pushing the bundled queries into a WF repo folder first.
+  `/forward_nautobot_validation/*` paths, so live coverage requires publishing the
+  bundled queries into a repository folder first.

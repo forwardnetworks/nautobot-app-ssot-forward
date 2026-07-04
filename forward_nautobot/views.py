@@ -518,7 +518,7 @@ def _render_dashboard_body(
         '<div class="forward-section forward-panel">'
         "<h3>Operational notes</h3>"
         '<div class="forward-taglist">'
-        '<span class="forward-tag">Inline NQE fallback</span>'
+        '<span class="forward-tag">Async query-ID execution</span>'
         '<span class="forward-tag">Query-ID diffs</span>'
         '<span class="forward-tag">Redacted support bundles</span>'
         '<span class="forward-tag">No source-field normalization</span>'

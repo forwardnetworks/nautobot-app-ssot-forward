@@ -42,12 +42,16 @@ class ForwardQuerySpec:
     sort_keys: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        reference_count = sum(
-            bool(value) for value in (self.query_text, self.query_id, self.query_path)
-        )
+        if self.query_text:
+            raise ValueError(
+                "Inline NQE query text is not supported; publish the query and use "
+                "`query_path` or `query_id`."
+            )
+        reference_count = sum(bool(value) for value in (self.query_id, self.query_path))
         if reference_count != 1:
             raise ValueError(
-                "Exactly one of `query_text`, `query_id`, or `query_path` must be set."
+                "Exactly one of `query_id` or `query_path` must be set. "
+                "Inline NQE query text is not supported for Forward 26.6+ async execution."
             )
         if self.query_path and not self.query_repository:
             self.query_repository = "org"
@@ -56,9 +60,7 @@ class ForwardQuerySpec:
     def execution_mode(self) -> str:
         if self.query_path:
             return "query_path"
-        if self.query_id:
-            return "query_id"
-        return "query"
+        return "query_id"
 
     @property
     def reference(self) -> str:
@@ -66,7 +68,7 @@ class ForwardQuerySpec:
             return f"{self.query_repository}:{self.query_path}"
         if self.query_id:
             return self.query_id
-        return "<inline query>"
+        return "<unresolved query>"
 
     def with_query_id(self, query_id: str, commit_id: str | None = None):
         return replace(

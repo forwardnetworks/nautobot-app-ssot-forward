@@ -13,8 +13,8 @@ def test_support_bundle_preserves_raw_sample_rows():
         source_url="https://fwd.example",
         network_id="net-1",
         snapshot_id="snap-1",
-        query_mode="query_text",
-        query_reference="<inline query>",
+        query_mode="bundled_nqe_query_id_async",
+        query_reference="forward_devices.nqe",
         row_count=2,
         rows=(
             {"name": "device-1", "location": "alpha"},
@@ -44,8 +44,8 @@ def test_support_bundle_includes_adapter_summaries():
         source_url="https://fwd.example",
         network_id="net-1",
         snapshot_id="snap-1",
-        query_mode="query_text",
-        query_reference="<inline query>",
+        query_mode="bundled_nqe_query_id_async",
+        query_reference="forward_devices.nqe",
         row_count=1,
     )
 
@@ -82,8 +82,8 @@ def test_support_bundle_redaction_masks_sensitive_fields():
         source_url="https://fwd.example",
         network_id="net-1",
         snapshot_id="snap-1",
-        query_mode="query_text",
-        query_reference="<inline query>",
+        query_mode="bundled_nqe_query_id_async",
+        query_reference="forward_devices.nqe",
         row_count=1,
         rows=({"name": "device-1", "password": "secret"},),
     )
@@ -112,8 +112,8 @@ def test_support_bundle_internal_profile_retains_non_secret_details():
         source_url="https://fwd.example",
         network_id="net-1",
         snapshot_id="snap-1",
-        query_mode="query_text",
-        query_reference="<inline query>",
+        query_mode="bundled_nqe_query_id_async",
+        query_reference="forward_devices.nqe",
         row_count=1,
         rows=({"name": "device-1", "password": "secret"},),
     )
@@ -134,8 +134,8 @@ def test_support_bundle_pair_returns_bundle_and_shared_view_together():
         source_url="https://fwd.example",
         network_id="net-1",
         snapshot_id="snap-1",
-        query_mode="query_text",
-        query_reference="<inline query>",
+        query_mode="bundled_nqe_query_id_async",
+        query_reference="forward_devices.nqe",
         row_count=1,
         rows=({"name": "device-1"},),
     )

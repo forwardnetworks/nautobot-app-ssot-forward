@@ -47,8 +47,8 @@ client repo access and contract scaffolding.
 **Why:** `check_query_contracts.py` only proves the *local* `.nqe` parses to the
 expected fields. Nothing today proves the `query_id` that actually runs in
 production is the reviewed source. Our own perf plan flags this: the WF org
-doesn't publish `/forward_nautobot_validation/*`, so we run inline NQE
-unverified.
+must publish `/forward_nautobot_validation/*` because runtime inline NQE is no
+longer accepted.
 
 ### A3. Single aggregating release-readiness audit  ·  High value · M
 **forward-netbox:** `forward_architecture_audit.py` emits one machine-readable
@@ -193,5 +193,5 @@ Our workflows mix `@v5`/`@v6`/`@v7.0.1` tags.
 ## Verification
 - Unit: `python -m pytest -q -m "not integration"`
 - Gates: every `scripts/check_*.py` + the new `scripts/release.py` helper tests
-- Live: docker-compose Nautobot in CI (B4); manual WF smoke on 192.168.1.167 as
-  the fallback until B4 lands.
+- Live: docker-compose Nautobot in CI (B4); manual WF smoke on 192.168.1.167
+  until B4 lands.

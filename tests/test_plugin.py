@@ -213,7 +213,7 @@ def test_ssot_data_source_uses_persisted_profile_selection(monkeypatch):
     assert result["profile_status"]["last_failure"] == ""  # clean run records no failure
     assert result["profile_status"]["last_support_bundle"] == "forward_devices.nqe"
     assert result["profile_status"]["last_query_reference"] == "forward_devices.nqe"
-    assert result["profile_status"]["last_query_mode"] == "bundled_nqe_query_id"
+    assert result["profile_status"]["last_query_mode"] == "bundled_nqe_query_id_async"
     assert result["profile_status"]["last_snapshot_id"] == "snap-2"
 
 
@@ -638,7 +638,7 @@ def test_ssot_data_source_non_dryrun_applies_writes_and_persists_diff(monkeypatc
     assert result["profile_status"]["last_failure"] == ""  # clean run records no failure
     assert result["profile_status"]["last_support_bundle"] == "forward_devices.nqe"
     assert result["profile_status"]["last_query_reference"] == "forward_devices.nqe"
-    assert result["profile_status"]["last_query_mode"] == "bundled_nqe_query_id"
+    assert result["profile_status"]["last_query_mode"] == "bundled_nqe_query_id_async"
     assert result["profile_status"]["last_snapshot_id"] == "snap-2"
 
 
