@@ -14,6 +14,7 @@ Keep the Forward Nautobot integration legible for both humans and agents.
 
 ## Validation Surface
 
+- See [validation-matrix.md](validation-matrix.md) for change-specific gates.
 - `pytest -q`
 - import checks for `forward_nautobot`
 - job registration checks for `forward_nautobot.jobs`

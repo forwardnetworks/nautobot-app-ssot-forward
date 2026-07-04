@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
-
-import pytest
 
 import forward_nautobot.integrations.forward.contrib_sync as contrib_sync
 from forward_nautobot.integrations.forward.contrib_sync import (
@@ -29,10 +32,36 @@ def test_normalize_mac_absent_is_none():
     assert _normalize_mac("   ") is None
 
 
-@pytest.mark.skipif(not CONTRIB_AVAILABLE, reason="contrib models require nautobot")
 def test_interface_slice_carries_mac_address():
     """The MAC learning is an attribute on the existing Interface slice (Nautobot 3.1
     has no standalone MACAddress model), so it must be in _attributes."""
+    if not CONTRIB_AVAILABLE:
+        if importlib.util.find_spec("django") is not None:
+            code = """
+import django
+django.setup()
+from forward_nautobot.integrations.forward.contrib_sync import ForwardContribInterface
+assert "mac_address" in ForwardContribInterface._attributes
+assert "mac_address" in ForwardContribInterface.__annotations__
+"""
+            env = os.environ.copy()
+            env.setdefault("DJANGO_SETTINGS_MODULE", "nautobot_config")
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                cwd=Path(__file__).resolve().parents[1],
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            assert result.returncode == 0, result.stderr
+            return
+
+        source = Path(contrib_sync.__file__).read_text()
+        assert "class ForwardContribInterface" in source
+        assert '"mac_address"' in source
+        assert "mac_address: str | None" in source
+        return
+
     iface = contrib_sync.ForwardContribInterface
     assert "mac_address" in iface._attributes
     assert "mac_address" in iface.__annotations__

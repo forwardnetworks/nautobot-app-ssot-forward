@@ -1,4 +1,10 @@
-from forward_nautobot.models import ForwardConnectionProfileRecord, ForwardPluginConfiguration
+from forward_nautobot.models import (
+    PASSWORD_ENCRYPTION_PREFIX,
+    ForwardConnectionProfileRecord,
+    ForwardPluginConfiguration,
+    _decrypt_password,
+    _encrypt_password,
+)
 
 
 def test_connection_profile_record_round_trips_connection_settings():
@@ -46,6 +52,16 @@ def test_connection_profile_record_invalid_delete_policy_defaults_to_ignore():
     profile = ForwardConnectionProfileRecord(name="invalid", delete_policy="bogus")
 
     assert profile.effective_delete_policy == "ignore"
+
+
+def test_forward_password_encrypts_and_decrypts_with_secret_key():
+    encrypted = _encrypt_password("secret", secret_key="unit-test-secret")
+
+    assert encrypted.startswith(PASSWORD_ENCRYPTION_PREFIX)
+    assert "secret" not in encrypted
+    assert _decrypt_password(encrypted, secret_key="unit-test-secret") == "secret"
+    assert _decrypt_password("legacy-cleartext", secret_key="unit-test-secret") == "legacy-cleartext"
+    assert _encrypt_password(encrypted, secret_key="unit-test-secret") == encrypted
 
 
 def test_plugin_configuration_tracks_default_profile():

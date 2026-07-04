@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -46,7 +47,7 @@ def _gates(*, fast: bool, sensitive: bool) -> list[tuple[str, list[str]]]:
                 "dist/contract-diff-report.json",
             ],
         ),
-        ("pytest", [PY, "-m", "pytest", "-q", "-m", "not integration"]),
+        ("pytest", [PY, "-m", "pytest", "-q", "-rs", "-m", "not integration"]),
     ]
     if not fast:
         gates += [
@@ -62,7 +63,11 @@ def run_gates(*, fast: bool, sensitive: bool) -> int:
     for label, argv in _gates(fast=fast, sensitive=sensitive):
         print(f"\n=== {label} ===")
         started = time.monotonic()
-        rc = subprocess.run(argv, cwd=REPO_ROOT).returncode
+        env = None
+        if label == "pytest":
+            env = os.environ.copy()
+            env["FORWARD_STRICT_NO_SKIPS"] = "1"
+        rc = subprocess.run(argv, cwd=REPO_ROOT, env=env).returncode
         elapsed = time.monotonic() - started
         ok = rc == 0
         overall_ok = overall_ok and ok

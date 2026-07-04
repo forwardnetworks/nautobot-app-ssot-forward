@@ -128,17 +128,21 @@ class ForwardWritePlanner:
                 target_fields = target_rows.get(record_key)
                 if target_fields is None:
                     action = "create"
-                elif target_fields != record.fields:
-                    action = "update"
-                    # Record WHICH fields actually changed (names only — never
-                    # values — so the rollup stays redaction-safe).
-                    for key, value in record.fields.items():
-                        if key in _ROLLUP_NOISE_FIELDS:
-                            continue
-                        if target_fields.get(key) != value:
-                            changed_fields[key] += 1
                 else:
-                    action = "no-change"
+                    comparable_target_fields = {
+                        key: target_fields.get(key) for key in record.fields
+                    }
+                    if comparable_target_fields == record.fields:
+                        action = "no-change"
+                    else:
+                        action = "update"
+                        # Record WHICH fields actually changed (names only — never
+                        # values — so the rollup stays redaction-safe).
+                        for key, value in record.fields.items():
+                            if key in _ROLLUP_NOISE_FIELDS:
+                                continue
+                            if target_fields.get(key) != value:
+                                changed_fields[key] += 1
                 summary[action] += 1
                 diff_summary[action] += 1
                 model_diff_summary[action] += 1

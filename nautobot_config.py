@@ -28,6 +28,12 @@ except ModuleNotFoundError:
             "NAME": ":memory:",
         }
     }
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        }
+    }
+    CONSTANCE_BACKEND = "constance.backends.memory.MemoryBackend"
 else:
     SECRET_KEY = SECRET_KEY or "forward-nautobot-plugin-test-key"
     DEBUG = is_truthy(os.getenv("NAUTOBOT_DEBUG", "False"))
@@ -48,5 +54,11 @@ else:
             "CONN_MAX_AGE": int(os.getenv("NAUTOBOT_DB_TIMEOUT", "300")),
         }
     }
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        }
+    }
+    CONSTANCE_BACKEND = "constance.backends.memory.MemoryBackend"
     PLUGINS = ["forward_nautobot"]
     PLUGINS_CONFIG = {}

@@ -54,38 +54,6 @@ def _require_httpx():
         pytest.skip("httpx-backed Forward client tests require the full test dependency set.")
 
 
-def _require_target_tables(*model_names: str):
-    table_by_model = {
-        "locations": "dcim_location",
-        "platforms": "dcim_platform",
-        "device_types": "dcim_devicetype",
-        "devices": "dcim_device",
-        "interfaces": "dcim_interface",
-        "ip_addresses": "ipam_ipaddress",
-        "vlans": "ipam_vlan",
-        "prefixes": "ipam_prefix",
-        "modules": "dcim_module",
-        "inventory_items": "dcim_inventoryitem",
-    }
-    requested = [table_by_model[model] for model in model_names if model in table_by_model]
-    if not requested:
-        return
-
-    try:
-        from django.db import connection
-    except ModuleNotFoundError:
-        pytest.skip("Django is not installed.")
-
-    try:
-        existing_tables = set(connection.introspection.table_names())
-    except Exception:
-        return
-
-    missing = [name for name in requested if name not in existing_tables]
-    if missing:
-        pytest.skip(f"Nautobot tables not migrated in this env: {', '.join(missing)}")
-
-
 def test_plugin_config_metadata():
     assert config.name == "forward_nautobot"
     assert config.base_url == "forward"
@@ -96,6 +64,16 @@ def test_plugin_config_metadata():
 def test_navigation_surface_exists():
     assert menu.label == "Forward Field Integration"
     assert len(menu.groups) == 2
+
+
+def test_navigation_does_not_link_to_empty_ssot_job_run():
+    for _group_label, items in menu.groups:
+        for item in items:
+            assert item.link.startswith("plugins:forward_nautobot:")
+            assert "job_run_by_class_path" not in item.link
+            for button in getattr(item, "buttons", ()) or ():
+                assert getattr(button, "link", "")
+                assert "class_path': ''" not in str(getattr(button, "link", ""))
 
 
 def test_core_model_registry_is_seeded():
@@ -115,13 +93,12 @@ def test_ssot_job_module_registers_only_one_sync_job():
 def test_ssot_data_source_metadata():
     _require_jobs_module()
     mappings = ForwardInventoryDataSource.data_mappings()
+    class_path = "forward_nautobot.integrations.forward.jobs.ForwardInventoryDataSource"
 
     assert ForwardInventoryDataSource.Meta.name == "Forward Field Integration"
     assert ForwardInventoryDataSource.Meta.data_source == "Forward Networks"
-    assert (
-        ForwardInventoryDataSource.class_path
-        == "forward_nautobot.integrations.forward.jobs.ForwardInventoryDataSource"
-    )
+    assert ForwardInventoryDataSource.class_path == class_path
+    assert ForwardInventoryDataSource.class_path.count(".") >= 4
     assert ForwardInventoryDataSource.name == "Forward Field Integration"
     assert ForwardInventoryDataSource.grouping == "Forward Field Integration"
     assert ForwardInventoryDataSource.description == (
@@ -153,7 +130,6 @@ def test_ssot_data_source_metadata():
 def test_ssot_data_source_uses_persisted_profile_selection(monkeypatch):
     _require_jobs_module()
     _require_httpx()
-    _require_target_tables("devices")
     stored_profile = ForwardConnectionProfileRecord(
         name="primary",
         base_url="https://fwd.example",
@@ -531,7 +507,6 @@ def test_ssot_data_source_run_preserves_job_inputs_for_sync(monkeypatch):
 def test_ssot_data_source_dryrun_uses_bundled_contracts_and_persists_diff(monkeypatch):
     _require_jobs_module()
     _require_httpx()
-    _require_target_tables("devices")
     captured = {"writes": 0}
 
     class _FakeExecutor:
@@ -588,7 +563,6 @@ def test_ssot_data_source_dryrun_uses_bundled_contracts_and_persists_diff(monkey
 def test_ssot_data_source_non_dryrun_applies_writes_and_persists_diff(monkeypatch):
     _require_jobs_module()
     _require_httpx()
-    _require_target_tables("devices")
     captured = {"writes": 0}
 
     class _FakeExecution:

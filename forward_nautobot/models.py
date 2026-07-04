@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -15,6 +17,7 @@ WRITE_DEFAULT_FIELD_NAMES: tuple[str, ...] = (
     "default_device_role_name",
     "default_device_status_name",
 )
+PASSWORD_ENCRYPTION_PREFIX = "fernet:"
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -30,6 +33,50 @@ def _coerce_models(value: Any) -> tuple[str, ...]:
     else:
         items = str(value or "").split(",")
     return tuple(str(item).strip() for item in items if str(item).strip())
+
+
+def _django_secret_key() -> str:
+    try:
+        from django.conf import settings
+
+        return str(getattr(settings, "SECRET_KEY", "") or "")
+    except Exception:  # pragma: no cover - only reached without configured Django
+        return ""
+
+
+def _fernet_for_secret(secret_key: str | None = None):
+    secret = str(secret_key if secret_key is not None else _django_secret_key())
+    if not secret:
+        return None
+    from cryptography.fernet import Fernet
+
+    digest = hashlib.sha256(secret.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def _encrypt_password(value: str, *, secret_key: str | None = None) -> str:
+    password = str(value or "")
+    if not password or password.startswith(PASSWORD_ENCRYPTION_PREFIX):
+        return password
+    fernet = _fernet_for_secret(secret_key)
+    if fernet is None:
+        return password
+    token = fernet.encrypt(password.encode("utf-8")).decode("utf-8")
+    return f"{PASSWORD_ENCRYPTION_PREFIX}{token}"
+
+
+def _decrypt_password(value: str, *, secret_key: str | None = None) -> str:
+    password = str(value or "")
+    if not password.startswith(PASSWORD_ENCRYPTION_PREFIX):
+        return password
+    fernet = _fernet_for_secret(secret_key)
+    if fernet is None:
+        return ""
+    token = password.removeprefix(PASSWORD_ENCRYPTION_PREFIX).encode("utf-8")
+    try:
+        return fernet.decrypt(token).decode("utf-8")
+    except Exception:
+        return ""
 
 
 try:
@@ -486,7 +533,7 @@ if models is not None:
                 name=self.name,
                 base_url=self.base_url,
                 username=self.username,
-                password=self.password,
+                password=_decrypt_password(self.password),
                 network_id=self.network_id,
                 verify_tls=self.verify_tls,
                 snapshot_id=self.snapshot_id,
@@ -511,6 +558,10 @@ if models is not None:
 
         def to_connection_settings(self) -> ForwardConnectionSettings:
             return self.to_record().to_connection_settings()
+
+        def save(self, *args, **kwargs):
+            self.password = _encrypt_password(self.password)
+            return super().save(*args, **kwargs)
 
         @property
         def effective_delete_policy(self) -> str:
