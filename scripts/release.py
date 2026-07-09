@@ -15,6 +15,11 @@ Stages:
   publish  - branch, push, wait for GitHub CI, fast-forward main, tag the
              RELEASE COMMIT, create the GitHub release  (ONLY with --publish)
 
+Pushing the ``v*`` tag triggers .github/workflows/release.yml, which builds the
+sdist + wheel, attaches them to the GitHub release, and publishes them to PyPI via
+Trusted Publishing (OIDC — no stored token). See that workflow's header for the
+one-time PyPI publisher + ``pypi`` environment setup.
+
 Default run is prepare + verify. Rollout never happens without --publish, so a
 default run is a safe dry build.
 
@@ -156,6 +161,11 @@ def stage_publish(version: str, *, summary: str) -> None:
     run(["git", "push", "origin", tag])
     run(["gh", "release", "create", tag, "--title", tag, "--notes", summary])
     print(f"[publish] {tag} released")
+    print(
+        "[publish] the tag triggers .github/workflows/release.yml: it uploads the "
+        "sdist + wheel to the GitHub release and publishes them to PyPI via Trusted "
+        "Publishing. Watch: gh run watch --exit-status"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
