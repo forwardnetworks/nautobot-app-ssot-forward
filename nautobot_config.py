@@ -54,11 +54,17 @@ else:
             "CONN_MAX_AGE": int(os.getenv("NAUTOBOT_DB_TIMEOUT", "300")),
         }
     }
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    # A running Nautobot server needs a Redis-backed cache (it calls
+    # cache.delete_pattern, which LocMemCache lacks) and the database-backed
+    # Constance. When NAUTOBOT_REDIS_HOST is set (the container stack) keep
+    # Nautobot's imported Redis defaults; otherwise fall back to in-process
+    # backends so a plain `pytest` run needs neither Redis nor a database.
+    if not os.getenv("NAUTOBOT_REDIS_HOST"):
+        CACHES = {
+            "default": {
+                "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            }
         }
-    }
-    CONSTANCE_BACKEND = "constance.backends.memory.MemoryBackend"
+        CONSTANCE_BACKEND = "constance.backends.memory.MemoryBackend"
     PLUGINS = ["forward_nautobot"]
     PLUGINS_CONFIG = {}

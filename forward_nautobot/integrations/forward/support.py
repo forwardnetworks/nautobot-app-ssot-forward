@@ -285,6 +285,14 @@ def grade_support_bundle(
     checks: list[dict[str, str]] = []
     actions: list[str] = []
 
+    def _as_int(value) -> int:
+        # A redacted bundle can carry "[REDACTED]" where a count would be; never
+        # let that (or any non-numeric value) blow up the grader.
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def record(name: str, status: str, detail: str, action: str = "") -> None:
         checks.append({"name": name, "status": status, "detail": detail})
         if action and status != "pass":
@@ -305,8 +313,8 @@ def grade_support_bundle(
     # 2. Delete pressure — a high delete fraction usually means the source returned
     #    a partial result set, not that the network actually shrank.
     diff = bundle.get("diff_summary") or {}
-    deletes = int(diff.get("delete", 0) or 0)
-    total = sum(int(v or 0) for v in diff.values())
+    deletes = _as_int(diff.get("delete", 0))
+    total = sum(_as_int(v) for v in diff.values())
     fraction = (deletes / total) if total else 0.0
     detail = f"{deletes}/{total} ({fraction:.0%}) deletes"
     if fraction >= th["delete_fraction_fail"]:
@@ -324,8 +332,8 @@ def grade_support_bundle(
 
     # 3. Forward API throttling — silent slowness made visible by the usage counters.
     api = (bundle.get("diagnostics") or {}).get("api_usage") or {}
-    http_429 = int(api.get("http_429", 0) or 0)
-    http_retries = int(api.get("http_retries", 0) or 0)
+    http_429 = _as_int(api.get("http_429", 0))
+    http_retries = _as_int(api.get("http_retries", 0))
     usage_detail = f"{http_429} 429s, {http_retries} retries"
     if http_429 >= th["http_429_warn"] or http_retries >= th["http_retries_warn"]:
         record(
@@ -339,7 +347,7 @@ def grade_support_bundle(
         record("api_throttling", "pass", usage_detail)
 
     # 4. Empty result — a configured run that fetched nothing is suspicious.
-    row_count = int(bundle.get("row_count", 0) or 0)
+    row_count = _as_int(bundle.get("row_count", 0))
     if row_count < th["min_row_count_warn"]:
         record(
             "result_volume",

@@ -73,3 +73,16 @@ def test_thresholds_are_overridable():
     assert grade["checks"][1]["status"] == "pass"
     # Default thresholds are surfaced for transparency.
     assert set(DEFAULT_GRADE_THRESHOLDS).issubset(grade["thresholds"])
+
+
+def test_grader_tolerates_redacted_numeric_fields():
+    # A redacted bundle can carry "[REDACTED]" where a count would be; the grader
+    # must not raise (regression: the API support-bundle endpoint 500'd on this).
+    bundle = {
+        "failure_classification": "clean",
+        "row_count": "[REDACTED]",
+        "diff_summary": {"create": "[REDACTED]", "delete": "[REDACTED]"},
+        "diagnostics": {"api_usage": {"http_429": "[REDACTED]", "http_retries": "[REDACTED]"}},
+    }
+    grade = grade_support_bundle(bundle)
+    assert grade["status"] in {"pass", "warn", "fail"}
