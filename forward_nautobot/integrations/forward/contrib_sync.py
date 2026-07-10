@@ -64,6 +64,17 @@ def _govern_deletes(source, target, *, allow_delete, controls):
     )
 
 
+def _namespace_for_vrf(vrf: str) -> str:
+    """Map a Forward VRF / network-instance name to a Nautobot Namespace name.
+
+    The default routing table lives in the built-in ``Global`` namespace; every
+    other VRF gets its own namespace so identical prefixes/IPs in different VRFs do
+    not collapse onto one another.
+    """
+    value = str(vrf or "").strip()
+    return "Global" if value in ("", "default") else value
+
+
 def cable_action(
     *,
     a_present: bool,
@@ -664,15 +675,18 @@ if CONTRIB_AVAILABLE:
         # IPAddress needs a namespace at construction, so create() is custom.
         _model = IPAddress
         _modelname = "ip_address"
-        _identifiers = ("host", "mask_length")
+        # Namespace (VRF) is part of the identity so the same host/mask in two VRFs
+        # stays distinct; it traverses parent (the containing Prefix) -> namespace.
+        _identifiers = ("host", "mask_length", "parent__namespace__name")
         _attributes = ("status__name",)
         host: str
         mask_length: int
+        parent__namespace__name: str = "Global"
         status__name: str
 
         @classmethod
         def create(cls, adapter, ids, attrs):
-            ns = Namespace.objects.get(name="Global")
+            ns = Namespace.objects.get(name=ids.get("parent__namespace__name") or "Global")
             status = Status.objects.get(name=attrs["status__name"])
             address = f"{ids['host']}/{ids['mask_length']}"
             # Match on host AND mask within the same namespace — filter(host=)
@@ -790,7 +804,7 @@ if CONTRIB_AVAILABLE:
                 self.add(
                     ForwardContribVRF(
                         name=name,
-                        namespace__name=self._namespace_name,
+                        namespace__name=_namespace_for_vrf(name),
                         status__name=self._status_name,
                     )
                 )
@@ -806,14 +820,15 @@ if CONTRIB_AVAILABLE:
             for row in self._prefix_rows:
                 pfx = str(row.get("prefix") or "").strip()
                 net, _, plen = pfx.partition("/")
-                if not net or not plen.isdigit() or ("prefix", net, plen) in seen:
+                namespace = _namespace_for_vrf(row.get("vrf"))
+                if not net or not plen.isdigit() or ("prefix", net, plen, namespace) in seen:
                     continue
-                seen.add(("prefix", net, plen))
+                seen.add(("prefix", net, plen, namespace))
                 self.add(
                     ForwardContribPrefix(
                         network=net,
                         prefix_length=int(plen),
-                        namespace__name=self._namespace_name,
+                        namespace__name=namespace,
                         status__name=self._status_name,
                     )
                 )
@@ -825,12 +840,16 @@ if CONTRIB_AVAILABLE:
                     h, _, m = addr.partition("/")
                     host = host or h
                     mask = int(m) if (mask is None and m.isdigit()) else mask
-                if not host or mask is None or ("ip", host, mask) in seen:
+                namespace = _namespace_for_vrf(row.get("vrf"))
+                if not host or mask is None or ("ip", host, mask, namespace) in seen:
                     continue
-                seen.add(("ip", host, mask))
+                seen.add(("ip", host, mask, namespace))
                 self.add(
                     ForwardContribIPAddress(
-                        host=host, mask_length=int(mask), status__name=self._status_name
+                        host=host,
+                        mask_length=int(mask),
+                        parent__namespace__name=namespace,
+                        status__name=self._status_name,
                     )
                 )
             # Device-scoped slices reference devices by FK lookup; restrict to
@@ -1002,13 +1021,27 @@ def run_contrib_core_sync(
     return summary
 
 
-def ensure_extended_prerequisites(*, namespace_name: str = "Global", status_name: str = "Active"):
-    """Ensure the Namespace + Status (with IPAM/asset content types) the extended
-    slices resolve by lookup."""
+def ensure_extended_prerequisites(
+    *, namespace_names: set[str] | None = None, status_name: str = "Active"
+):
+    """Ensure the Namespace(s) + Status (with IPAM/asset content types) the extended
+    slices resolve by lookup. One namespace per VRF keeps overlapping prefixes/IPs
+    distinct; ``Global`` always exists."""
     if not CONTRIB_AVAILABLE:  # pragma: no cover
         raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
-    Namespace.objects.get_or_create(name=namespace_name)
+    for name in {"Global", *(namespace_names or set())}:
+        Namespace.objects.get_or_create(name=name)
     _ensure_status_with_content_types(status_name, [VLAN, VRF, Prefix, IPAddress, Module])
+
+
+def _extended_namespaces(vrf_rows, prefix_rows, ipaddress_rows) -> set[str]:
+    """Distinct Nautobot namespaces the extended slices will populate (VRF-derived)."""
+    names = {"Global"}
+    for row in vrf_rows or []:
+        names.add(_namespace_for_vrf(row.get("name")))
+    for row in (prefix_rows or []) + (ipaddress_rows or []):
+        names.add(_namespace_for_vrf(row.get("vrf")))
+    return names
 
 
 def run_contrib_extended_sync(
@@ -1032,7 +1065,10 @@ def run_contrib_extended_sync(
     if not CONTRIB_AVAILABLE:  # pragma: no cover
         raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
     if not dryrun:
-        ensure_extended_prerequisites(namespace_name=namespace_name, status_name=status_name)
+        ensure_extended_prerequisites(
+            namespace_names=_extended_namespaces(vrf_rows, prefix_rows, ipaddress_rows),
+            status_name=status_name,
+        )
     job = job or _StubJob()
     target = ForwardContribExtendedTarget(job=job)
     target.allow_delete = bool(allow_delete)
@@ -1079,8 +1115,11 @@ def _assign_ip_interfaces(ipaddress_rows: list[dict[str, Any]]) -> dict[str, int
         if not (dev and ifname and host) or mask is None:
             summary["skipped"] += 1
             continue
+        namespace = _namespace_for_vrf(row.get("vrf"))
         iface = Interface.objects.filter(device__name=dev, name=ifname).first()
-        ip = IPAddress.objects.filter(host=host, mask_length=int(mask)).first()
+        ip = IPAddress.objects.filter(
+            host=host, mask_length=int(mask), parent__namespace__name=namespace
+        ).first()
         if iface is None or ip is None:
             summary["skipped"] += 1
             continue
