@@ -329,21 +329,35 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
             # write executor. Flag-gated via PLUGINS_CONFIG so the legacy path stays
             # the default until the contrib path is promoted.
             from . import contrib_sync
+            from .delete_policy import DeleteControls
 
             source_records = {
                 slug: [dict(rec.fields) for rec in recs.values()]
                 for slug, recs in plan.source.records.items()
             }
+            # Deletes are opt-in via the profile's delete_policy and still gated
+            # per model (zero-rows / fraction) by the governor; an operator can
+            # force past a block with a recorded override reason.
+            profile = request.connection_profile
+            allow_delete = getattr(profile, "effective_delete_policy", "ignore") == "delete"
+            override_reason = str(data.get("delete_override_reason") or "").strip()
+            controls = DeleteControls(
+                override=bool(override_reason),
+                override_reason=override_reason,
+                user=str(data.get("acting_user") or ""),
+            )
             write_execution = {
                 "engine": "contrib",
                 "summaries": contrib_sync.run_contrib_full_sync(
                     source_records=source_records,
-                    profile=request.connection_profile,
+                    profile=profile,
                     dryrun=False,
                     client=client,
                     network_id=str(request.connection.network_id or ""),
                     snapshot_id=plan.diff_detail.get("current_snapshot_id"),
                     include_cloud=_contrib_include_cloud(),
+                    allow_delete=allow_delete,
+                    delete_controls=controls,
                 ),
             }
         else:
@@ -409,6 +423,12 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                 # the scan-by-eye aggregate ssot's object-by-object diff cannot give.
                 "changed_fields_top": plan.write_plan.diff_detail.get("changed_fields_top", {}),
                 "changed_fields_by_model": plan.write_plan.diff_detail.get("changed_fields", {}),
+                # Per-domain delete governance audit (blocks / overrides / who-why-when).
+                "delete_governance": {
+                    domain: summary["delete_governance"]
+                    for domain, summary in (write_execution.get("summaries") or {}).items()
+                    if isinstance(summary, dict) and "delete_governance" in summary
+                },
             },
             sharing_profile=str(data.get("support_bundle_sharing_profile") or "external").strip()
             or "external",
@@ -573,6 +593,14 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
         default="ignore",
         required=False,
         description="How missing source rows should be handled.",
+    )
+    delete_override_reason = StringVar(
+        required=False,
+        default="",
+        description=(
+            "Reason to override a blocked delete (zero-rows / over-fraction safeguard). "
+            "Recorded with the acting user in the run's delete audit."
+        ),
     )
 
     class Meta:
@@ -781,6 +809,10 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
         del memory_profiling
         data = dict(getattr(self, "_forward_job_data", {}))
         data.pop("dryrun", None)
+        # Capture the acting user so a delete override is attributable in the audit.
+        acting_user = getattr(self, "user", None)
+        if acting_user is not None:
+            data.setdefault("acting_user", str(getattr(acting_user, "username", "") or acting_user))
         result, plan, _write_execution = _run_ingestion_plan(
             dryrun=bool(getattr(self, "dryrun", True)),
             **data,

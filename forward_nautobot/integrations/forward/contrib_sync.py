@@ -28,7 +28,41 @@ from __future__ import annotations
 
 from typing import Any
 
+from .delete_policy import (
+    DeleteControls,
+    allowed_models,
+    build_delete_audit,
+    evaluate_adapter_deletes,
+)
 from .normalize import normalize_location_key
+
+
+def _now_iso() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _govern_deletes(source, target, *, allow_delete, controls):
+    """Evaluate per-model delete gates, set ``target.delete_allowed_models`` for the
+    delete mixin to consult, and return an audit record for the run summary."""
+    if not allow_delete:
+        target.delete_allowed_models = set()
+        return {"allow_delete": False}
+    controls = controls or DeleteControls()
+    model_names = list(getattr(target, "top_level", []) or [])
+    decisions = evaluate_adapter_deletes(
+        source, target, model_names, max_fraction=controls.max_fraction, override=controls.override
+    )
+    target.delete_allowed_models = allowed_models(decisions)
+    return build_delete_audit(
+        decisions,
+        allow_delete=True,
+        user=controls.user,
+        override_reason=controls.override_reason,
+        at=_now_iso(),
+    )
+
 
 try:
     from diffsync import Adapter
@@ -117,6 +151,14 @@ class _ForwardContribDeleteMixin:
     """
 
     def delete(self):
+        # Per-model gate (delete governance): the runner sets
+        # adapter.delete_allowed_models after evaluating zero-rows / fraction gates.
+        # Falls back to the blanket allow_delete flag when unset.
+        allowed_models = getattr(self.adapter, "delete_allowed_models", None)
+        if allowed_models is not None:
+            if getattr(self, "_modelname", None) not in allowed_models:
+                return self
+            return super().delete()
         if not getattr(self.adapter, "allow_delete", False):
             return self
         return super().delete()
@@ -875,6 +917,7 @@ def run_contrib_core_sync(
     dryrun: bool,
     interface_rows: list[dict[str, Any]] | None = None,
     allow_delete: bool = False,
+    delete_controls: DeleteControls | None = None,
     job: Any | None = None,
 ) -> dict[str, int]:
     """Sync locations + the device FK chain (+ interfaces) into Nautobot via
@@ -918,8 +961,10 @@ def run_contrib_core_sync(
     source.load()
     diff = source.diff_to(target)
     summary = dict(diff.summary())
+    audit = _govern_deletes(source, target, allow_delete=allow_delete, controls=delete_controls)
     if not dryrun:
         source.sync_to(target)
+    summary["delete_governance"] = audit
     return summary
 
 
@@ -944,6 +989,7 @@ def run_contrib_extended_sync(
     status_name: str = "Active",
     dryrun: bool,
     allow_delete: bool = False,
+    delete_controls: DeleteControls | None = None,
     job: Any | None = None,
 ) -> dict[str, int]:
     """Sync IPAM (VRF/VLAN/Prefix/IPAddress) + inventory items into Nautobot via
@@ -970,8 +1016,10 @@ def run_contrib_extended_sync(
     source.load()
     diff = source.diff_to(target)
     summary = dict(diff.summary())
+    audit = _govern_deletes(source, target, allow_delete=allow_delete, controls=delete_controls)
     if not dryrun:
         source.sync_to(target)
+    summary["delete_governance"] = audit
     return summary
 
 
@@ -1027,6 +1075,7 @@ def run_contrib_cloud_sync(
     service_rows: list[dict[str, Any]],
     dryrun: bool,
     allow_delete: bool = False,
+    delete_controls: DeleteControls | None = None,
     job: Any | None = None,
 ) -> dict[str, int]:
     """Sync Forward cloud accounts / networks / services into Nautobot's cloud app
@@ -1047,9 +1096,11 @@ def run_contrib_cloud_sync(
     source.load()
     diff = source.diff_to(target)
     summary = dict(diff.summary())
+    audit = _govern_deletes(source, target, allow_delete=allow_delete, controls=delete_controls)
     if not dryrun:
         source.sync_to(target)
         _link_cloud_relationships(network_rows=network_rows, service_rows=service_rows)
+    summary["delete_governance"] = audit
     return summary
 
 
@@ -1140,6 +1191,7 @@ def run_contrib_full_sync(
     snapshot_id: str | None = None,
     include_cloud: bool = True,
     allow_delete: bool = False,
+    delete_controls: DeleteControls | None = None,
     job: Any | None = None,
 ) -> dict[str, dict[str, int]]:
     """Drive the whole Forward->Nautobot import through contrib CRUD.
@@ -1166,6 +1218,7 @@ def run_contrib_full_sync(
         interface_rows=rows("interfaces"),
         dryrun=dryrun,
         allow_delete=allow_delete,
+        delete_controls=delete_controls,
         job=job,
         **defaults,
     )
@@ -1178,6 +1231,7 @@ def run_contrib_full_sync(
         module_rows=rows("modules"),
         dryrun=dryrun,
         allow_delete=allow_delete,
+        delete_controls=delete_controls,
         job=job,
     )
     if include_cloud and client is not None and network_id:
@@ -1199,6 +1253,7 @@ def run_contrib_full_sync(
                     ),
                     dryrun=dryrun,
                     allow_delete=allow_delete,
+                    delete_controls=delete_controls,
                     job=job,
                 )
             else:
