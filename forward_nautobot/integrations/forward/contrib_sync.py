@@ -64,12 +64,39 @@ def _govern_deletes(source, target, *, allow_delete, controls):
     )
 
 
+def cable_action(
+    *,
+    a_present: bool,
+    b_present: bool,
+    a_is_lag: bool,
+    b_is_lag: bool,
+    a_cable_id,
+    b_cable_id,
+) -> str:
+    """Decide what to do with one inferred cable row (pure — no ORM).
+
+    Returns one of: ``create``, ``no_change``, ``skipped_missing``,
+    ``skipped_lag``, ``skipped_conflict``.
+    """
+    if not (a_present and b_present):
+        return "skipped_missing"
+    if a_is_lag or b_is_lag:
+        # Nautobot does not allow a cable terminated directly on a LAG.
+        return "skipped_lag"
+    if a_cable_id and b_cable_id and a_cable_id == b_cable_id:
+        return "no_change"  # already the same cable between these interfaces
+    if a_cable_id or b_cable_id:
+        return "skipped_conflict"  # one or both already wired to a different cable
+    return "create"
+
+
 try:
     from diffsync import Adapter
     from django.contrib.contenttypes.models import ContentType
     from nautobot.cloud.models import CloudAccount, CloudNetwork, CloudResourceType, CloudService
     from nautobot.dcim.choices import InterfaceTypeChoices
     from nautobot.dcim.models import (
+        Cable,
         Device,
         DeviceType,
         Interface,
@@ -1181,6 +1208,59 @@ def _cloud_query_rows(client, network_id, snapshot_id, query_file):
     )
 
 
+def run_contrib_cable_sync(
+    *,
+    cable_rows: list[dict[str, Any]],
+    status_name: str = "Connected",
+    dryrun: bool,
+    job: Any | None = None,
+) -> dict[str, int]:
+    """Create dcim.Cable objects from Forward's inferred interface links.
+
+    Custom CRUD (not a diffsync model): Nautobot cables are a pair of generic
+    terminations, LAG endpoints are not cableable, and an interface already wired to
+    a different cable is a conflict. Idempotent: an existing cable between the two
+    interfaces is a no-op. Both endpoint interfaces must already exist (core sync
+    first). Never deletes.
+    """
+    if not CONTRIB_AVAILABLE:  # pragma: no cover
+        raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
+    # Keys mirror cable_action's return values so summary[action] += 1 is exact.
+    summary = {
+        "create": 0,
+        "no_change": 0,
+        "skipped_missing": 0,
+        "skipped_lag": 0,
+        "skipped_conflict": 0,
+    }
+    status = None
+    if not dryrun:
+        status = _ensure_status_with_content_types(status_name, [Cable])
+
+    for row in cable_rows:
+        dev_a = str(row.get("device") or "").strip()
+        if_a = str(row.get("interface") or "").strip()
+        dev_b = str(row.get("remote_device") or "").strip()
+        if_b = str(row.get("remote_interface") or "").strip()
+        if not (dev_a and if_a and dev_b and if_b):
+            summary["skipped_missing"] += 1
+            continue
+        a = Interface.objects.filter(device__name=dev_a, name=if_a).first()
+        b = Interface.objects.filter(device__name=dev_b, name=if_b).first()
+        action = cable_action(
+            a_present=a is not None,
+            b_present=b is not None,
+            a_is_lag=bool(a and a.type == "lag"),
+            b_is_lag=bool(b and b.type == "lag"),
+            a_cable_id=getattr(a, "cable_id", None),
+            b_cable_id=getattr(b, "cable_id", None),
+        )
+        summary[action] = summary.get(action, 0) + 1
+        if action == "create" and not dryrun:
+            Cable.objects.create(termination_a=a, termination_b=b, status=status)
+    return summary
+
+
 def run_contrib_full_sync(
     *,
     source_records: dict[str, Any],
@@ -1190,6 +1270,7 @@ def run_contrib_full_sync(
     network_id: str = "",
     snapshot_id: str | None = None,
     include_cloud: bool = True,
+    include_cables: bool = True,
     allow_delete: bool = False,
     delete_controls: DeleteControls | None = None,
     job: Any | None = None,
@@ -1234,6 +1315,17 @@ def run_contrib_full_sync(
         delete_controls=delete_controls,
         job=job,
     )
+    if include_cables and client is not None and network_id:
+        # Cables are inferred from interface links via a bundled NQE and applied
+        # after the core sync (both endpoint interfaces must already exist). A
+        # failure is isolated to the cable domain — never aborts the run.
+        try:
+            cable_rows = _cloud_query_rows(client, network_id, snapshot_id, "forward_cables.nqe")
+            summaries["cables"] = run_contrib_cable_sync(
+                cable_rows=cable_rows, dryrun=dryrun, job=job
+            )
+        except Exception as exc:  # noqa: BLE001 - isolate cable failure from the run
+            summaries["cables"] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
     if include_cloud and client is not None and network_id:
         # A cloud-fetch failure is isolated to the cloud domain — the network
         # sync already succeeded, so record it as a skip reason rather than

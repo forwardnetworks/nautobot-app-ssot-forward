@@ -1,0 +1,44 @@
+/**
+ * @intent Forward inferred interface cables
+ * @description dcim.Cable rows derived from Forward's resolved interface links.
+ *   Directionless: each physical link is emitted once, with the (device,interface)
+ *   endpoint canonically ordered before (remote_device,remote_interface) so A<->B
+ *   and B<->A collapse to one row. LAG (aggregate) endpoints are excluded — Nautobot
+ *   does not cable directly to a LAG — and the remote end must resolve to an
+ *   interface on a snapshot-completed device.
+ * @contract-version v1
+ */
+
+@primaryKey(device, interface, remote_device, remote_interface)
+@query
+f() =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach interface in device.interfaces
+where interface.interfaceType != IfaceType.IF_AGGREGATE
+foreach link in interface.links
+where link.deviceName != ""
+where link.ifaceName != ""
+let remote_interface_type = max(
+  foreach remote_device in network.devices
+  where remote_device.name == link.deviceName
+  where remote_device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where remote_device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach remote_interface in remote_device.interfaces
+  where remote_interface.name == link.ifaceName
+  select remote_interface.interfaceType
+)
+where isPresent(remote_interface_type)
+where remote_interface_type != IfaceType.IF_AGGREGATE
+where device.name != link.deviceName || interface.name != link.ifaceName
+let local_first =
+  device.name < link.deviceName
+  || (device.name == link.deviceName && interface.name < link.ifaceName)
+select {
+  device: if local_first then device.name else link.deviceName,
+  interface: if local_first then interface.name else link.ifaceName,
+  remote_device: if local_first then link.deviceName else device.name,
+  remote_interface: if local_first then link.ifaceName else interface.name,
+  status: "connected"
+};

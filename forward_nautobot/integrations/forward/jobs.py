@@ -291,6 +291,22 @@ def _contrib_include_cloud() -> bool:
         return True
 
 
+def _contrib_include_cables() -> bool:
+    """Whether the contrib path also imports inferred interface cables (topology).
+    On by default; disable in PLUGINS_CONFIG:
+    ``PLUGINS_CONFIG = {"forward_nautobot": {"contrib_include_cables": False}}``."""
+    try:
+        from django.conf import settings
+
+        return bool(
+            (settings.PLUGINS_CONFIG or {})
+            .get("forward_nautobot", {})
+            .get("contrib_include_cables", True)
+        )
+    except Exception:
+        return True
+
+
 def _run_ingestion_plan(*, dryrun: bool, **data):
     request = _build_ingestion_request(dryrun=dryrun, **data)
     client = ForwardClient(request.connection)
@@ -356,6 +372,7 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                     network_id=str(request.connection.network_id or ""),
                     snapshot_id=plan.diff_detail.get("current_snapshot_id"),
                     include_cloud=_contrib_include_cloud(),
+                    include_cables=_contrib_include_cables(),
                     allow_delete=allow_delete,
                     delete_controls=controls,
                 ),
