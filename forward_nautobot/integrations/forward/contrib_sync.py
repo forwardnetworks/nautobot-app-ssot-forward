@@ -1093,7 +1093,35 @@ def run_contrib_extended_sync(
         # creates the bare IPAddress; the interface/primary relationships are not
         # diffsync attributes, so wire them here once the IPs and interfaces exist.
         summary["ip_assignment"] = _assign_ip_interfaces(ipaddress_rows or [])
+        summary["vlan_locations"] = _assign_vlan_locations(vlan_rows or [])
     summary["delete_governance"] = audit
+    return summary
+
+
+def _assign_vlan_locations(vlan_rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Associate each VLAN with its Forward site via the native multi-location M2M
+    (Nautobot VLANs span locations). Idempotent; skips a site with no matching
+    Location. Ensures the location's type permits VLANs first."""
+    summary = {"assigned": 0, "skipped": 0}
+    vlan_ct = ContentType.objects.get_for_model(VLAN)
+    for row in vlan_rows:
+        vid = row.get("vid")
+        name = str(row.get("name") or "").strip()
+        site = str(row.get("site") or "").strip()
+        if vid is None or not name or not site:
+            summary["skipped"] += 1
+            continue
+        location = Location.objects.filter(name=site).first()
+        vlan = VLAN.objects.filter(vid=int(vid), name=name).first()
+        if location is None or vlan is None:
+            summary["skipped"] += 1
+            continue
+        location_type = location.location_type
+        if not location_type.content_types.filter(pk=vlan_ct.pk).exists():
+            location_type.content_types.add(vlan_ct)
+        if not vlan.locations.filter(pk=location.pk).exists():
+            vlan.locations.add(location)
+            summary["assigned"] += 1
     return summary
 
 
