@@ -110,7 +110,14 @@ try:
         Platform,
     )
     from nautobot.extras.models import Role, Status
-    from nautobot.ipam.models import VLAN, VRF, IPAddress, Namespace, Prefix
+    from nautobot.ipam.models import (
+        VLAN,
+        VRF,
+        IPAddress,
+        IPAddressToInterface,
+        Namespace,
+        Prefix,
+    )
     from nautobot_ssot.contrib import NautobotAdapter, NautobotModel
     from pydantic import field_validator
 
@@ -1046,7 +1053,53 @@ def run_contrib_extended_sync(
     audit = _govern_deletes(source, target, allow_delete=allow_delete, controls=delete_controls)
     if not dryrun:
         source.sync_to(target)
+        # Post-pass: bind IPs to their interfaces + set device primary IPs. contrib
+        # creates the bare IPAddress; the interface/primary relationships are not
+        # diffsync attributes, so wire them here once the IPs and interfaces exist.
+        summary["ip_assignment"] = _assign_ip_interfaces(ipaddress_rows or [])
     summary["delete_governance"] = audit
+    return summary
+
+
+def _assign_ip_interfaces(ipaddress_rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Bind each imported IP to its Forward interface (idempotent) and, for a
+    loopback-terminated IP, set the device primary IP when unset. Skips rows whose
+    interface or IP cannot be resolved."""
+    summary = {"assigned": 0, "primary_set": 0, "skipped": 0}
+    for row in ipaddress_rows:
+        dev = str(row.get("device") or "").strip()
+        ifname = str(row.get("interface") or "").strip()
+        host = str(row.get("host_ip") or "").strip()
+        mask = row.get("prefix_length")
+        if not host or mask is None:
+            addr = str(row.get("address") or "").strip()
+            h, _, m = addr.partition("/")
+            host = host or h
+            mask = int(m) if (mask is None and str(m).isdigit()) else mask
+        if not (dev and ifname and host) or mask is None:
+            summary["skipped"] += 1
+            continue
+        iface = Interface.objects.filter(device__name=dev, name=ifname).first()
+        ip = IPAddress.objects.filter(host=host, mask_length=int(mask)).first()
+        if iface is None or ip is None:
+            summary["skipped"] += 1
+            continue
+        _, created = IPAddressToInterface.objects.get_or_create(ip_address=ip, interface=iface)
+        if created:
+            summary["assigned"] += 1
+        # Conservative primary IP: only from a loopback, only when unset — never
+        # overwrite an operator's choice or guess from a transit interface.
+        low = ifname.lower()
+        if "loopback" in low or low.startswith("lo"):
+            device = iface.device
+            if ip.ip_version == 4 and device.primary_ip4_id is None:
+                device.primary_ip4 = ip
+                device.save()
+                summary["primary_set"] += 1
+            elif ip.ip_version == 6 and device.primary_ip6_id is None:
+                device.primary_ip6 = ip
+                device.save()
+                summary["primary_set"] += 1
     return summary
 
 
