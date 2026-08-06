@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import forward_nautobot.integrations.forward.adapters as adapters
 from forward_nautobot.integrations.forward.models import ForwardConnectionSettings
-from forward_nautobot.models import ForwardConnectionProfileRecord
+from forward_nautobot.models import (
+    ForwardConnectionProfileRecord,
+    build_sync_scope_fingerprint,
+)
 
 try:
     from forward_nautobot.integrations.forward.adapters import NautobotTargetAdapter
     from forward_nautobot.integrations.forward.client import ForwardClient
     from forward_nautobot.integrations.forward.planner import (
+        ForwardDeviceScope,
         ForwardIngestionPlanner,
         ForwardIngestionRequest,
     )
@@ -18,6 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - local shell without test deps
     NautobotTargetAdapter = None
     ForwardIngestionPlanner = None
     ForwardIngestionRequest = None
+    ForwardDeviceScope = None
     _mock_transport = None
 
 
@@ -32,6 +37,20 @@ def _require_planner():
         import pytest
 
         pytest.skip("Forward planner tests require the full dependency set.")
+
+
+def _scope_fingerprint(
+    *model_names: str,
+    device_vendors: tuple[str, ...] = (),
+    device_types: tuple[str, ...] = (),
+    device_models: tuple[str, ...] = (),
+) -> str:
+    return build_sync_scope_fingerprint(
+        model_names=model_names,
+        device_vendors=device_vendors,
+        device_types=device_types,
+        device_models=device_models,
+    )
 
 
 def test_planner_syncs_rows_with_diffsync():
@@ -65,7 +84,7 @@ def test_planner_syncs_rows_with_diffsync():
     assert plan.write_summary["create"] == 2
     assert plan.diff_summary["create"] == 2
     assert plan.reports[0].query_reference == "forward_devices.nqe"
-    assert plan.reports[0].query_contract_version == "v1"
+    assert plan.reports[0].query_contract_version == "v2"
     assert plan.source_summary["model_counts"]["devices"] == 2
     assert plan.target_summary["planned_counts"]["devices"] == 0
     assert plan.write_plan.slice_policies["devices"]["missing_row_policy"] == "mark_inactive"
@@ -153,14 +172,14 @@ def test_planner_uses_diff_rows_for_query_id_backed_slices(monkeypatch):
                 "location": "Site A",
                 "vendor": "Vendor.CISCO",
                 "model": "N9K",
-                "device_type": "DeviceType.SWITCH",
+                "platform": "CISCO_NXOS",
             },
             "after": {
                 "name": "device-1",
                 "location": "Site B",
                 "vendor": "Vendor.CISCO",
                 "model": "N9K",
-                "device_type": "DeviceType.SWITCH",
+                "platform": "CISCO_NXOS",
             },
         },
         {
@@ -170,7 +189,7 @@ def test_planner_uses_diff_rows_for_query_id_backed_slices(monkeypatch):
                 "location": "Site B",
                 "vendor": "Vendor.CISCO",
                 "model": "N9K",
-                "device_type": "DeviceType.SWITCH",
+                "platform": "CISCO_NXOS",
             },
             "after": {},
         },
@@ -203,6 +222,7 @@ def test_planner_uses_diff_rows_for_query_id_backed_slices(monkeypatch):
                 name="primary",
                 network_id="net-1",
                 last_snapshot_id="snap-1",
+                last_scope_fingerprint=_scope_fingerprint("devices"),
             ),
         )
     )
@@ -220,7 +240,7 @@ def test_planner_uses_diff_rows_for_query_id_backed_slices(monkeypatch):
     assert plan.diff_detail["slices"]["devices"]["mode"] == "delta"
 
 
-def test_planner_passes_dependent_scope_parameters(monkeypatch):
+def test_planner_uses_unparameterized_saved_queries_for_dependent_slices(monkeypatch):
     _require_planner()
     client = ForwardClient(
         ForwardConnectionSettings(
@@ -256,18 +276,18 @@ def test_planner_passes_dependent_scope_parameters(monkeypatch):
                 }
             ]
         if query_spec.reference.endswith("/forward_devices"):
-            assert query_spec.parameters == {"forward_location_names": ["SITE-ALPHA"]}
+            assert query_spec.parameters == {}
             return [
                 {
                     "name": "device-1",
                     "location": "SITE-ALPHA",
                     "vendor": "Vendor.CISCO",
                     "model": "N9K",
-                    "device_type": "DeviceType.SWITCH",
+                    "platform": "CISCO_NXOS",
                 }
             ]
         if query_spec.reference.endswith("/forward_interfaces"):
-            assert query_spec.parameters == {"forward_device_names": ["device-1"]}
+            assert query_spec.parameters == {}
             return [
                 {
                     "device": "device-1",
@@ -307,12 +327,10 @@ def test_planner_passes_dependent_scope_parameters(monkeypatch):
     )
 
     assert plan.reports[0].query_reference == "forward_locations.nqe"
-    assert calls[0][1] == {}
-    assert calls[1][1] == {"forward_location_names": ["SITE-ALPHA"]}
-    assert calls[2][1] == {"forward_device_names": ["device-1"]}
+    assert calls and all(parameters == {} for _reference, parameters in calls)
 
 
-def test_planner_scopes_platform_and_device_type_queries_by_location(monkeypatch):
+def test_planner_uses_unparameterized_saved_queries_for_core_dependencies(monkeypatch):
     _require_planner()
     client = ForwardClient(
         ForwardConnectionSettings(
@@ -350,31 +368,31 @@ def test_planner_scopes_platform_and_device_type_queries_by_location(monkeypatch
                 }
             ]
         if query_spec.reference.endswith("/forward_platforms"):
-            assert query_spec.parameters == {"forward_location_names": ["SITE-ALPHA"]}
+            assert query_spec.parameters == {}
             return [
                 {
-                    "name": "NX-9000",
+                    "name": "CISCO_NXOS",
                     "manufacturer": "Cisco",
-                    "device_type": "NX-9000",
                 }
             ]
         if query_spec.reference.endswith("/forward_device_types"):
-            assert query_spec.parameters == {"forward_location_names": ["SITE-ALPHA"]}
+            assert query_spec.parameters == {}
             return [
                 {
+                    "manufacturer": "Cisco",
                     "name": "NX-9000",
                     "color": "9e9e9e",
                 }
             ]
         if query_spec.reference.endswith("/forward_devices"):
-            assert query_spec.parameters == {"forward_location_names": ["SITE-ALPHA"]}
+            assert query_spec.parameters == {}
             return [
                 {
                     "name": "device-1",
                     "location": "SITE-ALPHA",
                     "vendor": "Vendor.CISCO",
                     "model": "N9K",
-                    "device_type": "DeviceType.SWITCH",
+                    "platform": "CISCO_NXOS",
                 }
             ]
         raise AssertionError(f"unexpected query reference: {query_spec.reference}")
@@ -407,10 +425,7 @@ def test_planner_scopes_platform_and_device_type_queries_by_location(monkeypatch
         "forward_device_types.nqe",
         "forward_devices.nqe",
     ]
-    assert calls[0][1] == {}
-    assert calls[1][1] == {"forward_location_names": ["SITE-ALPHA"]}
-    assert calls[2][1] == {"forward_location_names": ["SITE-ALPHA"]}
-    assert calls[3][1] == {"forward_location_names": ["SITE-ALPHA"]}
+    assert calls and all(parameters == {} for _reference, parameters in calls)
 
 
 def test_planner_reuses_loaded_target_state_for_each_slice(monkeypatch):
@@ -443,7 +458,7 @@ def test_planner_reuses_loaded_target_state_for_each_slice(monkeypatch):
                     "location": "SITE-ALPHA",
                     "vendor": "Vendor.CISCO",
                     "model": "N9K",
-                    "device_type": "DeviceType.SWITCH",
+                    "platform": "CISCO_NXOS",
                 }
             ]
         raise AssertionError(f"unexpected query call: {run_calls['count']}")
@@ -534,6 +549,7 @@ def test_planner_skips_nqe_when_snapshot_unchanged(monkeypatch):
                 name="primary",
                 network_id="net-1",
                 last_snapshot_id="snap-2",
+                last_scope_fingerprint=_scope_fingerprint("devices"),
             ),
         )
     )
@@ -545,8 +561,8 @@ def test_planner_skips_nqe_when_snapshot_unchanged(monkeypatch):
     assert plan.diff_detail["baseline_snapshot_id"] == "snap-2"
 
 
-def test_planner_propagates_sort_keys_to_nqe(monkeypatch):
-    """Planner passes mapping.identity_fields as sortKeys for stable pagination."""
+def test_planner_omits_sort_keys_for_saved_query_compatibility(monkeypatch):
+    """Planner leaves ordering to primary-keyed saved queries and NQE diffs."""
     _require_planner()
     captured_sort_keys: list = []
 
@@ -593,7 +609,7 @@ def test_planner_propagates_sort_keys_to_nqe(monkeypatch):
         )
     )
     assert plan is not None
-    assert "name" in captured_sort_keys, f"sort_keys not propagated; captured: {captured_sort_keys}"
+    assert captured_sort_keys == []
 
 
 def test_planner_diff_error_is_attributed_without_full_query_fallback(monkeypatch):
@@ -649,9 +665,275 @@ def test_planner_diff_error_is_attributed_without_full_query_fallback(monkeypatc
                     name="primary",
                     network_id="net-1",
                     last_snapshot_id="snap-old",
+                    last_scope_fingerprint=_scope_fingerprint("locations"),
                 ),
             )
         )
+
+
+def test_planner_applies_device_scope_to_direct_and_shared_rows():
+    _require_planner()
+    from forward_nautobot.integrations.forward.registry import get_model_mapping
+
+    request = ForwardIngestionRequest(
+        connection=ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            network_id="net-1",
+        ),
+        model_names=("devices", "interfaces"),
+        device_vendors=("EXAMPLE",),
+        device_types=("ROUTER",),
+        device_models=("MODEL-A",),
+    )
+
+    scope = ForwardDeviceScope.from_device_rows(
+        [
+            {
+                "name": "device-1",
+                "vendor": "Vendor.EXAMPLE",
+                "device_type": "DeviceType.ROUTER",
+                "model": "MODEL-A",
+            },
+            {
+                "name": "device-2",
+                "vendor": "Vendor.OTHER",
+                "device_type": "DeviceType.SWITCH",
+                "model": "MODEL-B",
+            },
+        ],
+        request,
+    )
+    direct_rows, direct_excluded = ForwardIngestionPlanner._filter_rows_for_scope(
+        mapping=get_model_mapping("interfaces"),
+        rows=[{"device": "device-1"}, {"device": "device-2"}],
+        is_diff=False,
+        scope=scope,
+    )
+    shared_rows, shared_excluded = ForwardIngestionPlanner._filter_rows_for_scope(
+        mapping=get_model_mapping("vrfs"),
+        rows=[
+            {"name": "in-scope", "scope_devices": ["device-1", "device-2"]},
+            {"name": "out-of-scope", "scope_devices": ["device-2"]},
+        ],
+        is_diff=False,
+        scope=scope,
+    )
+
+    assert direct_rows == [{"device": "device-1"}]
+    assert direct_excluded == 1
+    assert [row["name"] for row in shared_rows] == ["in-scope"]
+    assert shared_excluded == 1
+
+    prefix_rows, prefix_excluded = ForwardIngestionPlanner._filter_rows_for_scope(
+        mapping=get_model_mapping("ipv4_prefixes"),
+        rows=[{"prefix": "192.0.2.0/24", "vrf": "example"}],
+        is_diff=False,
+        scope=scope,
+    )
+    assert prefix_rows == []
+    assert prefix_excluded == 1
+
+
+def test_planner_filter_change_forces_async_full_query_even_on_same_snapshot(monkeypatch):
+    _require_planner()
+    calls = {"full": 0, "diff": 0}
+
+    monkeypatch.setattr(
+        ForwardClient,
+        "resolve_snapshot_id",
+        lambda self, network_id, snapshot_id: "snap-1",
+    )
+    monkeypatch.setattr(
+        ForwardClient,
+        "resolve_query_spec",
+        lambda self, query_spec: query_spec.with_query_id("query-123", "commit-abc"),
+    )
+
+    def _run_full(self, **kwargs):
+        calls["full"] += 1
+        assert kwargs["query_spec"].parameters == {}
+        return [
+            {
+                "name": "device-1",
+                "location": "SITE-ALPHA",
+                "vendor": "Vendor.EXAMPLE",
+                "device_type": "DeviceType.ROUTER",
+                "model": "MODEL-A",
+                "platform": "EXAMPLE_OS",
+            }
+        ]
+
+    def _run_diff(self, **kwargs):
+        calls["diff"] += 1
+        return []
+
+    monkeypatch.setattr(ForwardClient, "run_nqe_query", _run_full)
+    monkeypatch.setattr(ForwardClient, "run_nqe_diff", _run_diff)
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=_mock_transport(),
+    )
+    plan = ForwardIngestionPlanner(client).run(
+        ForwardIngestionRequest(
+            connection=client.settings,
+            model_names=("devices",),
+            fetch_all=False,
+            device_vendors=("EXAMPLE",),
+            connection_profile=ForwardConnectionProfileRecord(
+                name="primary",
+                network_id="net-1",
+                last_snapshot_id="snap-1",
+                last_scope_fingerprint=_scope_fingerprint("devices"),
+            ),
+        )
+    )
+
+    assert calls == {"full": 2, "diff": 0}
+    assert plan.reports[0].query_mode == "bundled_nqe_query_id_async"
+    assert plan.diff_detail["scope_changed"] is True
+    assert plan.diff_detail["filtered_scope"] is True
+
+
+def test_planner_suppresses_filtered_diff_deletes(monkeypatch):
+    _require_planner()
+    selected_vendor = ("EXAMPLE",)
+
+    monkeypatch.setattr(
+        ForwardClient,
+        "resolve_snapshot_id",
+        lambda self, network_id, snapshot_id: "snap-new",
+    )
+    monkeypatch.setattr(
+        ForwardClient,
+        "resolve_query_spec",
+        lambda self, query_spec: query_spec.with_query_id("query-123", "commit-abc"),
+    )
+    monkeypatch.setattr(
+        ForwardClient,
+        "run_nqe_query",
+        lambda self, **kwargs: [
+            {
+                "name": "device-1",
+                "location": "SITE-ALPHA",
+                "vendor": "Vendor.EXAMPLE",
+                "device_type": "DeviceType.ROUTER",
+                "model": "MODEL-A",
+                "platform": "EXAMPLE_OS",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        ForwardClient,
+        "run_nqe_diff",
+        lambda self, **kwargs: [
+            {
+                "type": "deleted",
+                "before": {
+                    "name": "device-1",
+                    "location": "SITE-ALPHA",
+                    "vendor": "Vendor.EXAMPLE",
+                    "model": "MODEL-A",
+                    "platform": "EXAMPLE_OS",
+                },
+                "after": {},
+            }
+        ],
+    )
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=_mock_transport(),
+    )
+    plan = ForwardIngestionPlanner(client).run(
+        ForwardIngestionRequest(
+            connection=client.settings,
+            model_names=("devices",),
+            fetch_all=False,
+            device_vendors=selected_vendor,
+            connection_profile=ForwardConnectionProfileRecord(
+                name="primary",
+                network_id="net-1",
+                last_snapshot_id="snap-old",
+                last_scope_fingerprint=_scope_fingerprint(
+                    "devices", device_vendors=selected_vendor
+                ),
+            ),
+        )
+    )
+
+    assert plan.write_plan.operations == ()
+    assert plan.write_plan.filtered_scope is True
+    assert plan.write_summary["filtered_out"] == 1
+    assert plan.diff_detail["slices"]["devices"]["rows"][0]["action"] == (
+        "filtered-delete-suppressed"
+    )
+
+
+def test_planner_falls_back_to_bundled_inline_async_when_query_is_unpublished(monkeypatch):
+    _require_planner()
+    from forward_nautobot.integrations.forward.exceptions import ForwardClientError
+
+    monkeypatch.setattr(
+        ForwardClient,
+        "resolve_snapshot_id",
+        lambda self, network_id, snapshot_id: "snap-1",
+    )
+    monkeypatch.setattr(
+        ForwardClient,
+        "resolve_query_spec",
+        lambda self, query_spec: (_ for _ in ()).throw(
+            ForwardClientError("query path was not found")
+        ),
+    )
+
+    def _run_inline(self, **kwargs):
+        query_spec = kwargs["query_spec"]
+        assert query_spec.execution_mode == "query"
+        assert "@contract-version v2" in query_spec.query_text
+        assert query_spec.parameters == {}
+        return [{"name": "SITE-A", "city": "Example City", "country": "United States"}]
+
+    monkeypatch.setattr(ForwardClient, "run_nqe_query", _run_inline)
+    monkeypatch.setattr(
+        ForwardClient,
+        "run_nqe_diff",
+        lambda self, **kwargs: (_ for _ in ()).throw(
+            AssertionError("inline query text cannot use NQE diffs")
+        ),
+    )
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=_mock_transport(),
+    )
+    plan = ForwardIngestionPlanner(client).run(
+        ForwardIngestionRequest(
+            connection=client.settings,
+            model_names=("locations",),
+            fetch_all=False,
+        )
+    )
+
+    assert plan.reports[0].query_mode == "bundled_nqe_inline_async"
+    assert plan.reports[0].row_count == 1
+    assert "<inline query>" == plan.diff_detail["slices"]["locations"]["resolved_query_reference"]
+    assert any("diffs are disabled" in note for note in plan.reports[0].notes)
 
 
 def test_compute_tiers_detects_query_parameter_cycle():
@@ -684,9 +966,8 @@ def test_compute_tiers_levels_default_slices():
     mappings = get_model_mappings(("locations", "platforms", "device_types", "devices"))
     tiers = ForwardIngestionPlanner._compute_tiers(mappings)
     slugs_by_tier = [{m.slug for m in tier} for tier in tiers]
-    # locations first; platforms/device_types share a tier; devices last.
-    assert slugs_by_tier[0] == {"locations"}
-    assert {"platforms", "device_types"} <= slugs_by_tier[1]
+    # Query dependencies are now encoded in rows, so independent prerequisites share a tier.
+    assert slugs_by_tier[0] == {"locations", "platforms", "device_types"}
     assert "devices" in slugs_by_tier[-1]
 
 

@@ -135,7 +135,7 @@ def _mock_transport():
                                 "location": "Site A",
                                 "vendor": "Vendor.CISCO",
                                 "model": "N9K",
-                                "device_type": "DeviceType.SWITCH",
+                                "platform": "CISCO_NXOS",
                             }
                         },
                         {
@@ -145,7 +145,7 @@ def _mock_transport():
                                 "location": "Site B",
                                 "vendor": "Vendor.CISCO",
                                 "model": "N9K",
-                                "device_type": "DeviceType.SWITCH",
+                                "platform": "CISCO_NXOS",
                             }
                         },
                     ],
@@ -181,7 +181,7 @@ def _mock_transport():
                                 "location": "Site A",
                                 "vendor": "Vendor.CISCO",
                                 "model": "N9K",
-                                "device_type": "DeviceType.SWITCH",
+                                "platform": "CISCO_NXOS",
                             }
                         },
                         {
@@ -191,7 +191,7 @@ def _mock_transport():
                                 "location": "Site B",
                                 "vendor": "Vendor.CISCO",
                                 "model": "N9K",
-                                "device_type": "DeviceType.SWITCH",
+                                "platform": "CISCO_NXOS",
                             }
                         },
                     ],
@@ -981,12 +981,80 @@ def test_request_nqe_execution_omits_sort_keys_when_empty(monkeypatch):
     assert "query" not in captured_payload
 
 
-def test_forward_query_spec_rejects_inline_query_text():
+def test_run_nqe_diff_sends_only_supported_identity_and_page_options():
     _require_client()
-    with pytest.raises(ValueError, match="Inline NQE query text is not supported"):
-        ForwardQuerySpec(
-            query_text="foreach device in network.devices select { name: device.name }"
+    captured_payload: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/nqe-diffs/snap-before/snap-after"
+        captured_payload.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json={"rows": [], "totalNumRows": 0})
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert (
+        client.run_nqe_diff(
+            query_id="query-123",
+            commit_id="commit-abc",
+            before_snapshot_id="snap-before",
+            after_snapshot_id="snap-after",
+            limit=25,
+            offset=5,
+            fetch_all=False,
         )
+        == []
+    )
+    assert captured_payload == {
+        "queryId": "query-123",
+        "commitId": "commit-abc",
+        "options": {"limit": 25, "offset": 5},
+    }
+
+
+def test_forward_query_spec_accepts_exactly_one_inline_query_reference():
+    _require_client()
+    spec = ForwardQuerySpec(
+        query_text="foreach device in network.devices select { name: device.name }"
+    )
+
+    assert spec.execution_mode == "query"
+    assert spec.reference == "<inline query>"
+    with pytest.raises(ValueError, match="Exactly one"):
+        ForwardQuerySpec(
+            query_text="foreach device in network.devices select { name: device.name }",
+            query_id="query-123",
+        )
+
+
+def test_client_runs_inline_nqe_through_async_execution():
+    _require_client()
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+            snapshot_id="snap-2",
+        ),
+        transport=_mock_transport(),
+    )
+
+    rows = client.run_nqe_query(
+        query_spec=ForwardQuerySpec(
+            query_text="@query f() = foreach x in [1] select { id: toString(x) };"
+        ),
+        fetch_all=False,
+    )
+
+    assert [row["id"] for row in rows] == ["inline-r1", "inline-r2"]
 
 
 def test_counters_track_attempts_retries_and_429():
@@ -1054,3 +1122,121 @@ def test_counters_count_nqe_query_calls():
         fetch_all=False,
     )
     assert client.counters.as_dict()["nqe_query_calls"] == 1
+
+
+def test_client_fetches_concrete_committed_query_source():
+    _require_client()
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, str(request.url.params)))
+        if request.url.path == "/api/nqe/repos/org/commits/head/queries":
+            return httpx.Response(
+                200,
+                json={
+                    "queries": [
+                        {
+                            "path": "/forward_nautobot_validation/forward_devices",
+                            "queryId": "query-123",
+                            "lastCommit": {"id": "commit-abc"},
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/api/nqe/repos/org/commits/commit-abc/queries":
+            assert request.url.params["path"] == ("/forward_nautobot_validation/forward_devices")
+            assert request.url.params["with"] == "sourceCode"
+            return httpx.Response(
+                200,
+                json={
+                    "queries": [
+                        {
+                            "path": "/forward_nautobot_validation/forward_devices",
+                            "queryId": "query-123",
+                            "sourceCode": "@query f() = foreach x in [1] select x;",
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(base_url="https://fwd.example", network_id="net-1"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    query = client.get_committed_nqe_query(
+        query_path="/forward_nautobot_validation/forward_devices",
+        require_source_code=True,
+    )
+
+    assert query["queryId"] == "query-123"
+    assert query["sourceCode"].startswith("@query")
+    assert len(calls) == 2
+
+
+def test_client_uses_org_nqe_change_and_commit_contracts():
+    _require_client()
+    actions: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/nqe/queries/query-123/history":
+            return httpx.Response(200, json={"commits": [{"id": "commit-abc"}]})
+        if path == "/api/users/current/nqe/changes":
+            action = request.url.params["action"]
+            actions.append(action)
+            if action == "addDir":
+                assert request.url.params["path"] == "/forward_nautobot_validation/"
+                assert not request.content
+                return httpx.Response(204)
+            assert request.url.params["path"].startswith("/forward_nautobot_validation/")
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["sourceCode"].startswith("@query")
+            if action == "editQuery":
+                assert payload["basis"] == {
+                    "queryId": "query-123",
+                    "commitId": "commit-abc",
+                }
+            return httpx.Response(204)
+        if path == "/api/nqe/repos/org/commits":
+            actions.append("commit")
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["paths"] == [
+                "/forward_nautobot_validation/forward_devices",
+                "/forward_nautobot_validation/forward_locations",
+            ]
+            assert payload["accessSettings"] == []
+            assert payload["message"] == {"title": "Publish queries", "body": "details"}
+            return httpx.Response(204)
+        if path == "/api/nqe/repos/org/commits/head":
+            return httpx.Response(200, json={"id": "commit-new"})
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(base_url="https://fwd.example", network_id="net-1"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert client.get_nqe_query_history("query-123") == [{"id": "commit-abc"}]
+    client.add_org_nqe_directory(directory_path="/forward_nautobot_validation")
+    client.add_org_nqe_query(
+        query_path="/forward_nautobot_validation/forward_locations",
+        source_code="@query f() = foreach x in [1] select x;",
+    )
+    client.edit_org_nqe_query(
+        query_path="/forward_nautobot_validation/forward_devices",
+        source_code="@query f() = foreach x in [2] select x;",
+        query_id="query-123",
+        commit_id="commit-abc",
+    )
+    commit_id = client.commit_org_nqe_queries(
+        query_paths=[
+            "/forward_nautobot_validation/forward_devices",
+            "/forward_nautobot_validation/forward_locations",
+        ],
+        message="Publish queries\ndetails",
+    )
+
+    assert commit_id == "commit-new"
+    assert actions == ["addDir", "addQuery", "editQuery", "commit"]

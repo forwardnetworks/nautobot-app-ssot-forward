@@ -12,16 +12,16 @@ def test_write_planner_surfaces_create_intent_for_raw_rows():
         {
             "name": "device-1",
             "location": "Site A",
-            "vendor": "Vendor.CISCO",
-            "model": "N9K",
-            "device_type": "DeviceType.SWITCH",
+            "vendor": "Example Manufacturer",
+            "model": "MODEL-A",
+            "platform": "EXAMPLE_OS",
         },
         {
             "name": "device-2",
             "location": "Site B",
-            "vendor": "Vendor.CISCO",
-            "model": "N9K",
-            "device_type": "DeviceType.SWITCH",
+            "vendor": "Example Manufacturer",
+            "model": "MODEL-A",
+            "platform": "EXAMPLE_OS",
         },
     ]
 

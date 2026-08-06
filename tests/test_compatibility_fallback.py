@@ -34,9 +34,9 @@ def test_forward_integration_imports_without_diffsync():
                 {
                     "name": "device-1",
                     "location": "site-a",
-                    "vendor": "Vendor.CISCO",
-                    "model": "N9K",
-                    "device_type": "DeviceType.SWITCH",
+                    "vendor": "Example Manufacturer",
+                    "model": "MODEL-A",
+                    "platform": "EXAMPLE_OS",
                 }
             ],
         )

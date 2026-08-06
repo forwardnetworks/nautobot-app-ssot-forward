@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 import httpx
 
+from ... import __version__
 from .exceptions import ForwardClientError, ForwardConfigurationError
 from .models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings, ForwardQuerySpec
 
@@ -66,7 +67,7 @@ class ForwardClient:
 
     settings: ForwardConnectionSettings
     transport: httpx.BaseTransport | None = None
-    _resolved_query_cache: dict[tuple[str, str, str], dict[str, Any]] = field(
+    _resolved_query_cache: dict[tuple[str, str, str, bool], dict[str, Any]] = field(
         default_factory=dict, init=False, repr=False
     )
     _resolved_query_index_cache: dict[tuple[str, str], dict[str, Any]] = field(
@@ -84,6 +85,10 @@ class ForwardClient:
     _snapshots_cache: dict[tuple[str, bool, int], list[dict[str, Any]]] = field(
         default_factory=dict, init=False, repr=False
     )
+    _nqe_query_history_cache: dict[str, list[dict[str, Any]]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _org_nqe_head_commit_id_cache: str = field(default="", init=False, repr=False)
     _last_request_completed_at: float | None = field(default=None, init=False, repr=False)
     _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
     counters: ForwardClientCounters = field(
@@ -139,7 +144,7 @@ class ForwardClient:
         return {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "nautobot-app-ssot-forward/0.1.0",
+            "User-Agent": f"nautobot-app-ssot-forward/{__version__}",
         }
 
     def _request(
@@ -384,43 +389,69 @@ class ForwardClient:
         repository: str = "org",
         query_path: str,
         commit_id: str = "head",
+        require_source_code: bool = False,
     ) -> dict[str, Any]:
         repository = str(repository or "org").strip() or "org"
         query_path = self._normalize_query_path(query_path)
         commit_id = str(commit_id or "head").strip() or "head"
         if not query_path:
             raise ForwardConfigurationError("Forward NQE query path is required.")
-        cache_key = (repository, query_path, commit_id)
+        cache_key = (repository, query_path, commit_id, bool(require_source_code))
         cached_query = self._resolved_query_cache.get(cache_key)
         if cached_query is not None:
             return dict(cached_query)
-        query_index = self.get_nqe_repository_query_index(
-            repository=repository, commit_id=commit_id
-        )
-        indexed_query = query_index.get("by_path", {}).get(query_path)
+        indexed_query = None
+        if commit_id == "head":
+            query_index = self.get_nqe_repository_query_index(
+                repository=repository,
+                commit_id=commit_id,
+            )
+            indexed_query = query_index.get("by_path", {}).get(query_path)
         if isinstance(indexed_query, dict) and indexed_query.get("queryId"):
             query = dict(indexed_query)
             if commit_id == "head":
                 query.setdefault("lastCommitId", "")
-            self._resolved_query_cache[cache_key] = dict(query)
-            return query
+            has_source = any(query.get(key) for key in ("sourceCode", "source", "query"))
+            if not require_source_code or has_source:
+                self._resolved_query_cache[cache_key] = dict(query)
+                return query
+            commit_id = (
+                str(
+                    query.get("lastCommitId") or (query.get("lastCommit") or {}).get("id") or "head"
+                ).strip()
+                or "head"
+            )
+            cache_key = (repository, query_path, commit_id, True)
         response = self._request(
             "GET",
             f"/nqe/repos/{quote(repository, safe='')}/commits/{quote(commit_id, safe='')}/queries",
-            params={"path": query_path},
+            params={
+                "path": query_path,
+                **({"with": "sourceCode"} if require_source_code else {}),
+            },
         )
         data = response.json() or {}
         if isinstance(data, dict) and isinstance(data.get("queries"), list):
             for row in data["queries"]:
                 if isinstance(row, dict) and str(row.get("path") or "").strip() == query_path:
-                    self._resolved_query_cache[cache_key] = dict(row)
-                    return row
+                    normalized = dict(row)
+                    normalized.setdefault(
+                        "lastCommitId",
+                        str((normalized.get("lastCommit") or {}).get("id") or "").strip(),
+                    )
+                    self._resolved_query_cache[cache_key] = dict(normalized)
+                    return normalized
             raise ForwardClientError(
                 f"Forward NQE repository lookup did not include `{query_path}`."
             )
         if isinstance(data, dict):
-            self._resolved_query_cache[cache_key] = dict(data)
-            return data
+            normalized = dict(data)
+            normalized.setdefault(
+                "lastCommitId",
+                str((normalized.get("lastCommit") or {}).get("id") or "").strip(),
+            )
+            self._resolved_query_cache[cache_key] = dict(normalized)
+            return normalized
         raise ForwardClientError(
             f"Forward NQE repository lookup for `{query_path}` returned an invalid response."
         )
@@ -472,6 +503,116 @@ class ForwardClient:
         index = {"by_path": by_path}
         self._resolved_query_index_cache[cache_key] = dict(index)
         return index
+
+    def _invalidate_nqe_query_read_caches(self) -> None:
+        self._resolved_query_cache.clear()
+        self._resolved_query_index_cache.clear()
+        self._nqe_query_history_cache.clear()
+        self._org_nqe_head_commit_id_cache = ""
+
+    def get_nqe_query_history(self, query_id: str) -> list[dict[str, Any]]:
+        query_id = str(query_id or "").strip()
+        if not query_id:
+            return []
+        cached = self._nqe_query_history_cache.get(query_id)
+        if cached is not None:
+            return [dict(row) for row in cached]
+        response = self._request(
+            "GET",
+            f"/nqe/queries/{quote(query_id, safe='')}/history",
+        )
+        data = response.json() or {}
+        rows = data.get("commits") if isinstance(data, dict) else []
+        normalized = [dict(row) for row in (rows or []) if isinstance(row, dict)]
+        self._nqe_query_history_cache[query_id] = normalized
+        return [dict(row) for row in normalized]
+
+    def add_org_nqe_query(self, *, query_path: str, source_code: str) -> None:
+        query_path = self._normalize_query_path(query_path)
+        if not query_path:
+            raise ForwardConfigurationError("Forward NQE query path is required.")
+        self._invalidate_nqe_query_read_caches()
+        self._request(
+            "POST",
+            "/users/current/nqe/changes",
+            params={"action": "addQuery", "path": query_path},
+            json_body={"sourceCode": str(source_code)},
+        )
+
+    def add_org_nqe_directory(self, *, directory_path: str) -> None:
+        directory_path = self._normalize_query_path(directory_path).rstrip("/") + "/"
+        if directory_path == "/":
+            return
+        self._invalidate_nqe_query_read_caches()
+        self._request(
+            "POST",
+            "/users/current/nqe/changes",
+            params={"action": "addDir", "path": directory_path},
+        )
+
+    def edit_org_nqe_query(
+        self,
+        *,
+        query_path: str,
+        source_code: str,
+        query_id: str,
+        commit_id: str,
+    ) -> None:
+        query_path = self._normalize_query_path(query_path)
+        query_id = str(query_id or "").strip()
+        commit_id = str(commit_id or "").strip()
+        if not query_path:
+            raise ForwardConfigurationError("Forward NQE query path is required.")
+        if not query_id or not commit_id:
+            raise ForwardConfigurationError(
+                "Forward NQE query ID and commit ID are required to update a query."
+            )
+        self._invalidate_nqe_query_read_caches()
+        self._request(
+            "POST",
+            "/users/current/nqe/changes",
+            params={"action": "editQuery", "path": query_path},
+            json_body={
+                "sourceCode": str(source_code),
+                "basis": {"queryId": query_id, "commitId": commit_id},
+            },
+        )
+
+    def get_org_nqe_head_commit_id(self) -> str:
+        if self._org_nqe_head_commit_id_cache:
+            return self._org_nqe_head_commit_id_cache
+        response = self._request("GET", "/nqe/repos/org/commits/head")
+        data = response.json()
+        if isinstance(data, dict):
+            commit_id = str(data.get("id") or data.get("commitId") or "").strip()
+        else:
+            commit_id = str(data or "").strip()
+        self._org_nqe_head_commit_id_cache = commit_id
+        return commit_id
+
+    def commit_org_nqe_queries(self, *, query_paths: list[str], message: str) -> str:
+        normalized_paths = list(
+            dict.fromkeys(
+                path for value in query_paths if (path := self._normalize_query_path(value))
+            )
+        )
+        if not normalized_paths:
+            return self.get_org_nqe_head_commit_id()
+        self._invalidate_nqe_query_read_caches()
+        title, _, body = str(message or "Update bundled NQE queries").strip().partition("\n")
+        self._request(
+            "POST",
+            "/nqe/repos/org/commits",
+            json_body={
+                "paths": normalized_paths,
+                "accessSettings": [],
+                "message": {
+                    "title": title.strip() or "Update bundled NQE queries",
+                    "body": body.strip(),
+                },
+            },
+        )
+        return self.get_org_nqe_head_commit_id()
 
     def resolve_query_spec(self, query_spec: ForwardQuerySpec) -> ForwardQuerySpec:
         if query_spec.query_path and query_spec.resolved_query_id:
@@ -704,7 +845,6 @@ class ForwardClient:
         before_snapshot_id: str,
         after_snapshot_id: str,
         commit_id: str | None = None,
-        parameters: dict[str, Any] | None = None,
         limit: int | None = None,
         offset: int = 0,
         fetch_all: bool = False,
@@ -730,8 +870,6 @@ class ForwardClient:
             }
             if commit_id:
                 payload["commitId"] = commit_id
-            if parameters:
-                payload["parameters"] = parameters
             response = self._request(
                 "POST",
                 f"/nqe-diffs/{quote(before_snapshot_id, safe='')}/{quote(after_snapshot_id, safe='')}",
@@ -831,21 +969,23 @@ class ForwardClient:
             if raw_snapshot and raw_snapshot != LATEST_PROCESSED_SNAPSHOT
             else self.resolve_snapshot_id(network_id, raw_snapshot)
         )
-        if not query_spec.resolved_query_id:
+        if query_spec.query_path and not query_spec.resolved_query_id:
             query_spec = self.resolve_query_spec(query_spec)
         payload: dict[str, Any] = {}
         query_id = query_spec.resolved_query_id or query_spec.query_id
         commit_id = query_spec.resolved_commit_id or query_spec.commit_id
-        if not query_id:
+        if not query_id and not query_spec.query_text:
             raise ForwardConfigurationError(
-                "Forward 26.6+ async NQE execution requires a resolved query ID. "
-                "Publish the NQE and use `query_path` or `query_id`."
+                "Forward async NQE execution requires query text or a resolved query ID."
             )
         if query_spec.parameters:
             payload["parameters"] = dict(query_spec.parameters)
-        payload["queryId"] = query_id
-        if commit_id:
-            payload["commitId"] = commit_id
+        if query_id:
+            payload["queryId"] = query_id
+            if commit_id:
+                payload["commitId"] = commit_id
+        else:
+            payload["query"] = str(query_spec.query_text)
         if query_spec.sort_keys:
             payload["sortKeys"] = [
                 {"columnName": col, "order": "ASC"} for col in query_spec.sort_keys

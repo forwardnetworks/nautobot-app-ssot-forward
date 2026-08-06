@@ -1,22 +1,18 @@
 /**
  * @intent Forward devices
  * @description Device rows for Nautobot ingestion testing and initial device mapping.
- * @contract-version v1
+ * @contract-version v2
  */
 
 @primaryKey(name)
-@query
-f(forward_location_names: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isEmpty(forward_location_names)
-  || !isPresent(device.locationName)
-  || device.locationName in forward_location_names
 select {
   name: device.name,
   location: if isPresent(device.locationName) then device.locationName else "",
   vendor: toString(device.platform.vendor),
+  device_type: toString(device.platform.deviceType),
   model: if isPresent(device.platform.model) then device.platform.model else "",
-  device_type: toString(device.platform.deviceType)
-};
+  platform: toString(device.platform.os)
+}

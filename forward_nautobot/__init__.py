@@ -30,7 +30,7 @@ class ForwardNautobotConfig(NautobotAppConfig):
     description = (
         "Forward Field Integration — sync Forward Networks data into Nautobot through SSoT."
     )
-    version = "0.5.0"
+    version = "0.6.0"
     author = "Forward Networks"
     author_email = "support@forwardnetworks.com"
     base_url = "forward"
@@ -42,6 +42,7 @@ class ForwardNautobotConfig(NautobotAppConfig):
 
 
 config = ForwardNautobotConfig
+__version__ = ForwardNautobotConfig.version
 
 
 def __getattr__(name: str):
@@ -83,5 +84,6 @@ __all__ = [
     "FORWARD_PROFILE_FORM_FIELDS",
     "DELETE_POLICY_CHOICES",
     "config",
+    "__version__",
     "menu",
 ]

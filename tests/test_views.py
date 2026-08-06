@@ -56,7 +56,7 @@ def test_slice_detail_view_renders_raw_packaged_rows():
     assert "Forward Slice Detail" in text
     assert "devices" in text
     assert "Raw packaged rows" in text
-    assert "cdl1alfabbcn001" in text
+    assert "device-001" in text
     assert "Contract version" in text
 
 

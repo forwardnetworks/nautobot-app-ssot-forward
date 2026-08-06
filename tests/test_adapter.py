@@ -7,9 +7,9 @@ def test_source_adapter_keeps_raw_rows_by_identity():
         {
             "name": "device-1",
             "location": "Site A",
-            "vendor": "Vendor.CISCO",
-            "model": "N9K",
-            "device_type": "DeviceType.SWITCH",
+            "vendor": "Example Manufacturer",
+            "model": "MODEL-A",
+            "platform": "EXAMPLE_OS",
         }
     ]
 

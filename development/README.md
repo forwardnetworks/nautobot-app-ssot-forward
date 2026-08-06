@@ -1,10 +1,13 @@
 # Local Nautobot container stack
 
-A throwaway Nautobot 3.1.6 + Postgres + Redis stack for running the full test
+A throwaway Nautobot 3.1.8 or 3.2.2 + Postgres + Redis stack for running the full test
 suite (the contrib / REST-API / crypto tests that skip without a real Nautobot)
 and exercising the plugin end-to-end. Dev-only credentials; never used in prod.
 
 ```bash
+# Select a supported Nautobot release (default is 3.2.2).
+export NAUTOBOT_VERSION=3.2.2
+
 # Build + start (Nautobot auto-migrates on startup, including this plugin).
 docker compose -p fwdnautobot -f development/docker-compose.yml up -d --build
 
@@ -24,6 +27,8 @@ docker compose -p fwdnautobot -f development/docker-compose.yml \
 # Tear down (removes the ephemeral database volume).
 docker compose -p fwdnautobot -f development/docker-compose.yml down -v
 ```
+
+Repeat the stack with `NAUTOBOT_VERSION=3.1.8` for the other supported release line.
 
 The REST API is served at `http://localhost:8080/api/plugins/forward/` once you
 run the web server (`nautobot-server runserver 0.0.0.0:8080` inside the

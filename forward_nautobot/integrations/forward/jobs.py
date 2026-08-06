@@ -17,6 +17,7 @@ from ...models import (
 from .client import ForwardClient
 from .models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings
 from .planner import ForwardIngestionPlanner, ForwardIngestionRequest
+from .query_publishing import publish_bundled_queries
 from .registry import CORE_MODEL_MAPPINGS, get_model_mapping
 from .support import build_support_bundle_pair, classify_failure
 from .write_executor import ForwardNautobotWriteExecutor
@@ -140,7 +141,7 @@ def _iter_persisted_profile_records() -> tuple[ForwardConnectionProfileRecord, .
     if manager is None or not hasattr(manager, "all"):
         return ()
     try:
-        records = manager.all()
+        records = list(manager.all())
     except Exception:  # pragma: no cover - defensive
         return ()
     return tuple(
@@ -249,6 +250,13 @@ def _build_ingestion_request(*, dryrun: bool, **data):
         connection = connection_profile.to_connection_settings()
     else:
         connection = _build_connection_settings(**data)
+
+    def _filter_values(field_name: str) -> tuple[str, ...]:
+        requested = _split_csv(data.get(field_name))
+        if requested or connection_profile is None:
+            return requested
+        return tuple(getattr(connection_profile, field_name, ()) or ())
+
     return ForwardIngestionRequest(
         connection=connection,
         model_names=selected_models,
@@ -256,6 +264,9 @@ def _build_ingestion_request(*, dryrun: bool, **data):
         limit=limit or None,
         snapshot_id=data.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT,
         connection_profile=connection_profile,
+        device_vendors=_filter_values("device_vendors"),
+        device_types=_filter_values("device_types"),
+        device_models=_filter_values("device_models"),
     )
 
 
@@ -310,8 +321,21 @@ def _contrib_include_cables() -> bool:
 def _run_ingestion_plan(*, dryrun: bool, **data):
     request = _build_ingestion_request(dryrun=dryrun, **data)
     client = ForwardClient(request.connection)
+    query_publication: dict = {}
     planner = ForwardIngestionPlanner(client)
     try:
+        if _coerce_bool(data.get("publish_queries")):
+            if dryrun:
+                query_publication = {"status": "skipped", "reason": "SSoT dry run"}
+            else:
+                query_publication = publish_bundled_queries(
+                    client,
+                    overwrite=_coerce_bool(data.get("overwrite_queries")),
+                )
+                if query_publication.get("status") != "pass":
+                    raise RuntimeError(
+                        "Bundled Forward NQE publication/source verification did not pass."
+                    )
         plan = planner.run(request)
     except Exception as exc:
         # A hard failure (auth/TLS/network/NQE) must leave a failure trace on the
@@ -355,7 +379,10 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
             # per model (zero-rows / fraction) by the governor; an operator can
             # force past a block with a recorded override reason.
             profile = request.connection_profile
-            allow_delete = getattr(profile, "effective_delete_policy", "ignore") == "delete"
+            allow_delete = (
+                getattr(profile, "effective_delete_policy", "ignore") == "delete"
+                and not request.filtered_scope
+            )
             override_reason = str(data.get("delete_override_reason") or "").strip()
             controls = DeleteControls(
                 override=bool(override_reason),
@@ -374,6 +401,7 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                     include_cloud=_contrib_include_cloud(),
                     include_cables=_contrib_include_cables(),
                     allow_delete=allow_delete,
+                    filtered_scope=request.filtered_scope,
                     delete_controls=controls,
                 ),
             }
@@ -467,6 +495,9 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                 # a failed/blocked run would let skip-if-same-snapshot skip
                 # re-syncing a snapshot whose write never succeeded.
                 last_snapshot_id=str(plan.reports[0].snapshot_id or "") if is_clean else "",
+                last_scope_fingerprint=(
+                    str(plan.diff_detail.get("current_scope_fingerprint") or "") if is_clean else ""
+                ),
             )
             # Persist run history on EVERY non-dryrun run (clean or not) so the
             # Status/Diagnostics UI reflects failures instead of the last success.
@@ -490,6 +521,7 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
         "support_bundle": bundle,
         "support_bundle_shared": shared_bundle,
         "profile_status": profile_status,
+        "query_publication": query_publication,
     }
     return result, plan, write_execution
 
@@ -561,6 +593,43 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
         required=False,
         default="",
         description="Comma-separated model slugs to include in the sync, or leave blank to use the selected profile.",
+    )
+    device_vendors = StringVar(
+        required=False,
+        default="",
+        description=(
+            "Comma-separated Forward manufacturer enum values; blank uses the selected profile."
+        ),
+    )
+    device_types = StringVar(
+        required=False,
+        default="",
+        description=(
+            "Comma-separated Forward functional device-class enum values; blank uses "
+            "the selected profile."
+        ),
+    )
+    device_models = StringVar(
+        required=False,
+        default="",
+        description=(
+            "Comma-separated exact hardware model values; blank uses the selected profile."
+        ),
+    )
+    publish_queries = BooleanVar(
+        default=False,
+        required=False,
+        description=(
+            "Publish missing bundled NQEs to the organization repository before a non-dry-run sync."
+        ),
+    )
+    overwrite_queries = BooleanVar(
+        default=False,
+        required=False,
+        description=(
+            "With publish_queries, replace committed query source that differs from "
+            "the bundled contract."
+        ),
     )
     profile_name = StringVar(
         required=False,
@@ -654,7 +723,9 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
             "Snapshot": f"Defaults to {LATEST_PROCESSED_SNAPSHOT}.",
             "Profile selection": "Uses a persisted profile by name or the default saved profile when available.",
             "Model selection": "Use selected_models to override a saved profile's enabled model set; leave it blank to use the profile defaults.",
+            "Device population": "Optional manufacturer, functional device-class, and hardware-model allowlists are applied in NQE. Filtered runs never delete or deactivate excluded objects.",
             "Query input": "Bundled Forward NQE contracts only.",
+            "Query lifecycle": "The job can publish and source-verify bundled NQEs explicitly; full snapshots use async query IDs and changed snapshots use strict NQE diffs.",
             "Write behavior": "SSoT dry run plans only; non-dry-run applies supported Nautobot writes.",
         }
 

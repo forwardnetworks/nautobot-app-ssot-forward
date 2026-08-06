@@ -5,11 +5,9 @@
  */
 
 @primaryKey(account_id)
-@query
-f() =
 foreach account in network.cloudAccounts
 select {
   account_id: account.id,
   name: if isPresent(account.name) && account.name != "" then account.name else account.id,
   cloud_type: toString(account.cloudType)
-};
+}

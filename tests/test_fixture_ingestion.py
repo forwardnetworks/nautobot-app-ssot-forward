@@ -48,7 +48,7 @@ def test_fixture_ingestion_syncs_raw_rows_without_normalization():
     assert diff.summary()["create"] == 15
     assert source.count("devices") == 1
     assert target.count("devices") == 1
-    assert target.get_all("devices")[0].dict()["location"] == "DC01_ModernDC-CDL"
+    assert target.get_all("devices")[0].dict()["location"] == "SITE-A"
     assert source.as_support_summary()["model_counts"]["devices"] == 1
     assert target.as_support_summary()["planned_counts"]["devices"] == 1
 

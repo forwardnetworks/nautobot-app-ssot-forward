@@ -1,7 +1,7 @@
 /**
  * @intent Forward modules
  * @description Module rows derived from Forward platform components.
- * @contract-version v1
+ * @contract-version v2
  */
 
 truncate(value: String, max_len: Integer) =
@@ -14,12 +14,9 @@ isNetBoxModuleComponent(component: DevicePart) =
   component.partType == DevicePartType.ROUTING_ENGINE;
 
 @primaryKey(device, module_bay)
-@query
-f(forward_device_names: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isEmpty(forward_device_names) || device.name in forward_device_names
 foreach component in device.platform.components
 where isNetBoxModuleComponent(component)
 let component_name = if isPresent(component.name) && component.name != "" then component.name else null : String
@@ -38,4 +35,4 @@ select {
   serial: if isPresent(component_serial) then truncate(component_serial, 50) else "",
   asset_tag: "",
   description: if isPresent(component_description) then component_description else ""
-};
+}

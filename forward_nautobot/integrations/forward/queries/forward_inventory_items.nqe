@@ -1,7 +1,7 @@
 /**
  * @intent Forward inventory items
  * @description Inventory item rows derived from Forward platform components.
- * @contract-version v1
+ * @contract-version v2
  */
 
 truncate(value: String, max_len: Integer) =
@@ -12,12 +12,9 @@ isInventoryHardwareRole(role_name: String) =
   role_name != "UNMODELED BACKUP DEVICE";
 
 @primaryKey(device, name)
-@query
-f(forward_device_names: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isEmpty(forward_device_names) || device.name in forward_device_names
 foreach component in device.platform.components
 let role_name = replace(replace(toString(component.partType), "DevicePartType.", ""), "_", " ")
 where isInventoryHardwareRole(role_name)
@@ -40,4 +37,4 @@ select {
   status: "active",
   discovered: true,
   description: inventory_description
-};
+}

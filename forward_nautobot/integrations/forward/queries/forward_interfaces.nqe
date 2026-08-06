@@ -1,16 +1,13 @@
 /**
  * @intent Forward interfaces
  * @description Interface rows derived from Forward device interface state.
- * @contract-version v1
+ * @contract-version v2
  */
 
 @primaryKey(device, name)
-@query
-f(forward_device_names: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isEmpty(forward_device_names) || device.name in forward_device_names
 foreach interface in device.interfaces
   let is_ethernet = interface.interfaceType == IfaceType.IF_ETHERNET
   let speed_mbps = if is_ethernet then interface.ethernet.speedMbps else null : Integer
@@ -41,4 +38,4 @@ select {
   description: if isPresent(interface.description) then interface.description else "",
   speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer,
   mac_address: if is_ethernet && isPresent(interface.ethernet.macAddress) then toString(interface.ethernet.macAddress) else ""
-};
+}

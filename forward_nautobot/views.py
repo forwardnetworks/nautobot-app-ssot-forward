@@ -46,7 +46,7 @@ def _iter_persisted_profile_records() -> tuple[ForwardConnectionProfileRecord, .
         return ()
     if hasattr(manager, "all"):
         try:
-            records = manager.all()
+            records = list(manager.all())
         except Exception:  # pragma: no cover - defensive
             return ()
         return tuple(
@@ -59,7 +59,7 @@ def _iter_profile_records(manager) -> tuple[ForwardConnectionProfileRecord, ...]
     if manager is None or not hasattr(manager, "all"):
         return ()
     try:
-        records = manager.all()
+        records = list(manager.all())
     except Exception:  # pragma: no cover - defensive
         return ()
     return tuple(
@@ -93,7 +93,12 @@ def _render_profile_editor(
         value = values.get(field_name, "")
         if field_name == "password":
             value = ""
-        if field_name == "enabled_models" and isinstance(value, (list, tuple)):
+        if field_name in {
+            "enabled_models",
+            "device_vendors",
+            "device_types",
+            "device_models",
+        } and isinstance(value, (list, tuple)):
             value = ", ".join(str(item) for item in value if str(item).strip())
         if field_name == "delete_policy":
             options = []
@@ -536,7 +541,7 @@ def _render_dashboard_body(
         "</div>",
     ]
     return (
-        '<p class="subtle">An operational view of the Forward SSoT integration in Nautobot 3.1.</p>'
+        '<p class="subtle">An operational view of the Forward SSoT integration in Nautobot 3.1/3.2.</p>'
         + "".join(sections)
     )
 
@@ -761,7 +766,7 @@ class ForwardConfigurationView(View):
                 '<p class="subtle">Persistent connection profiles are modeled in forward_nautobot.models.</p>'
                 '<div class="forward-section forward-panel">'
                 "<h3>Profile Editor</h3>"
-                f'<p class="subtle">Profile fields: name, base_url, username, password, verify_tls, network_id, snapshot_id, enabled_models, query_contract_version, delete_policy, last_snapshot_id.</p>'
+                f'<p class="subtle">Profile fields include connection settings, model slices, device-population filters, query contract version, and delete policy.</p>'
                 f'<p class="subtle">Write prerequisites: {", ".join(WRITE_DEFAULT_FIELD_NAMES)}.</p>'
                 f'<p class="subtle">Editable form fields: {", ".join(FORWARD_PROFILE_FORM_FIELDS)}</p>'
                 f"{_render_profile_editor(default_profile)}"

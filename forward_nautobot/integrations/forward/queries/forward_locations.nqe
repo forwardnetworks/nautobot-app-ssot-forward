@@ -1,15 +1,21 @@
 /**
  * @intent Forward locations
  * @description Location rows for Nautobot ingestion testing and initial location mapping.
- * @contract-version v1
+ * @contract-version v2
  */
 
 @primaryKey(name)
-@query
-f() =
 foreach location in network.locations
+let scope_devices = (
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isPresent(device.locationName) && device.locationName == location.name
+  select device.name
+)
 select {
   name: location.name,
   city: if isPresent(location.city) then location.city else "",
-  country: if isPresent(location.country) then location.country else ""
-};
+  country: if isPresent(location.country) then location.country else "",
+  scope_devices: scope_devices
+}

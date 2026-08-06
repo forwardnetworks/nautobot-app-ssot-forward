@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -33,6 +34,31 @@ def _coerce_models(value: Any) -> tuple[str, ...]:
     else:
         items = str(value or "").split(",")
     return tuple(str(item).strip() for item in items if str(item).strip())
+
+
+def build_sync_scope_fingerprint(
+    *,
+    model_names: tuple[str, ...] | list[str] = (),
+    device_vendors: tuple[str, ...] | list[str] = (),
+    device_types: tuple[str, ...] | list[str] = (),
+    device_models: tuple[str, ...] | list[str] = (),
+) -> str:
+    """Return a stable, non-reversible identity for a sync's ownership scope."""
+
+    payload = {
+        "device_models": sorted(
+            {str(value).strip() for value in device_models if str(value).strip()}
+        ),
+        "device_types": sorted(
+            {str(value).strip() for value in device_types if str(value).strip()}
+        ),
+        "device_vendors": sorted(
+            {str(value).strip() for value in device_vendors if str(value).strip()}
+        ),
+        "model_names": sorted({str(value).strip() for value in model_names if str(value).strip()}),
+    }
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _django_secret_key() -> str:
@@ -99,6 +125,9 @@ class ForwardProfileStatus:
     missing_defaults: tuple[str, ...] = ()
     delete_policy: str = "ignore"
     enabled_models: tuple[str, ...] = ()
+    device_vendors: tuple[str, ...] = ()
+    device_types: tuple[str, ...] = ()
+    device_models: tuple[str, ...] = ()
     network_id: str = ""
     snapshot_id: str = ""
     base_url: str = "https://fwd.app"
@@ -109,6 +138,7 @@ class ForwardProfileStatus:
     last_query_reference: str = ""
     last_query_mode: str = ""
     last_snapshot_id: str = ""
+    last_scope_fingerprint: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +148,9 @@ class ForwardProfileStatus:
             "missing_defaults": list(self.missing_defaults),
             "delete_policy": self.delete_policy,
             "enabled_models": list(self.enabled_models),
+            "device_vendors": list(self.device_vendors),
+            "device_types": list(self.device_types),
+            "device_models": list(self.device_models),
             "network_id": self.network_id,
             "snapshot_id": self.snapshot_id,
             "base_url": self.base_url,
@@ -128,6 +161,7 @@ class ForwardProfileStatus:
             "last_query_reference": self.last_query_reference,
             "last_query_mode": self.last_query_mode,
             "last_snapshot_id": self.last_snapshot_id,
+            "last_scope_fingerprint": self.last_scope_fingerprint,
         }
 
 
@@ -143,7 +177,10 @@ class ForwardConnectionProfileRecord:
     verify_tls: bool = True
     snapshot_id: str = LATEST_PROCESSED_SNAPSHOT
     enabled_models: tuple[str, ...] = ()
-    query_contract_version: str = "v1"
+    device_vendors: tuple[str, ...] = ()
+    device_types: tuple[str, ...] = ()
+    device_models: tuple[str, ...] = ()
+    query_contract_version: str = "v2"
     default_location_type_name: str = ""
     default_location_status_name: str = ""
     default_device_role_name: str = ""
@@ -157,6 +194,7 @@ class ForwardConnectionProfileRecord:
     last_query_reference: str = ""
     last_query_mode: str = ""
     last_snapshot_id: str = ""
+    last_scope_fingerprint: str = ""
 
     @classmethod
     def from_mapping(
@@ -192,11 +230,16 @@ class ForwardConnectionProfileRecord:
         enabled_models = _coerce_models(
             data.get("enabled_models") or base.get("enabled_models") or ()
         )
+        device_vendors = _coerce_models(
+            data.get("device_vendors") or base.get("device_vendors") or ()
+        )
+        device_types = _coerce_models(data.get("device_types") or base.get("device_types") or ())
+        device_models = _coerce_models(data.get("device_models") or base.get("device_models") or ())
         query_contract_version = (
             str(
-                data.get("query_contract_version") or base.get("query_contract_version") or "v1"
+                data.get("query_contract_version") or base.get("query_contract_version") or "v2"
             ).strip()
-            or "v1"
+            or "v2"
         )
         default_location_type_name = str(
             data.get("default_location_type_name") or base.get("default_location_type_name") or ""
@@ -226,6 +269,9 @@ class ForwardConnectionProfileRecord:
             verify_tls=verify_tls,
             snapshot_id=snapshot_id,
             enabled_models=enabled_models,
+            device_vendors=device_vendors,
+            device_types=device_types,
+            device_models=device_models,
             query_contract_version=query_contract_version,
             default_location_type_name=default_location_type_name,
             default_location_status_name=default_location_status_name,
@@ -250,6 +296,9 @@ class ForwardConnectionProfileRecord:
             last_query_mode=str(data.get("last_query_mode") or base.get("last_query_mode") or ""),
             last_snapshot_id=str(
                 data.get("last_snapshot_id") or base.get("last_snapshot_id") or ""
+            ),
+            last_scope_fingerprint=str(
+                data.get("last_scope_fingerprint") or base.get("last_scope_fingerprint") or ""
             ),
         )
 
@@ -279,6 +328,9 @@ class ForwardConnectionProfileRecord:
             "verify_tls": self.verify_tls,
             "snapshot_id": self.snapshot_id,
             "enabled_models": list(self.enabled_models),
+            "device_vendors": list(self.device_vendors),
+            "device_types": list(self.device_types),
+            "device_models": list(self.device_models),
             "query_contract_version": self.query_contract_version,
             "default_location_type_name": self.default_location_type_name,
             "default_location_status_name": self.default_location_status_name,
@@ -293,6 +345,7 @@ class ForwardConnectionProfileRecord:
             "last_query_reference": self.last_query_reference,
             "last_query_mode": self.last_query_mode,
             "last_snapshot_id": self.last_snapshot_id,
+            "last_scope_fingerprint": self.last_scope_fingerprint,
         }
 
     def missing_write_defaults(self) -> tuple[str, ...]:
@@ -319,6 +372,9 @@ class ForwardConnectionProfileRecord:
             missing_defaults=self.missing_write_defaults(),
             delete_policy=self.effective_delete_policy,
             enabled_models=self.enabled_models,
+            device_vendors=self.device_vendors,
+            device_types=self.device_types,
+            device_models=self.device_models,
             network_id=self.network_id,
             snapshot_id=self.snapshot_id,
             base_url=self.base_url,
@@ -329,6 +385,7 @@ class ForwardConnectionProfileRecord:
             last_query_reference=self.last_query_reference,
             last_query_mode=self.last_query_mode,
             last_snapshot_id=self.last_snapshot_id,
+            last_scope_fingerprint=self.last_scope_fingerprint,
         )
 
     def with_run_history(
@@ -341,6 +398,7 @@ class ForwardConnectionProfileRecord:
         last_query_reference: str = "",
         last_query_mode: str = "",
         last_snapshot_id: str = "",
+        last_scope_fingerprint: str = "",
     ) -> ForwardConnectionProfileRecord:
         return replace(
             self,
@@ -353,6 +411,7 @@ class ForwardConnectionProfileRecord:
             last_query_reference=last_query_reference,
             last_query_mode=last_query_mode,
             last_snapshot_id=last_snapshot_id or self.last_snapshot_id,
+            last_scope_fingerprint=last_scope_fingerprint or self.last_scope_fingerprint,
         )
 
 
@@ -510,7 +569,10 @@ if models is not None:
             default=LATEST_PROCESSED_SNAPSHOT,
         )
         enabled_models = models.JSONField(default=list, blank=True)
-        query_contract_version = models.CharField(max_length=32, default="v1")
+        device_vendors = models.JSONField(default=list, blank=True)
+        device_types = models.JSONField(default=list, blank=True)
+        device_models = models.JSONField(default=list, blank=True)
+        query_contract_version = models.CharField(max_length=32, default="v2")
         default_location_type_name = models.CharField(max_length=128, blank=True, default="")
         default_location_status_name = models.CharField(max_length=128, blank=True, default="")
         default_device_role_name = models.CharField(max_length=128, blank=True, default="")
@@ -524,6 +586,7 @@ if models is not None:
         last_query_reference = models.CharField(max_length=255, blank=True, default="")
         last_query_mode = models.CharField(max_length=64, blank=True, default="")
         last_snapshot_id = models.CharField(max_length=128, blank=True, default="")
+        last_scope_fingerprint = models.CharField(max_length=64, blank=True, default="")
 
         class Meta:
             ordering = ["name"]
@@ -540,6 +603,15 @@ if models is not None:
                 enabled_models=tuple(
                     str(name).strip() for name in self.enabled_models if str(name).strip()
                 ),
+                device_vendors=tuple(
+                    str(name).strip() for name in self.device_vendors if str(name).strip()
+                ),
+                device_types=tuple(
+                    str(name).strip() for name in self.device_types if str(name).strip()
+                ),
+                device_models=tuple(
+                    str(name).strip() for name in self.device_models if str(name).strip()
+                ),
                 query_contract_version=self.query_contract_version,
                 default_location_type_name=self.default_location_type_name,
                 default_location_status_name=self.default_location_status_name,
@@ -554,6 +626,7 @@ if models is not None:
                 last_query_reference=self.last_query_reference,
                 last_query_mode=self.last_query_mode,
                 last_snapshot_id=self.last_snapshot_id,
+                last_scope_fingerprint=self.last_scope_fingerprint,
             )
 
         def to_connection_settings(self) -> ForwardConnectionSettings:

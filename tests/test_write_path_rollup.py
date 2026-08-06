@@ -27,17 +27,17 @@ def _plan_for(source_row, target_row):
 
 def test_changed_field_rollup_counts_only_changed_fields():
     plan = _plan_for(
-        {"name": "d1", "location": "L", "vendor": "cisco", "model": "A", "device_type": "A"},
-        {"name": "d1", "location": "L", "vendor": "cisco", "model": "B", "device_type": "B"},
+        {"name": "d1", "location": "L", "vendor": "example", "model": "A", "platform": "OS-A"},
+        {"name": "d1", "location": "L", "vendor": "example", "model": "B", "platform": "OS-B"},
     )
     assert plan.summary["update"] == 1
     rollup = plan.diff_detail["changed_fields"]["devices"]
-    assert rollup == {"model": 1, "device_type": 1}  # location/vendor unchanged -> absent
+    assert rollup == {"model": 1, "platform": 1}  # location/manufacturer unchanged -> absent
     assert plan.diff_detail["changed_fields_top"]["model"] == 1
 
 
 def test_changed_field_rollup_empty_when_no_updates():
-    row = {"name": "d1", "location": "L", "vendor": "cisco", "model": "A", "device_type": "A"}
+    row = {"name": "d1", "location": "L", "vendor": "example", "model": "A", "platform": "OS-A"}
     plan = _plan_for(dict(row), dict(row))  # identical -> no-change
     assert plan.summary["no-change"] == 1
     assert plan.diff_detail["changed_fields"] == {}

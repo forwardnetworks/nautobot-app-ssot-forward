@@ -54,10 +54,10 @@ flowchart TB
 
 ## Mode 2 — Full snapshot sync
 
-Runs when there is no prior baseline. Each bundled NQE must resolve to a saved
-Forward repository query path/query ID; unresolved paths fail the run instead of
-falling back to raw inline NQE. Fetches the complete row set for every selected
-model slice through async query-ID execution.
+Runs when there is no prior baseline. Each bundled NQE first resolves to a saved
+Forward repository query path/query ID. If it is not saved, the packaged source is
+submitted inline through the same async API. Saved queries are diff-eligible; inline
+fallback remains full-query-only.
 
 ```mermaid
 flowchart TB
@@ -71,7 +71,7 @@ flowchart TB
     subgraph client["ForwardClient"]
         resolve_snap["GET /snapshots/latestProcessed"]
         prewarm["GET /nqe/repos/org/commits/head/queries\npre-warm query index cache"]
-        submit["POST /nqe-executions\nsubmit async query\n(sortKeys for stable pagination)"]
+        submit["POST /nqe-executions\nsubmit async saved or inline query"]
         poll["GET /nqe-executions/{key}\npoll until COMPLETED\n(exponential backoff)"]
         result["GET /nqe-executions/{key}/result\nstream ndjson rows"]
     end
@@ -80,14 +80,14 @@ flowchart TB
     planner --> resolve_snap
     planner --> prewarm
 
-    subgraph tier1["Tier 1 — parallel (locations, platforms, device_types)"]
+    subgraph tier1["Tier 1 — parallel, maximum two submissions"]
         t1a["slice: locations"]
-        t1b["slice: platforms\n(scoped by location names)"]
-        t1c["slice: device_types\n(scoped by location names)"]
+        t1b["slice: platforms"]
+        t1c["slice: device_types"]
     end
 
     subgraph tier2["Tier 2 — parallel (devices)"]
-        t2["slice: devices\n(scoped by location names)"]
+        t2["slice: devices"]
     end
 
     prewarm --> tier1
@@ -130,7 +130,7 @@ flowchart TB
     subgraph client["ForwardClient"]
         resolve_snap["GET /snapshots/latestProcessed\ncurrent = Y  (baseline = X)"]
         prewarm["GET /nqe/repos/org/commits/head/queries\nresolve saved query → queryId + commitId"]
-        diff["POST /nqe-diffs/{X}/{Y}\nqueryId + commitId\nreturns added / removed / unchanged rows"]
+        diff["POST /nqe-diffs/{X}/{Y}\nqueryId + commitId + page options\nreturns added / removed / unchanged rows"]
         fail["fail run with slice attribution"]
     end
 
@@ -167,12 +167,13 @@ flowchart LR
     start(["_fetch_slice\nfor one model"])
 
     try_resolve["resolve_query_spec\nlook up query path in repo index"]
-    fail["fail run\nquery path must be published"]
+    inline["bundled_nqe_inline_async\nstrip @primaryKey and submit\npackaged source asynchronously"]
     saved_snap["bundled_nqe_query_id_async\nfull snapshot via async queryId"]
     saved_diff["bundled_nqe_query_id_diff\ndiff via saved queryId\n(fastest incremental)"]
+    fail["fail run with slice attribution\nno silent full-query fallback"]
 
     start --> try_resolve
-    try_resolve -- "ForwardClientError\n(path not in repo)" --> fail
+    try_resolve -- "ForwardClientError\n(path not in repo)" --> inline
     try_resolve -- "resolved\nbaseline == current\nor no baseline" --> saved_snap
     try_resolve -- "resolved\nbaseline != current" --> saved_diff
     saved_diff -- "ForwardClientError" --> fail
@@ -183,47 +184,45 @@ flowchart LR
 
     class start,try_resolve neutral;
     class fail warn;
-    class saved_snap,saved_diff fwdnode;
+    class saved_snap,saved_diff,inline fwdnode;
 ```
 
 ---
 
 ## Tier parallelism and dependency order
 
-Slices within a tier are dispatched concurrently. Tiers are gated: a tier does
-not start until all slices in the prior tier have completed and their rows are
-available to inject as query parameters into dependent slices.
+Slices within a tier are dispatched concurrently, with at most two outstanding
+async submissions. Tiers are gated so prerequisite rows exist before dependent
+Nautobot objects are planned. Query execution itself is unparameterized to preserve
+saved-query primary keys and NQE-diff eligibility.
 
 ```mermaid
 flowchart LR
-    subgraph t0["Tier 1  (parallel)"]
+    subgraph t0["Tier 1  (parallel, maximum two at once)"]
         locations["locations"]
+        platforms["platforms"]
+        device_types["device_types"]
     end
 
     subgraph t1["Tier 2  (parallel)"]
-        platforms["platforms\n← location names"]
-        device_types["device_types\n← location names"]
+        devices["devices\n← location + platform + type rows"]
+        vlans["vlans\n← locations"]
     end
 
-    subgraph t2["Tier 3  (parallel)"]
-        devices["devices\n← location names"]
+    subgraph t2["Tier 3  (parallel, disabled by default)"]
+        interfaces["interfaces\n← devices"]
+        vrfs["vrfs\n← devices"]
+        inv["inventory_items\n← devices"]
+        mod["modules\n← devices"]
     end
 
     subgraph t3["Tier 4  (parallel, disabled by default)"]
-        interfaces["interfaces\n← device names"]
-        vlans["vlans\n← location names"]
-        vrfs["vrfs\n← device names"]
+        ip4["ipv4_prefixes\n← VRFs"]
+        ip6["ipv6_prefixes\n← VRFs"]
+        ipa["ip_addresses\n← devices + interfaces + VRFs"]
     end
 
-    subgraph t4["Tier 5  (parallel, disabled by default)"]
-        ip4["ipv4_prefixes\n← device names"]
-        ip6["ipv6_prefixes\n← device names"]
-        ipa["ip_addresses\n← device names"]
-        inv["inventory_items\n← device names"]
-        mod["modules\n← device names"]
-    end
-
-    t0 --> t1 --> t2 --> t3 --> t4
+    t0 --> t1 --> t2 --> t3
 
     classDef neutral fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A;
     class locations,platforms,device_types,devices,interfaces,vlans,vrfs,ip4,ip6,ipa,inv,mod neutral;
@@ -237,12 +236,14 @@ flowchart LR
 |---|---|---|
 | `GET /networks/{id}/snapshots/latestProcessed` | Every run | Resolve current snapshot ID |
 | `GET /nqe/repos/org/commits/head/queries` | Every run (once, cached) | Pre-warm query index; resolve `.nqe` paths to query IDs |
-| `POST /networks/{id}/nqe-executions` | Snapshot / diff mode, per slice | Submit async NQE query or diff |
+| `POST /networks/{id}/nqe-executions` | Snapshot mode, per slice | Submit an async saved query or packaged inline query |
 | `GET /networks/{id}/nqe-executions/{key}` | After submit | Poll execution status |
 | `GET /networks/{id}/nqe-executions/{key}/result` | Status = COMPLETED | Stream ndjson result rows |
+| `POST /nqe-diffs/{before}/{after}` | Diff mode, per saved slice | Execute a primary-keyed saved query across two snapshots |
 
-No calls are made in skip mode. Diff mode calls the same execution endpoint
-with `beforeSnapshotId` added; it is not a separate endpoint.
+No NQE calls are made in skip mode. Diff mode uses the dedicated diff endpoint;
+its request contains query identity, commit identity when available, and page options,
+but no query parameters.
 
 ---
 
@@ -257,6 +258,7 @@ with `beforeSnapshotId` added; it is not a separate endpoint.
 | `POST /nqe-executions` | execute NQE |
 | `GET /nqe-executions/{key}` | read NQE executions |
 | `GET /nqe-executions/{key}/result` | read NQE results |
+| `POST /nqe-diffs/{before}/{after}` | execute NQE diffs |
 
 ### Plugin → Nautobot DB (Django ORM, same process)
 
@@ -287,11 +289,15 @@ automatically.
 - **Incremental by default** — the planner records `last_snapshot_id` on the
   connection profile after every successful run. Subsequent runs use diff mode
   when the query is resolvable, or skip entirely when the snapshot is unchanged.
-- **Scoped queries** — child slices (devices, interfaces, IP addresses, etc.)
-  send parent keys as NQE `parameters`, bounding server-side query scope to
-  already-known entities.
-- **Stable pagination** — all NQE executions include `sortKeys` on the slice's
-  identity fields so page boundaries are deterministic across retries.
+- **Exact-set device scope** — a full current-device membership query selects the
+  configured manufacturers, functional classes, and models. The planner then filters
+  both full and diff rows using direct `device` or raw `scope_devices` attribution.
+- **Diff-compatible requests** — saved bundle queries declare their own primary keys.
+  The planner omits query parameters and `sortKeys`, both of which were rejected by
+  the verified saved-query/diff path for some multi-key contracts.
+- **Filtered reconciliation safety** — filtered runs suppress deletion and deactivation.
+  Prefix slices fail closed under filters because their compact route-table queries do
+  not expose per-device contributors; unfiltered prefix sync remains supported.
 - **Support bundle** — every run produces a sanitized support bundle alongside
   the SSoT sync record, capturing row samples, query modes, diff summaries, and
   redacted connection metadata for offline diagnostics.

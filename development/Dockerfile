@@ -1,7 +1,8 @@
-# Local test/dev image: official Nautobot 3.1.6 + this plugin (editable) + the
-# pytest toolchain, so the full suite (contrib / API / crypto tests that skip
-# without a real Nautobot) runs in a container instead of on a remote box.
-FROM ghcr.io/nautobot/nautobot:3.1.6-py3.12
+# Local test/dev image: selected official Nautobot release + this plugin
+# (editable) + the test toolchain. CI supplies both supported release lines.
+ARG NAUTOBOT_VERSION=3.2.2
+ARG PYTHON_VERSION=3.12
+FROM ghcr.io/nautobot/nautobot:${NAUTOBOT_VERSION}-py${PYTHON_VERSION}
 
 USER 0
 WORKDIR /source

@@ -6,12 +6,10 @@
  *   and B<->A collapse to one row. LAG (aggregate) endpoints are excluded — Nautobot
  *   does not cable directly to a LAG — and the remote end must resolve to an
  *   interface on a snapshot-completed device.
- * @contract-version v1
+ * @contract-version v2
  */
 
 @primaryKey(device, interface, remote_device, remote_interface)
-@query
-f() =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -41,4 +39,4 @@ select {
   remote_device: if local_first then link.deviceName else device.name,
   remote_interface: if local_first then link.ifaceName else interface.name,
   status: "connected"
-};
+}

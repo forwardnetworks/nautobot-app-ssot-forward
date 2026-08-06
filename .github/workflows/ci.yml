@@ -41,10 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Drift protection across interpreters. A Nautobot-version matrix and a
-        # live docker-compose Nautobot run are tracked in the parity/gitops plan
-        # (B3 full / B4) and added once the dev image lands.
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -95,3 +92,59 @@ jobs:
         with:
           name: contract-diff-report
           path: dist/contract-diff-report.json
+
+  nautobot:
+    name: Nautobot ${{ matrix.nautobot-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        nautobot-version: ["3.1.8", "3.2.2"]
+    env:
+      COMPOSE_PROJECT_NAME: forward-nautobot-ci-${{ strategy.job-index }}
+      NAUTOBOT_VERSION: ${{ matrix.nautobot-version }}
+      PYTHON_VERSION: "3.12"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Build and start disposable stack
+        run: docker compose -f development/docker-compose.yml up -d --build
+
+      - name: Wait for startup migrations
+        run: |
+          container_id="$(docker compose -f development/docker-compose.yml ps -q nautobot)"
+          for attempt in {1..120}; do
+            health="$(docker inspect --format '{{.State.Health.Status}}' "$container_id")"
+            if [ "$health" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$health" = "unhealthy" ]; then
+              docker compose -f development/docker-compose.yml logs --tail 200 nautobot
+              exit 1
+            fi
+            sleep 2
+          done
+          docker compose -f development/docker-compose.yml logs --tail 200 nautobot
+          exit 1
+
+      - name: Apply migrations
+        run: >-
+          docker compose -f development/docker-compose.yml exec -T nautobot
+          nautobot-server migrate --noinput
+
+      - name: Run complete non-live suite without skips
+        run: >-
+          docker compose -f development/docker-compose.yml exec -T
+          -e FORWARD_STRICT_NO_SKIPS=1 nautobot
+          python -m pytest tests/ -q -p no:django -m "not integration"
+
+      - name: Verify contrib repeat-apply idempotence
+        run: >-
+          docker compose -f development/docker-compose.yml exec -T nautobot
+          nautobot-server shell < scripts/check_contrib_idempotence.py
+
+      - name: Tear down disposable stack
+        if: always()
+        run: docker compose -f development/docker-compose.yml down -v
