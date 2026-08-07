@@ -21,14 +21,21 @@ def test_validation_matrix_pins_blake_regression_and_live_gate():
     assert "No skipped non-integration tests" in matrix
 
 
-def test_release_workflow_includes_sensitive_content_gate():
+def test_github_validation_is_removed_and_release_workflow_is_delivery_only():
+    assert not Path(".github/workflows/ci.yml").exists()
+
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 
-    assert "check_sensitive_content.py" in workflow
-    assert "check_harness.py" in workflow
-    assert "check_release_state.py" in workflow
-    assert "check_query_contracts.py" in workflow
+    assert "python -m build" in workflow
     assert "softprops/action-gh-release" in workflow
+    assert "pypa/gh-action-pypi-publish" in workflow
+    assert "check_sensitive_content.py" not in workflow
+    assert "check_harness.py" not in workflow
+    assert "check_release_state.py" not in workflow
+    assert "check_query_contracts.py" not in workflow
+    assert "generate_contract_diff_report.py" not in workflow
+    assert "check_wheel_contents.py" not in workflow
+    assert "python -m pytest" not in workflow
 
 
 def test_readme_documents_release_readiness_checks():

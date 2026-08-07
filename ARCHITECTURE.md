@@ -62,14 +62,14 @@ The most useful hardening patterns for this repo are contractual rather than pla
   uses the same query body asynchronously, and remains full-query-only.
 - Filtered runs are create/update-only. A scope fingerprint invalidates stale snapshot baselines,
   and no filtered result may drive delete or deactivation reconciliation.
-- Bundled query sources should stay versioned and drift-checked in CI so query shape changes are visible before release.
+- Bundled query sources should stay versioned and drift-checked by the local release gate so query shape changes are visible before release.
 - Bundled queries are published idempotently to the organization repository and audited against
   concrete committed source before runtime use.
 - Support bundles should remain the canonical troubleshooting artifact, with both the full payload and a redacted shareable view.
 - Replay tooling should be able to rebuild a dry run from a saved fixture or exported bundle without requiring live credentials.
 - Request pressure should stay bounded through query-index caching, conservative pagination,
   retry/backoff behavior, and at most two concurrent async submissions per dependency tier.
-- Release gates should keep checking contract drift, wheel contents, release/tag state, and sensitive-content hygiene.
+- The local release gate should keep checking contract drift, wheel contents, release/tag state, and sensitive-content hygiene. GitHub automation remains delivery-only.
 - The SSoT job lifecycle already covers run history, so there is no separate orchestration layer to recreate here.
 
 ## Current Boundaries

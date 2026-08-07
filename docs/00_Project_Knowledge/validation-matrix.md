@@ -11,7 +11,7 @@ publishing.
 | Planner or write-path change | `python -m pytest -q tests/test_planner.py tests/test_write_path.py tests/test_write_executor.py tests/test_target_adapter.py` |
 | SSoT job or Nautobot UI change | `python -m pytest -q tests/test_plugin.py tests/test_views.py tests/test_nautobot_job_refresh.py` |
 | Security or credential handling change | `python -m pytest -q tests/test_configuration.py tests/test_release_gates.py`, `python scripts/check_sensitive_content.py --all-history` |
-| Release workflow or packaging change | `python scripts/ci_local.py`, then confirm GitHub CI is green on `main` |
+| Release workflow or packaging change | `python scripts/ci_local.py`, then inspect the local build artifacts |
 | Device-filter or query-publication change | publisher unit tests, filtered-delete safety tests, exact committed-source audit, async full-query live smoke, strict NQE-diff live smoke |
 
 ## Release Gate
@@ -20,7 +20,7 @@ publishing.
 python scripts/ci_local.py
 ```
 
-The local CI mirror runs the same core checks as GitHub CI:
+The local release gate runs the complete required validation set:
 
 - sensitive-content history scan
 - harness check
@@ -30,7 +30,7 @@ The local CI mirror runs the same core checks as GitHub CI:
 - non-live pytest suite
 - build
 - wheel-content check
-- disposable PostgreSQL/Redis stacks for Nautobot 3.1.8 and 3.2.2 in GitHub CI
+- separate disposable PostgreSQL/Redis stacks for Nautobot 3.1.8 and 3.2.2 before release
 
 The non-live pytest gate runs with `FORWARD_STRICT_NO_SKIPS=1`; any skipped
 non-integration test fails the release gate.
@@ -64,5 +64,5 @@ async query-ID execution, and a two-snapshot run used `nqe-diffs` without fallba
 - Support bundles must have an external redacted form.
 - The SSoT DataSource class path must stay non-empty:
   `forward_nautobot.integrations.forward.jobs.ForwardInventoryDataSource`.
-- Default CI excludes live integration tests; live validation is a separate,
+- The default local gate excludes live integration tests; live validation is a separate,
   credentialed gate.

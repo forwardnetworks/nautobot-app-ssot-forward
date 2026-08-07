@@ -72,7 +72,7 @@ slice.
 - **Changed-field rollup** ("description ×380, mtu ×30"). Only the snapshot-diff
   path retains before/after; dominant paths store after-only — needs a planner
   change to retain `before`, so not pure aggregation.
-- **Repeat-apply idempotence CI test** (prefix/ip families) — assert second run
+- **Repeat-apply idempotence local test** (prefix/ip families) — assert second run
   is a no-op / zero ObjectChange.
 - **Offline bundle grader** — thresholds → pass/warn/fail over our bundle
   metrics; skip forward-netbox's branching/bulk-ORM metrics.
@@ -92,7 +92,7 @@ probes, resumable-shard/branching recovery — all exist only because NetBox has
 SSoT framework. `Sync`/`SyncLogEntry` + the Celery job lifecycle give us run
 history, restart-by-rerun, logs, and live status for free. Also non-problems:
 runtime param-contract enforcement, signal suppression (incoherent for our path),
-`change_request_id` (just a `StringVar`), contract-diff gate (already wired in CI).
+`change_request_id` (just a `StringVar`), contract-diff gate (already wired locally).
 
 ## Acceptance
 

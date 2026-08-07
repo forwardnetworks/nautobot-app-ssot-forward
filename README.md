@@ -32,9 +32,10 @@ capture, with support for Forward async query execution.
 - Support-bundle diagnostics with safe redaction options
 - Profile persistence for repeated demo/demo-friendly runs
 - SSoT UI pages for overview, configuration, status, diagnostics, and slice detail
-- CI gates for query contracts, wheel contents, sensitive-content checks, and release state
+- Local release gates for query contracts, wheel contents, sensitive-content checks, and release state
 
-GitHub Actions CI runs these checks on every push and release.
+Local-only validation is intentional. GitHub Actions performs tag-driven artifact and
+package delivery; it does not run tests or approval gates.
 
 ## Supported Model Slices
 
@@ -170,7 +171,7 @@ so publication is not a prerequisite for running a sync.
   endpoint can compare snapshots without unsupported request parameters.
 - A prior snapshot is reused only when its scope fingerprint matches; changed snapshots
   then use the NQE diff endpoint with no silent full-query fallback.
-- Live and fixture paths stay versioned and validated in CI through query-contract checks.
+- Live and fixture paths stay versioned and validated locally through query-contract checks.
 - Snapshot resolution supports explicit snapshot IDs and `latestProcessed`.
 
 Publish the complete bundled query set and prove committed-source parity:
@@ -224,6 +225,7 @@ Run live integration tests only when these are set:
 Release-style validation:
 
 ```bash
+python scripts/ci_local.py
 python -m build
 python scripts/check_sensitive_content.py --all-history
 python scripts/check_harness.py
@@ -247,6 +249,7 @@ python scripts/check_release_state.py
 
 Run before tag/release:
 
+- `python scripts/ci_local.py`
 - `python -m pytest -q -m "not integration"`
 - `python -m build`
 - `python scripts/check_sensitive_content.py --all-history`

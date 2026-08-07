@@ -18,12 +18,15 @@ focused on run behavior and validation.
 
 ## Release and Validation Surface
 
-GitOps workflow:
+Release workflow:
 
-- `python scripts/ci_local.py` — local mirror of GitHub CI (all gates below in one run; `--fast` skips build/wheel)
+- `python scripts/ci_local.py` — complete local release gate (`--fast` skips build/wheel)
 - `python scripts/release.py X.Y.Z --summary "..."` — prepare (bump pyproject + `__init__` in lockstep, scaffold plan) + verify
-- `python scripts/release.py X.Y.Z --summary "..." --publish` — branch → CI → fast-forward main → tag the release commit → GitHub release
+- `python scripts/release.py X.Y.Z --summary "..." --publish` — branch → push → fast-forward main → tag the release commit → GitHub release
 - `pre-commit run --all-files` — ruff lint + format + sensitive-content + whitespace/yaml/json hooks
+
+Validation is local-only. The tag-triggered GitHub workflow builds and delivers
+artifacts; it contains no test or approval gates.
 
 Individual gates (run by `ci_local.py`):
 
