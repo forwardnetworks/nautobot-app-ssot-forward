@@ -19,7 +19,11 @@ REQUIRED_PATHS = [
     "scripts/check_query_contracts.py",
     "scripts/generate_contract_diff_report.py",
     "scripts/check_wheel_contents.py",
+    "scripts/check_installed_wheel.py",
     "scripts/check_release_state.py",
+    "development/Dockerfile.wheel",
+    "development/docker-compose.wheel.yml",
+    "development/installed_wheel_probe.py",
 ]
 
 PLAN_REQUIRED_HEADINGS = [

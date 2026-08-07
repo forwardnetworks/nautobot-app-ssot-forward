@@ -231,6 +231,7 @@ python scripts/check_sensitive_content.py --all-history
 python scripts/check_harness.py
 python scripts/check_query_contracts.py
 python scripts/check_wheel_contents.py
+python scripts/check_installed_wheel.py
 python scripts/check_release_state.py
 ```
 
@@ -256,6 +257,7 @@ Run before tag/release:
 - `python scripts/check_harness.py`
 - `python scripts/check_query_contracts.py`
 - `python scripts/check_wheel_contents.py`
+- `python scripts/check_installed_wheel.py`
 - `python scripts/check_release_state.py`
 - `python -m twine check dist/*.whl dist/*.tar.gz`
 
@@ -265,6 +267,11 @@ The live validation surface should include:
 - async full-query execution with exact-set device scope filtering
 - strict NQE diff execution across two processed snapshots
 - exact committed-source audit for every bundled query
+
+Processed snapshots with collection or processing failures are create/update-only: explicit NQE
+diff deletes and missing-object delete/mark-inactive reconciliation are suppressed and explained in
+the support bundle. Bundled-query publication dry-runs exact changed paths against the selected
+snapshot before commit and leaves unrelated workspace drafts untouched.
 
 For local live-dataset work, keep credentials/snapshots out of source code and
 document them only in your private environment.

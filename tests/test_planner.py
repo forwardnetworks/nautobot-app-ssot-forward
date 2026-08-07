@@ -240,6 +240,96 @@ def test_planner_uses_diff_rows_for_query_id_backed_slices(monkeypatch):
     assert plan.diff_detail["slices"]["devices"]["mode"] == "delta"
 
 
+def test_planner_suppresses_diff_deletes_for_incomplete_snapshot(monkeypatch):
+    _require_planner()
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=_mock_transport(),
+    )
+    planner = ForwardIngestionPlanner(client)
+    snapshot_metrics = {
+        "snapshotState": "processed",
+        "numCollectionFailureDevices": 1,
+        "numProcessingFailureDevices": 0,
+        "numCollectionFailureEndpoints": 0,
+        "numProcessingFailureEndpoints": 0,
+    }
+    monkeypatch.setattr(
+        ForwardClient,
+        "get_snapshot_metrics",
+        lambda self, _snapshot_id: snapshot_metrics,
+    )
+    monkeypatch.setattr(
+        ForwardClient,
+        "run_nqe_diff",
+        lambda self, **_kwargs: [
+            {
+                "type": "updated",
+                "before": {
+                    "name": "device-1",
+                    "location": "Site A",
+                    "vendor": "Vendor.PLACEHOLDER",
+                    "model": "MODEL-A",
+                    "platform": "PLACEHOLDER_OS",
+                },
+                "after": {
+                    "name": "device-1",
+                    "location": "Site B",
+                    "vendor": "Vendor.PLACEHOLDER",
+                    "model": "MODEL-A",
+                    "platform": "PLACEHOLDER_OS",
+                },
+            },
+            {
+                "type": "deleted",
+                "before": {
+                    "name": "device-2",
+                    "location": "Site B",
+                    "vendor": "Vendor.PLACEHOLDER",
+                    "model": "MODEL-A",
+                    "platform": "PLACEHOLDER_OS",
+                },
+                "after": {},
+            },
+        ],
+    )
+
+    plan = planner.run(
+        ForwardIngestionRequest(
+            connection=ForwardConnectionSettings(
+                base_url="https://fwd.example",
+                username="alice",
+                password="secret",
+                network_id="net-1",
+            ),
+            model_names=("devices",),
+            fetch_all=False,
+            limit=2,
+            connection_profile=ForwardConnectionProfileRecord(
+                name="primary",
+                network_id="net-1",
+                last_snapshot_id="snap-1",
+                last_scope_fingerprint=_scope_fingerprint("devices"),
+            ),
+        )
+    )
+
+    assert [operation.action for operation in plan.write_plan.operations] == ["update"]
+    assert plan.write_summary["destructive_suppressed"] == 1
+    assert plan.configuration_status["destructive_reconciliation_enabled"] is False
+    assert plan.configuration_status["missing_reconciliation_enabled"] is False
+    assert plan.configuration_status["snapshot_completeness"]["status"] == "incomplete"
+    assert plan.reports[0].snapshot_metrics == snapshot_metrics
+    assert plan.diff_detail["slices"]["devices"]["rows"][1]["action"] == (
+        "incomplete-snapshot-delete-suppressed"
+    )
+
+
 def test_planner_uses_unparameterized_saved_queries_for_dependent_slices(monkeypatch):
     _require_planner()
     client = ForwardClient(

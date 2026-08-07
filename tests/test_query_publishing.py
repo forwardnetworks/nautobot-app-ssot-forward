@@ -53,6 +53,23 @@ class _FakePublishingClient:
         self.mutations.append(("commit", self.head))
         return self.head
 
+    def get_org_nqe_draft_changes(self):
+        return []
+
+    def dry_run_org_nqe_queries(self, *, query_paths, snapshot_id=None):
+        assert query_paths == list(self.staged)
+        self.mutations.append(("dry-run", snapshot_id or ""))
+        return {
+            "newErrors": {},
+            "uses": [],
+            "unauthorizedQueryChanges": [],
+            "unauthorizedAccessSettingChanges": [],
+        }
+
+    def discard_org_nqe_draft_change(self, *, path):
+        self.staged.pop(path, None)
+        self.mutations.append(("discard", path))
+
 
 def _bundle(monkeypatch):
     sources = {
@@ -92,6 +109,7 @@ def test_query_publication_adds_missing_queries_and_commits_once(monkeypatch):
     assert result["commit_id"] == "commit-2"
     assert client.mutations == [
         ("add", paths["query_two.nqe"]),
+        ("dry-run", ""),
         ("commit", "commit-2"),
     ]
 
@@ -120,6 +138,7 @@ def test_query_publication_creates_missing_enclosing_directory(monkeypatch):
     assert client.mutations == [
         ("add-dir", "/forward_nautobot_validation"),
         ("add", paths["query_two.nqe"]),
+        ("dry-run", ""),
         ("commit", "commit-2"),
     ]
 
@@ -156,5 +175,61 @@ def test_query_publication_updates_stale_source_when_explicit(monkeypatch):
     assert result["changed_count"] == 1
     assert client.mutations == [
         ("edit", paths["query_one.nqe"]),
+        ("dry-run", ""),
         ("commit", "commit-2"),
     ]
+
+
+def test_query_publication_discards_only_touched_paths_when_dry_run_fails(monkeypatch):
+    sources, paths = _bundle(monkeypatch)
+
+    class _InvalidDryRunClient(_FakePublishingClient):
+        def dry_run_org_nqe_queries(self, *, query_paths, snapshot_id=None):
+            self.mutations.append(("dry-run", snapshot_id or ""))
+            return {
+                "newErrors": {query_paths[0]: [{"severity": "ERROR"}]},
+                "uses": [],
+                "unauthorizedQueryChanges": [],
+                "unauthorizedAccessSettingChanges": [],
+            }
+
+    client = _InvalidDryRunClient(
+        {
+            paths["query_one.nqe"]: "stale source",
+            paths["query_two.nqe"]: sources["query_two.nqe"],
+        }
+    )
+
+    result = publishing.publish_bundled_queries(client, overwrite=True, snapshot_id="snap-current")
+
+    assert result["status"] == "fail"
+    assert result["commit_id"] == ""
+    assert result["dry_run"]["status"] == "fail"
+    assert result["dry_run"]["snapshot_aware"] is True
+    assert client.mutations == [
+        ("edit", paths["query_one.nqe"]),
+        ("dry-run", "snap-current"),
+        ("discard", paths["query_one.nqe"]),
+    ]
+
+
+def test_query_publication_refuses_to_overwrite_preexisting_user_draft(monkeypatch):
+    sources, paths = _bundle(monkeypatch)
+
+    class _ExistingDraftClient(_FakePublishingClient):
+        def get_org_nqe_draft_changes(self):
+            return [{"type": "QUERY_EDIT", "basis": {"path": paths["query_one.nqe"]}}]
+
+    client = _ExistingDraftClient(
+        {
+            paths["query_one.nqe"]: "stale source",
+            paths["query_two.nqe"]: sources["query_two.nqe"],
+        }
+    )
+
+    result = publishing.publish_bundled_queries(client, overwrite=True)
+
+    assert result["status"] == "fail"
+    assert result["dry_run"]["status"] == "blocked-existing-drafts"
+    assert result["dry_run"]["conflicting_paths"] == [paths["query_one.nqe"]]
+    assert client.mutations == []

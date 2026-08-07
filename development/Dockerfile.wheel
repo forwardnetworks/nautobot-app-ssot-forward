@@ -1,0 +1,21 @@
+# Source-absent acceptance image: install exactly one locally-built plugin wheel
+# into an official supported Nautobot image. No repository source is copied into
+# the final image.
+ARG NAUTOBOT_VERSION=3.2.2
+ARG PYTHON_VERSION=3.12
+FROM ghcr.io/nautobot/nautobot:${NAUTOBOT_VERSION}-py${PYTHON_VERSION}
+
+USER 0
+COPY *.whl /tmp/
+RUN pip install --no-cache-dir /tmp/*.whl \
+    && rm /tmp/*.whl
+
+WORKDIR /opt/forward-wheel-acceptance
+COPY nautobot_config.py /opt/forward-wheel-acceptance/nautobot_config.py
+COPY installed_wheel_probe.py /opt/forward-wheel-acceptance/installed_wheel_probe.py
+
+ENV NAUTOBOT_CONFIG=/opt/forward-wheel-acceptance/nautobot_config.py \
+    DJANGO_SETTINGS_MODULE=nautobot_config \
+    PYTHONDONTWRITEBYTECODE=1
+
+USER nautobot

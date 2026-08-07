@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from zipfile import ZipFile
 
-from scripts import check_sensitive_content, check_wheel_contents
+from scripts import check_installed_wheel, check_sensitive_content, check_wheel_contents, ci_local
 
 
 def test_sensitive_content_gate_blocks_customer_identifiers(tmp_path, capsys, monkeypatch):
@@ -40,13 +40,16 @@ def test_sensitive_content_gate_allows_benign_content(tmp_path, capsys, monkeypa
 
 
 def test_wheel_contents_gate_accepts_required_files(tmp_path):
+    package_version = check_wheel_contents._package_version()
     wheel_path = tmp_path / "nautobot_app_ssot_forward-test.whl"
     with ZipFile(wheel_path, "w") as wheel:
         for expected_file in check_wheel_contents.EXPECTED_FILES:
             wheel.writestr(expected_file, "ok\n")
         wheel.writestr(
-            "nautobot_app_ssot_forward-0.6.0.dist-info/METADATA",
-            "Metadata-Version: 2.1\nName: nautobot-app-ssot-forward\nVersion: 0.6.0\n",
+            f"nautobot_app_ssot_forward-{package_version}.dist-info/METADATA",
+            "Metadata-Version: 2.1\n"
+            "Name: nautobot-app-ssot-forward\n"
+            f"Version: {package_version}\n",
         )
 
     exit_code = check_wheel_contents.main(["--wheel-path", str(wheel_path)])
@@ -65,3 +68,13 @@ def test_wheel_contents_gate_rejects_missing_files(tmp_path, capsys):
     assert exit_code == 1
     assert "Wheel contents check failed" in captured.out
     assert "missing wheel file:" in captured.out
+
+
+def test_full_local_gate_runs_source_absent_wheel_acceptance():
+    full_labels = [label for label, _argv in ci_local._gates(fast=False, sensitive=False)]
+    fast_labels = [label for label, _argv in ci_local._gates(fast=True, sensitive=False)]
+
+    assert "installed-wheel" in full_labels
+    assert "installed-wheel" not in fast_labels
+    assert check_installed_wheel.SUPPORTED_NAUTOBOT_VERSIONS == ("3.1.8", "3.2.2")
+    assert check_installed_wheel.COMPOSE_FILE.name == "docker-compose.wheel.yml"

@@ -30,7 +30,9 @@ The local release gate runs the complete required validation set:
 - non-live pytest suite
 - build
 - wheel-content check
-- separate disposable PostgreSQL/Redis stacks for Nautobot 3.1.8 and 3.2.2 before release
+- Twine metadata check
+- source-absent installation of the exact wheel into separate disposable PostgreSQL/Redis stacks
+  for Nautobot 3.1.8 and 3.2.2, including authenticated HTML/API route probes
 
 The non-live pytest gate runs with `FORWARD_STRICT_NO_SKIPS=1`; any skipped
 non-integration test fails the release gate.
@@ -52,6 +54,8 @@ Use `FORWARD_LIVE_ASYNC_QUERY_PATH` only when the target host publishes a
 different read-only NQE path for async transport smoke tests.
 
 Before a release, publish or audit the bundle with `forward_publish_queries --fail-on-gap`.
+Publication refuses to overwrite pre-existing user drafts and snapshot-validates exact changed paths
+before commit.
 The live proof must show all packaged paths matched exact committed source, one full run used
 async query-ID execution, and a two-snapshot run used `nqe-diffs` without fallback.
 

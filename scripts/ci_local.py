@@ -62,6 +62,15 @@ def _gates(*, fast: bool, sensitive: bool) -> list[tuple[str, list[str]]]:
             ("build", [PY, "-m", "build"]),
             ("wheel-contents", [PY, "scripts/check_wheel_contents.py"]),
             ("twine-check", [PY, "-m", "twine", "check", *_distribution_paths()]),
+            (
+                "installed-wheel",
+                [
+                    PY,
+                    "scripts/check_installed_wheel.py",
+                    "--wheel-path",
+                    _distribution_paths()[0],
+                ],
+            ),
         ]
     return gates
 

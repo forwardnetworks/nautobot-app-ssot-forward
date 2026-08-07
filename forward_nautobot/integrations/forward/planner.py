@@ -145,7 +145,12 @@ class ForwardIngestionPlanner:
         profile: ForwardConnectionProfileRecord | None,
         model_mappings: tuple[ForwardModelMapping, ...],
         filtered_scope: bool = False,
+        snapshot_completeness: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        completeness = dict(snapshot_completeness or {})
+        destructive_reconciliation_enabled = bool(
+            completeness.get("destructive_reconciliation_enabled", True)
+        )
         return {
             "profile_provided": profile is not None,
             "write_ready": bool(profile.write_ready) if profile is not None else False,
@@ -156,7 +161,11 @@ class ForwardIngestionPlanner:
             if profile is not None
             else "ignore",
             "filtered_scope": filtered_scope,
-            "missing_reconciliation_enabled": not filtered_scope,
+            "snapshot_completeness": completeness,
+            "destructive_reconciliation_enabled": destructive_reconciliation_enabled,
+            "missing_reconciliation_enabled": (
+                not filtered_scope and destructive_reconciliation_enabled
+            ),
             "slice_policies": {
                 mapping.slug: {
                     "write_mode": mapping.write_mode,
@@ -164,6 +173,46 @@ class ForwardIngestionPlanner:
                 }
                 for mapping in model_mappings
             },
+        }
+
+    @staticmethod
+    def _snapshot_completeness(
+        metrics: dict[str, Any] | None,
+        *,
+        metrics_available: bool = True,
+    ) -> dict[str, Any]:
+        failure_fields = (
+            "numCollectionFailureDevices",
+            "numProcessingFailureDevices",
+            "numCollectionFailureEndpoints",
+            "numProcessingFailureEndpoints",
+        )
+        counts: dict[str, int] = {}
+        for field_name in failure_fields:
+            raw_value = (metrics or {}).get(field_name, 0)
+            try:
+                counts[field_name] = max(0, int(raw_value or 0))
+            except (TypeError, ValueError):
+                counts[field_name] = 0
+        failure_count = sum(counts.values())
+        if not metrics_available:
+            status = "unavailable"
+            destructive_reconciliation_enabled = False
+            reason = "snapshot metrics unavailable"
+        elif failure_count:
+            status = "incomplete"
+            destructive_reconciliation_enabled = False
+            reason = "snapshot metrics report collection or processing failures"
+        else:
+            status = "complete"
+            destructive_reconciliation_enabled = True
+            reason = ""
+        return {
+            "status": status,
+            "failure_count": failure_count,
+            "failure_counts": counts,
+            "destructive_reconciliation_enabled": destructive_reconciliation_enabled,
+            "reason": reason,
         }
 
     @staticmethod
@@ -252,6 +301,7 @@ class ForwardIngestionPlanner:
         target: NautobotTargetAdapter,
         profile: ForwardConnectionProfileRecord | None,
         filtered_scope: bool = False,
+        destructive_reconciliation_enabled: bool = True,
     ) -> tuple[ForwardWritePlan, dict[str, int], dict[str, Any]]:
         writer = ForwardWritePlanner()
         write_plan = writer.plan(
@@ -259,6 +309,7 @@ class ForwardIngestionPlanner:
             target,
             profile=profile,
             filtered_scope=filtered_scope,
+            destructive_reconciliation_enabled=destructive_reconciliation_enabled,
         )
         return write_plan, dict(write_plan.diff_summary), dict(write_plan.diff_detail)
 
@@ -269,6 +320,7 @@ class ForwardIngestionPlanner:
         rows: list[dict[str, Any]],
         profile: ForwardConnectionProfileRecord | None,
         filtered_scope: bool = False,
+        destructive_reconciliation_enabled: bool = True,
     ) -> tuple[
         ForwardWritePlan,
         dict[str, int],
@@ -285,6 +337,7 @@ class ForwardIngestionPlanner:
             "blocked": 0,
             "no-change": 0,
             "filtered_out": 0,
+            "destructive_suppressed": 0,
         }
         source_rows: list[dict[str, Any]] = []
         diff_entries: list[dict[str, Any]] = []
@@ -305,14 +358,19 @@ class ForwardIngestionPlanner:
             else:
                 continue
             record_key = self._row_key(mapping, data)
-            if action == "delete" and filtered_scope:
-                summary["filtered_out"] += 1
+            if action == "delete" and (filtered_scope or not destructive_reconciliation_enabled):
+                summary_key = "filtered_out" if filtered_scope else "destructive_suppressed"
+                summary[summary_key] += 1
                 diff_entries.append(
                     {
                         "type": row.get("type"),
                         "before": before,
                         "after": after,
-                        "action": "filtered-delete-suppressed",
+                        "action": (
+                            "filtered-delete-suppressed"
+                            if filtered_scope
+                            else "incomplete-snapshot-delete-suppressed"
+                        ),
                         "record_key": record_key,
                     }
                 )
@@ -364,6 +422,7 @@ class ForwardIngestionPlanner:
             delta_mode=True,
             delta_models=(mapping.slug,),
             filtered_scope=filtered_scope,
+            destructive_reconciliation_enabled=destructive_reconciliation_enabled,
         )
         return (
             write_plan,
@@ -548,6 +607,24 @@ class ForwardIngestionPlanner:
         current_snapshot_id = self.client.resolve_snapshot_id(
             network_id, request.snapshot_id or connection.snapshot_id
         )
+        try:
+            snapshot_metrics = self.client.get_snapshot_metrics(current_snapshot_id)
+            snapshot_completeness = self._snapshot_completeness(snapshot_metrics)
+        except ForwardClientError:
+            snapshot_metrics = {}
+            snapshot_completeness = self._snapshot_completeness(
+                snapshot_metrics,
+                metrics_available=False,
+            )
+        destructive_reconciliation_enabled = bool(
+            snapshot_completeness["destructive_reconciliation_enabled"]
+        )
+        snapshot_safety_notes: tuple[str, ...] = ()
+        if not destructive_reconciliation_enabled:
+            snapshot_safety_notes = (
+                "Destructive reconciliation is disabled because "
+                f"{snapshot_completeness['reason']}.",
+            )
         previous_snapshot_id = str(
             getattr(request.connection_profile, "last_snapshot_id", "") or ""
         ).strip()
@@ -575,9 +652,11 @@ class ForwardIngestionPlanner:
                         profile=request.connection_profile,
                         model_mappings=model_mappings,
                         filtered_scope=request.filtered_scope,
+                        snapshot_completeness=snapshot_completeness,
                     ),
                     slice_policies={m.slug: self._slice_policy_for(m) for m in model_mappings},
                     filtered_scope=request.filtered_scope,
+                    destructive_reconciliation_enabled=destructive_reconciliation_enabled,
                     scope_fingerprint=current_scope_fingerprint,
                 ),
                 diff_summary=empty_summary,
@@ -590,6 +669,7 @@ class ForwardIngestionPlanner:
                     "delta_models": [],
                     "skipped": True,
                     "reason": "snapshot unchanged since last sync",
+                    "snapshot_completeness": snapshot_completeness,
                     "slices": {},
                 },
             )
@@ -728,6 +808,7 @@ class ForwardIngestionPlanner:
                         rows=rows,
                         profile=request.connection_profile,
                         filtered_scope=request.filtered_scope,
+                        destructive_reconciliation_enabled=destructive_reconciliation_enabled,
                     )
                     if source_rows:
                         source.load_rows(mapping.slug, source_rows)
@@ -751,6 +832,7 @@ class ForwardIngestionPlanner:
                         target=slice_target,
                         profile=request.connection_profile,
                         filtered_scope=request.filtered_scope,
+                        destructive_reconciliation_enabled=destructive_reconciliation_enabled,
                     )
                     report_rows = rows
                     diff_detail_slices[mapping.slug] = {
@@ -780,9 +862,11 @@ class ForwardIngestionPlanner:
                         query_contract_version=query_contract_version,
                         row_count=len(report_rows or rows),
                         rows=tuple(report_rows or rows),
+                        snapshot_metrics=snapshot_metrics,
                         planned_models=(mapping.slug,),
                         notes=(
                             *notes,
+                            *snapshot_safety_notes,
                             *(
                                 (f"Diff baseline snapshot: {baseline_snapshot_id}.",)
                                 if query_mode.endswith("_diff") and baseline_snapshot_id
@@ -799,6 +883,7 @@ class ForwardIngestionPlanner:
                 profile=request.connection_profile,
                 model_mappings=model_mappings,
                 filtered_scope=request.filtered_scope,
+                snapshot_completeness=snapshot_completeness,
             ),
             slice_policies={
                 mapping.slug: self._slice_policy_for(mapping) for mapping in model_mappings
@@ -806,6 +891,7 @@ class ForwardIngestionPlanner:
             delta_mode=bool(delta_models),
             delta_models=tuple(delta_models),
             filtered_scope=request.filtered_scope,
+            destructive_reconciliation_enabled=destructive_reconciliation_enabled,
             scope_fingerprint=current_scope_fingerprint,
         )
         diff_detail = {
@@ -826,6 +912,8 @@ class ForwardIngestionPlanner:
                 and previous_scope_fingerprint != current_scope_fingerprint
             ),
             "filtered_scope": request.filtered_scope,
+            "snapshot_completeness": snapshot_completeness,
+            "destructive_reconciliation_enabled": destructive_reconciliation_enabled,
             "selected_device_count": len(device_scope.device_names) if device_scope else 0,
             "scope_query_mode": scope_query_mode,
             "delta_models": list(delta_models),

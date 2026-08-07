@@ -43,6 +43,7 @@ def test_readme_documents_release_readiness_checks():
     assert "python -m pytest -q" in readme
     assert "python scripts/check_sensitive_content.py --all-history" in readme
     assert "python scripts/check_wheel_contents.py" in readme
+    assert "python scripts/check_installed_wheel.py" in readme
     assert "async full-query execution with exact-set device scope filtering" in readme
     assert "strict NQE diff execution across two processed snapshots" in readme
     assert "exact committed-source audit for every bundled query" in readme

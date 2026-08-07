@@ -198,7 +198,7 @@ def _mock_transport():
                     "totalNumItems": 2,
                 },
             )
-        if path == "/api/snapshots/snap-2/metrics":
+        if path.startswith("/api/snapshots/") and path.endswith("/metrics"):
             return httpx.Response(200, json={"snapshotState": "processed"})
         raise AssertionError(f"unexpected path: {path}")
 
@@ -560,12 +560,24 @@ def test_client_async_nqe_execution_flow(monkeypatch):
         if path == "/api/networks/net-1/nqe-executions/execution-1":
             calls["execution_statuses"] += 1
             if calls["execution_statuses"] == 1:
-                return httpx.Response(200, json={"status": "EXECUTING"})
+                return httpx.Response(
+                    200,
+                    json={
+                        "status": "EXECUTING",
+                        "millisExecuting": 1200,
+                        "rowsProduced": 42,
+                        "timeoutMinutes": 10,
+                    },
+                    headers={"Retry-After": "3"},
+                )
             return httpx.Response(
                 200,
                 json={
                     "status": "COMPLETED",
                     "outcome": "OK",
+                    "millisExecuting": 4200,
+                    "rowsProduced": 84,
+                    "timeoutMinutes": 10,
                 },
             )
         if path == "/api/networks/net-1/nqe-executions/execution-1/result":
@@ -605,7 +617,22 @@ def test_client_async_nqe_execution_flow(monkeypatch):
     assert calls["execution_submits"] == 1
     assert calls["execution_statuses"] == 2
     assert calls["execution_results"] == 1
-    assert sleep_calls == [0.01]
+    assert sleep_calls == [3.0]
+    assert client.counters.nqe_poll_calls == 2
+    assert client.counters.nqe_poll_sleep_seconds == 3.0
+    assert client.nqe_execution_telemetry() == [
+        {
+            "status": "COMPLETED",
+            "outcome": "OK",
+            "millisExecuting": 4200,
+            "rowsProduced": 84,
+            "timeoutMinutes": 10,
+            "pollCount": 2,
+            "pollSleepSeconds": 3.0,
+            "retryAfterSeconds": 3.0,
+            "terminalReason": "completed",
+        }
+    ]
 
 
 def test_client_async_nqe_execution_result_prefers_ndjson_payload(monkeypatch):
@@ -1240,3 +1267,58 @@ def test_client_uses_org_nqe_change_and_commit_contracts():
 
     assert commit_id == "commit-new"
     assert actions == ["addDir", "addQuery", "editQuery", "commit"]
+
+
+def test_client_uses_snapshot_aware_nqe_commit_dry_run_and_exact_discard():
+    _require_client()
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/nqe/repos/org/commits":
+            assert request.method == "POST"
+            assert dict(request.url.params) == {
+                "dryRun": "true",
+                "snapshotId": "snap-current",
+            }
+            assert json.loads(request.content.decode("utf-8")) == {
+                "paths": ["/forward_nautobot_validation/forward_devices"],
+                "accessSettings": [],
+            }
+            calls.append(("dry-run", "snap-current"))
+            return httpx.Response(
+                200,
+                json={
+                    "newErrors": {},
+                    "uses": [],
+                    "unauthorizedQueryChanges": [],
+                    "unauthorizedAccessSettingChanges": [],
+                },
+            )
+        if path == "/api/users/current/nqe/changes" and request.method == "GET":
+            calls.append(("changes", ""))
+            return httpx.Response(200, json={"changes": [{"type": "QUERY_ADD", "path": "/q"}]})
+        if path == "/api/users/current/nqe/changes" and request.method == "DELETE":
+            assert request.url.params["path"] == "/forward_nautobot_validation/forward_devices"
+            calls.append(("discard", request.url.params["path"]))
+            return httpx.Response(204)
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = ForwardClient(
+        ForwardConnectionSettings(base_url="https://fwd.example", network_id="net-1"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert client.get_org_nqe_draft_changes() == [{"type": "QUERY_ADD", "path": "/q"}]
+    result = client.dry_run_org_nqe_queries(
+        query_paths=["/forward_nautobot_validation/forward_devices"],
+        snapshot_id="snap-current",
+    )
+    client.discard_org_nqe_draft_change(path="/forward_nautobot_validation/forward_devices")
+
+    assert result["newErrors"] == {}
+    assert calls == [
+        ("changes", ""),
+        ("dry-run", "snap-current"),
+        ("discard", "/forward_nautobot_validation/forward_devices"),
+    ]

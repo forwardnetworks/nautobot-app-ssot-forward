@@ -415,6 +415,55 @@ def test_write_executor_suppresses_deletes_for_filtered_scope(monkeypatch):
     assert models[("dcim", "Location")].objects.get(name="SITE-OLD") is existing
 
 
+def test_write_executor_suppresses_all_destructive_reconciliation_for_incomplete_snapshot(
+    monkeypatch,
+):
+    models, resolve = _fake_model_resolver()
+    monkeypatch.setattr(write_executor, "django_apps", object())
+    monkeypatch.setattr(write_executor, "ContentType", None)
+
+    backend = ForwardNautobotWriteBackend(model_resolver=resolve)
+    existing = models[("dcim", "Location")].objects.get_or_create(name="SITE-OLD")[0]
+    plan = ForwardWritePlan(
+        operations=(
+            ForwardWriteOperation(
+                model_slug="locations",
+                record_key="SITE-NEW",
+                nautobot_scope="dcim.location",
+                action="create",
+                fields={"name": "SITE-NEW"},
+                contract_version="v2",
+            ),
+            ForwardWriteOperation(
+                model_slug="locations",
+                record_key="SITE-OLD",
+                nautobot_scope="dcim.location",
+                action="delete",
+                fields={"name": "SITE-OLD"},
+                contract_version="v2",
+            ),
+        ),
+        destructive_reconciliation_enabled=False,
+        configuration_status={
+            "profile_provided": True,
+            "write_ready": True,
+            "destructive_reconciliation_enabled": False,
+        },
+    )
+
+    execution = ForwardNautobotWriteExecutor(backend=backend).execute(
+        plan,
+        _profile(delete_policy="mark_inactive"),
+    )
+
+    assert execution.summary["created"] == 1
+    assert execution.summary["deleted"] == 0
+    assert execution.summary["deactivated"] == 0
+    assert execution.summary["skipped"] == 1
+    assert models[("dcim", "Location")].objects.get(name="SITE-OLD") is existing
+    assert models[("dcim", "Location")].objects.get(name="SITE-NEW")
+
+
 def test_write_executor_applies_expanded_slices_with_fake_backend(monkeypatch):
     models, resolve = _fake_model_resolver()
     monkeypatch.setattr(write_executor, "django_apps", object())

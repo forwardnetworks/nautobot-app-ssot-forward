@@ -36,3 +36,17 @@ container); `health/`, `status/`, and `support-bundle/` require authentication.
 
 The source tree is bind-mounted at `/source`, so code edits are live — no rebuild
 needed unless dependencies change.
+
+## Installed-Wheel Acceptance
+
+The release gate also builds a separate image that contains the exact wheel but no `/source`
+checkout. It migrates a fresh database, seeds a generic local fixture, authenticates, and requests
+every plugin HTML/API route on both supported Nautobot versions:
+
+```bash
+python -m build
+python scripts/check_installed_wheel.py
+```
+
+Use `--versions 3.2.2` for a focused iteration. The full local release gate always runs both
+supported versions and removes its disposable containers and volumes.

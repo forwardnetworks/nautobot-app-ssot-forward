@@ -1,0 +1,55 @@
+# Disposable source-absent wheel acceptance stack. The orchestration script uses
+# a unique project name per supported Nautobot version and always removes volumes.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nautobot
+      POSTGRES_PASSWORD: nautobot
+      POSTGRES_DB: nautobot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nautobot -d nautobot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nautobot:
+    build:
+      context: ${WHEEL_CONTEXT}
+      dockerfile: Dockerfile
+      args:
+        NAUTOBOT_VERSION: ${NAUTOBOT_VERSION}
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NAUTOBOT_CONFIG: /opt/forward-wheel-acceptance/nautobot_config.py
+      DJANGO_SETTINGS_MODULE: nautobot_config
+      NAUTOBOT_SECRET_KEY: forward-nautobot-wheel-acceptance-key
+      NAUTOBOT_DB_ENGINE: django.db.backends.postgresql
+      NAUTOBOT_DB_HOST: postgres
+      NAUTOBOT_DB_PORT: "5432"
+      NAUTOBOT_DB_NAME: nautobot
+      NAUTOBOT_DB_USER: nautobot
+      NAUTOBOT_DB_PASSWORD: nautobot
+      NAUTOBOT_REDIS_HOST: redis
+      NAUTOBOT_REDIS_PORT: "6379"
+      PYTHONDONTWRITEBYTECODE: "1"
+    working_dir: /opt/forward-wheel-acceptance
+    command: sleep infinity
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qx sleep /proc/1/comm"]
+      interval: 2s
+      timeout: 2s
+      retries: 300

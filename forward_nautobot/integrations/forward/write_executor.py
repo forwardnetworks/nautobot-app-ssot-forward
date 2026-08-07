@@ -1175,22 +1175,29 @@ class ForwardNautobotWriteExecutor:
         # half-written; per-operation savepoints inside apply_operation give per-row
         # isolation within it. No-op context when Django is unavailable (unit tests).
         self.backend.reset_run_caches()
+        destructive_reconciliation_enabled = bool(
+            getattr(plan, "destructive_reconciliation_enabled", True)
+        )
         run_atomic = (
             django_transaction.atomic() if django_transaction is not None else nullcontext()
         )
         with run_atomic:
             for operation in plan.operations:
-                if plan.filtered_scope and operation.action == "delete":
+                if operation.action == "delete" and (
+                    plan.filtered_scope or not destructive_reconciliation_enabled
+                ):
+                    reason = (
+                        "this run uses a filtered device scope"
+                        if plan.filtered_scope
+                        else "the current Forward snapshot is incomplete"
+                    )
                     _tally(
                         ForwardWriteExecutionItem(
                             model_slug=operation.model_slug,
                             record_key=operation.record_key,
                             planned_action="delete",
                             status="skipped",
-                            message=(
-                                "Delete was suppressed because this run uses a filtered "
-                                "device scope."
-                            ),
+                            message=f"Delete was suppressed because {reason}.",
                         )
                     )
                     continue
@@ -1203,7 +1210,11 @@ class ForwardNautobotWriteExecutor:
             delta_models = set(getattr(plan, "delta_models", ()) or ())
             if plan.delta_mode and not delta_models:
                 delta_models = set(source_keys_by_slug)
-            if delete_policy in {"delete", "mark_inactive"} and not plan.filtered_scope:
+            if (
+                delete_policy in {"delete", "mark_inactive"}
+                and not plan.filtered_scope
+                and destructive_reconciliation_enabled
+            ):
                 max_delete_fraction = float(
                     getattr(resolved_profile, "reconcile_max_delete_fraction", 0.5) or 0.5
                 )

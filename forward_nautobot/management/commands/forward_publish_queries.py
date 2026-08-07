@@ -25,6 +25,8 @@ class Command(BaseCommand):
         parser.add_argument("--url", default=os.getenv("FORWARD_URL", "https://fwd.app"))
         parser.add_argument("--username", default=os.getenv("FORWARD_USERNAME", ""))
         parser.add_argument("--password", default=os.getenv("FORWARD_PASSWORD", ""))
+        parser.add_argument("--network-id", default=os.getenv("FORWARD_NETWORK_ID", ""))
+        parser.add_argument("--snapshot-id", default=os.getenv("FORWARD_SNAPSHOT_ID", ""))
         parser.add_argument("--directory", default=DEFAULT_QUERY_DIRECTORY)
         parser.add_argument("--audit-only", action="store_true")
         parser.add_argument("--overwrite", action="store_true")
@@ -65,4 +67,6 @@ class Command(BaseCommand):
             base_url=str(options.get("url") or "https://fwd.app").strip(),
             username=username,
             password=password,
+            network_id=str(options.get("network_id") or "").strip(),
+            snapshot_id=str(options.get("snapshot_id") or "").strip() or "latestProcessed",
         )

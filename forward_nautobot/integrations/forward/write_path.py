@@ -54,6 +54,7 @@ class ForwardWritePlan:
     delta_mode: bool = False
     delta_models: tuple[str, ...] = ()
     filtered_scope: bool = False
+    destructive_reconciliation_enabled: bool = True
     scope_fingerprint: str = ""
 
     def as_dict(self) -> dict[str, Any]:
@@ -67,6 +68,7 @@ class ForwardWritePlan:
             "delta_mode": self.delta_mode,
             "delta_models": list(self.delta_models),
             "filtered_scope": self.filtered_scope,
+            "destructive_reconciliation_enabled": self.destructive_reconciliation_enabled,
             "scope_fingerprint": self.scope_fingerprint,
         }
 
@@ -93,6 +95,7 @@ class ForwardWritePlanner:
         target: NautobotTargetAdapter,
         profile: ForwardConnectionProfileRecord | None = None,
         filtered_scope: bool = False,
+        destructive_reconciliation_enabled: bool = True,
     ) -> ForwardWritePlan:
         operations: list[ForwardWriteOperation] = []
         summary = {"create": 0, "update": 0, "no-change": 0, "blocked": 0}
@@ -109,7 +112,10 @@ class ForwardWritePlanner:
             if profile is not None
             else "ignore",
             "filtered_scope": filtered_scope,
-            "missing_reconciliation_enabled": not filtered_scope,
+            "destructive_reconciliation_enabled": destructive_reconciliation_enabled,
+            "missing_reconciliation_enabled": (
+                not filtered_scope and destructive_reconciliation_enabled
+            ),
             "slice_policies": {
                 mapping.slug: {
                     "write_mode": mapping.write_mode,
@@ -187,4 +193,5 @@ class ForwardWritePlanner:
                 for mapping in source.model_mappings
             },
             filtered_scope=filtered_scope,
+            destructive_reconciliation_enabled=destructive_reconciliation_enabled,
         )

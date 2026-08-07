@@ -35,6 +35,8 @@ class ForwardClientCounters:
     http_429: int = 0
     http_retries: int = 0
     nqe_query_calls: int = 0
+    nqe_poll_calls: int = 0
+    nqe_poll_sleep_seconds: float = 0.0
     throttle_sleep_seconds: float = 0.0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
@@ -50,6 +52,8 @@ class ForwardClientCounters:
                 "http_429": self.http_429,
                 "http_retries": self.http_retries,
                 "nqe_query_calls": self.nqe_query_calls,
+                "nqe_poll_calls": self.nqe_poll_calls,
+                "nqe_poll_sleep_seconds": round(self.nqe_poll_sleep_seconds, 3),
                 "throttle_sleep_seconds": round(self.throttle_sleep_seconds, 3),
             }
 
@@ -89,11 +93,27 @@ class ForwardClient:
         default_factory=dict, init=False, repr=False
     )
     _org_nqe_head_commit_id_cache: str = field(default="", init=False, repr=False)
+    _nqe_execution_records: list[dict[str, Any]] = field(
+        default_factory=list, init=False, repr=False
+    )
+    _nqe_execution_records_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
     _last_request_completed_at: float | None = field(default=None, init=False, repr=False)
     _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
     counters: ForwardClientCounters = field(
         default_factory=ForwardClientCounters, init=False, repr=False
     )
+
+    def nqe_execution_telemetry(self) -> list[dict[str, Any]]:
+        """Return redaction-safe async execution progress captured by this client."""
+
+        with self._nqe_execution_records_lock:
+            return [dict(record) for record in self._nqe_execution_records]
+
+    def _record_nqe_execution(self, record: dict[str, Any]) -> None:
+        with self._nqe_execution_records_lock:
+            self._nqe_execution_records.append(dict(record))
 
     def _get_http_client(self) -> httpx.Client:
         if self._http_client is None:
@@ -614,6 +634,64 @@ class ForwardClient:
         )
         return self.get_org_nqe_head_commit_id()
 
+    def dry_run_org_nqe_queries(
+        self,
+        *,
+        query_paths: list[str],
+        snapshot_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Validate exact organization-library draft paths before committing them."""
+
+        normalized_paths = list(
+            dict.fromkeys(
+                path for value in query_paths if (path := self._normalize_query_path(value))
+            )
+        )
+        if not normalized_paths:
+            return {
+                "newErrors": {},
+                "uses": [],
+                "unauthorizedQueryChanges": [],
+                "unauthorizedAccessSettingChanges": [],
+            }
+        params: dict[str, str] = {"dryRun": "true"}
+        resolved_snapshot_id = str(snapshot_id or "").strip()
+        if resolved_snapshot_id:
+            params["snapshotId"] = resolved_snapshot_id
+        response = self._request(
+            "POST",
+            "/nqe/repos/org/commits",
+            params=params,
+            json_body={"paths": normalized_paths, "accessSettings": []},
+        )
+        data = response.json() or {}
+        if not isinstance(data, dict):
+            raise ForwardClientError(
+                "Forward NQE commit dry-run response returned an invalid payload."
+            )
+        return data
+
+    def get_org_nqe_draft_changes(self) -> list[dict[str, Any]]:
+        """Return current-user NQE workspace changes without mutating them."""
+
+        response = self._request("GET", "/users/current/nqe/changes")
+        data = response.json() or {}
+        rows = data.get("changes") if isinstance(data, dict) else []
+        return [dict(row) for row in (rows or []) if isinstance(row, dict)]
+
+    def discard_org_nqe_draft_change(self, *, path: str) -> None:
+        """Discard one exact workspace path created or edited by this publisher."""
+
+        normalized_path = self._normalize_query_path(path)
+        if not normalized_path:
+            raise ForwardConfigurationError("Forward NQE draft path is required.")
+        self._invalidate_nqe_query_read_caches()
+        self._request(
+            "DELETE",
+            "/users/current/nqe/changes",
+            params={"path": normalized_path},
+        )
+
     def resolve_query_spec(self, query_spec: ForwardQuerySpec) -> ForwardQuerySpec:
         if query_spec.query_path and query_spec.resolved_query_id:
             return query_spec
@@ -894,6 +972,20 @@ class ForwardClient:
         network_id: str,
         execution_key: str,
     ) -> dict[str, Any]:
+        status, _retry_after = self._get_nqe_execution_status_response(
+            network_id=network_id,
+            execution_key=execution_key,
+        )
+        return status
+
+    def _get_nqe_execution_status_response(
+        self,
+        *,
+        network_id: str,
+        execution_key: str,
+    ) -> tuple[dict[str, Any], float | None]:
+        """Return the raw status payload plus Forward's polling interval."""
+
         network_id = str(network_id or "").strip()
         execution_key = str(execution_key or "").strip()
         if not network_id:
@@ -909,7 +1001,7 @@ class ForwardClient:
             raise ForwardClientError(
                 "Forward NQE execution status response returned an invalid payload."
             )
-        return data
+        return data, self._retry_after_seconds(response.headers.get("Retry-After"))
 
     def get_nqe_execution_result(
         self,
@@ -1017,6 +1109,7 @@ class ForwardClient:
         fetch_all: bool = False,
         poll_interval_seconds: float = 5.0,
         max_polls: int = 60,
+        max_wait_seconds: float = 3600.0,
     ) -> list[dict[str, Any]]:
         self.counters.bump("nqe_query_calls")
         network_id = str(network_id or self.settings.network_id or "").strip()
@@ -1029,23 +1122,63 @@ class ForwardClient:
         )
         execution_key = str(execution.get("executionKey") or "").strip()
         status = execution if isinstance(execution, dict) else {}
+        poll_count = 0
+        poll_sleep_seconds = 0.0
+        last_retry_after: float | None = None
+        started_at = time.monotonic()
+        local_deadline = started_at + max(1.0, float(max_wait_seconds))
+
+        def record_status(terminal_reason: str) -> None:
+            self._record_nqe_execution(
+                {
+                    "status": str(status.get("status") or ""),
+                    "outcome": str(status.get("outcome") or ""),
+                    "millisExecuting": status.get("millisExecuting"),
+                    "rowsProduced": status.get("rowsProduced"),
+                    "timeoutMinutes": status.get("timeoutMinutes"),
+                    "pollCount": poll_count,
+                    "pollSleepSeconds": round(poll_sleep_seconds, 3),
+                    "retryAfterSeconds": last_retry_after,
+                    "terminalReason": terminal_reason,
+                }
+            )
+
         if str(status.get("status") or "").strip() != "COMPLETED":
             poll_cap = max(0.0, float(poll_interval_seconds))
             poll_wait = min(0.5, poll_cap)
-            for poll_count in range(int(max_polls)):
-                if poll_count:
-                    time.sleep(poll_wait)
-                    poll_wait = min(poll_wait * 2.0, poll_cap)
-                status = self.get_nqe_execution_status(
+            for _poll_index in range(int(max_polls)):
+                status, retry_after = self._get_nqe_execution_status_response(
                     network_id=network_id,
                     execution_key=execution_key,
                 )
+                poll_count += 1
+                self.counters.bump("nqe_poll_calls")
                 if str(status.get("status") or "").strip() == "COMPLETED":
                     break
+                timeout_minutes = status.get("timeoutMinutes")
+                try:
+                    server_deadline = started_at + (float(timeout_minutes) * 60.0) + 60.0
+                except (TypeError, ValueError):
+                    server_deadline = local_deadline
+                deadline = min(local_deadline, server_deadline)
+                wait = retry_after if retry_after is not None else poll_wait
+                last_retry_after = retry_after
+                if time.monotonic() + wait > deadline:
+                    record_status("polling-deadline")
+                    raise ForwardClientError(
+                        "Forward NQE execution did not complete before its polling deadline."
+                    )
+                if wait > 0:
+                    self.counters.bump("nqe_poll_sleep_seconds", wait)
+                    poll_sleep_seconds += wait
+                    time.sleep(wait)
+                poll_wait = min(poll_wait * 2.0, poll_cap)
             else:
+                record_status("poll-limit")
                 raise ForwardClientError(
                     "Forward NQE execution did not complete before the poll limit was reached."
                 )
+        record_status("completed")
         outcome = str(status.get("outcome") or "").strip()
         if outcome != "OK":
             error = status.get("error")
