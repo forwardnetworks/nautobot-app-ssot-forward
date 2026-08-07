@@ -9,10 +9,17 @@ from typing import Any
 from ..registry import CORE_MODEL_MAPPINGS
 
 QUERY_CONTRACT_FIELDS: dict[str, tuple[str, ...]] = {
-    "forward_locations.nqe": ("name", "city", "country"),
-    "forward_platforms.nqe": ("name", "manufacturer", "device_type"),
-    "forward_device_types.nqe": ("name", "color"),
-    "forward_devices.nqe": ("name", "location", "vendor", "model", "device_type"),
+    "forward_locations.nqe": ("name", "city", "country", "scope_devices"),
+    "forward_platforms.nqe": ("name", "manufacturer", "scope_devices"),
+    "forward_device_types.nqe": ("manufacturer", "name", "color", "scope_devices"),
+    "forward_devices.nqe": (
+        "name",
+        "location",
+        "vendor",
+        "device_type",
+        "model",
+        "platform",
+    ),
     "forward_interfaces.nqe": (
         "device",
         "name",
@@ -26,8 +33,14 @@ QUERY_CONTRACT_FIELDS: dict[str, tuple[str, ...]] = {
         "speed",
         "mac_address",
     ),
-    "forward_vlans.nqe": ("site", "vid", "name", "status"),
-    "forward_vrfs.nqe": ("name", "rd", "description", "enforce_unique"),
+    "forward_vlans.nqe": ("site", "vid", "name", "status", "scope_devices"),
+    "forward_vrfs.nqe": (
+        "name",
+        "rd",
+        "description",
+        "enforce_unique",
+        "scope_devices",
+    ),
     "forward_prefixes_ipv4.nqe": ("vrf", "prefix", "status"),
     "forward_prefixes_ipv6.nqe": ("vrf", "prefix", "status"),
     "forward_ip_addresses.nqe": (
@@ -63,11 +76,36 @@ QUERY_CONTRACT_FIELDS: dict[str, tuple[str, ...]] = {
         "asset_tag",
         "description",
     ),
+    "forward_cables.nqe": (
+        "device",
+        "interface",
+        "remote_device",
+        "remote_interface",
+        "status",
+    ),
+    "forward_cloud_accounts.nqe": ("account_id", "name", "cloud_type"),
+    "forward_cloud_networks.nqe": (
+        "account_id",
+        "cloud_type",
+        "network_id",
+        "name",
+        "parent_id",
+        "kind",
+        "cidrs",
+    ),
+    "forward_cloud_services.nqe": (
+        "account_id",
+        "cloud_type",
+        "service_id",
+        "name",
+        "vpc_id",
+        "service_kind",
+    ),
 }
 
-_SELECT_BLOCK_PATTERN = re.compile(
-    r"select(?:\s+distinct)?\s*\{(?P<body>.*?)\}\s*;",
-    re.IGNORECASE | re.DOTALL,
+_SELECT_BLOCK_START_PATTERN = re.compile(
+    r"select(?:\s+distinct)?\s*\{",
+    re.IGNORECASE,
 )
 
 
@@ -89,26 +127,42 @@ def _contract_field_names_from_select_body(select_body: str) -> tuple[str, ...]:
 def get_query_contract_field_sets(filename: str) -> tuple[tuple[str, ...], ...]:
     package_root = resources.files("forward_nautobot.integrations.forward.queries")
     contents = (package_root / filename).read_text(encoding="utf-8")
-    return tuple(
-        _contract_field_names_from_select_body(match.group("body"))
-        for match in _SELECT_BLOCK_PATTERN.finditer(contents)
-    )
+    field_sets: list[tuple[str, ...]] = []
+    for match in _SELECT_BLOCK_START_PATTERN.finditer(contents):
+        body_start = match.end()
+        depth = 1
+        cursor = body_start
+        while cursor < len(contents) and depth:
+            character = contents[cursor]
+            if character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+            cursor += 1
+        if depth == 0:
+            field_sets.append(_contract_field_names_from_select_body(contents[body_start : cursor - 1]))
+    return tuple(field_sets)
 
 
 def get_query_contract_fields(filename: str) -> tuple[str, ...]:
     expected = QUERY_CONTRACT_FIELDS[filename]
     field_sets = get_query_contract_field_sets(filename)
-    if not field_sets:
-        return ()
-    return field_sets[0] if all(field_set == expected for field_set in field_sets) else ()
+    return expected if expected in field_sets else ()
 
 
 def get_bundled_query_contracts() -> dict[str, dict[str, Any]]:
     return {
-        mapping.forward_query_file: {
-            "fields": QUERY_CONTRACT_FIELDS[mapping.forward_query_file],
-            "field_sets": get_query_contract_field_sets(mapping.forward_query_file),
-            "contract_version": mapping.contract_version,
+        filename: {
+            "fields": QUERY_CONTRACT_FIELDS[filename],
+            "field_sets": get_query_contract_field_sets(filename),
+            "contract_version": next(
+                (
+                    mapping.contract_version
+                    for mapping in CORE_MODEL_MAPPINGS
+                    if mapping.forward_query_file == filename
+                ),
+                "",
+            ),
         }
-        for mapping in CORE_MODEL_MAPPINGS
+        for filename in sorted(QUERY_CONTRACT_FIELDS)
     }

@@ -15,9 +15,8 @@ Two behaviors moved out of the writer to satisfy contrib:
 - Location dedup happens in the SOURCE (one canonical row per physical site),
   and a shared LocationCanonicalizer maps every device's raw location string to
   that same canonical name so the FK lookup resolves.
-- Manufacturer/Platform/DeviceType are DERIVED from device rows (which carry
-  vendor/model/device_type together); the standalone platforms/device_types NQE
-  slices lack a manufacturer and cannot form a valid identity alone.
+- Manufacturer/Platform/DeviceType are DERIVED from device rows so one filtered
+  device population drives the complete foreign-key chain.
 
 Imports safely when nautobot-ssot/Django are unavailable (unit/CI): CONTRIB_AVAILABLE
 is False and no model/adapter classes are defined. Exercised by the live WF smoke
@@ -384,13 +383,13 @@ if CONTRIB_AVAILABLE:
             for row in self._device_rows:
                 vendor = str(row.get("vendor") or "").strip()
                 model = str(row.get("model") or "").strip()
-                dtype = str(row.get("device_type") or "").strip()
+                platform = str(row.get("platform") or "").strip()
                 if vendor:
                     manufacturers.add(vendor)
-                if model and vendor:
-                    platforms.setdefault(model, vendor)
-                if vendor and dtype:
-                    device_types.add((vendor, dtype))
+                if platform and vendor:
+                    platforms.setdefault(platform, vendor)
+                if vendor and model:
+                    device_types.add((vendor, model))
 
             for name in sorted(manufacturers):
                 self.add(ForwardContribManufacturer(name=name))
@@ -416,11 +415,11 @@ if CONTRIB_AVAILABLE:
                 name = str(row.get("name") or "").strip()
                 vendor = str(row.get("vendor") or "").strip()
                 model = str(row.get("model") or "").strip()
-                dtype = str(row.get("device_type") or "").strip()
+                platform = str(row.get("platform") or "").strip()
                 location = self._canon.canonical(row.get("location") or "")
                 # Skip rows missing a required identity/FK so contrib lookups do
                 # not blow up; incomplete devices are not synced.
-                if not (name and vendor and model and dtype and location):
+                if not (name and vendor and model and platform and location):
                     continue
                 if name in seen_devices:
                     continue
@@ -432,8 +431,8 @@ if CONTRIB_AVAILABLE:
                         role__name=self._device_role_name,
                         status__name=self._device_status_name,
                         device_type__manufacturer__name=vendor,
-                        device_type__model=dtype,
-                        platform__name=model,
+                        device_type__model=model,
+                        platform__name=platform,
                     )
                 )
 
@@ -1306,26 +1305,41 @@ def _profile_defaults(profile) -> dict[str, str]:
     }
 
 
-def _cloud_query_rows(client, network_id, snapshot_id, query_file):
-    """Run a published bundled cloud .nqe query path and return its rows.
+def _cloud_query_rows(client, network_id, snapshot_id, query_file, *, parameters=None):
+    """Run a bundled auxiliary query by path, falling back to inline async NQE.
 
     Cloud slices are not in the model registry/planner, so they are fetched here.
-    Returns [] on any client error (e.g. a tenant with no cloud data or an
-    unpublished optional cloud query path).
+    Auxiliary slices are not diff-backed, but an unpublished optional query must
+    not prevent the rest of the plugin from running.
     """
+    from .exceptions import ForwardClientError
     from .models import ForwardQuerySpec
+    from .queries import read_bundled_query_execution_source
 
     # fetch_all so large tenants are not silently truncated to one page; the
     # error propagates (a real API/permission failure must not look like
     # "no cloud" — that's the caller's distinction to make).
-    return client.run_nqe_query(
-        query_spec=ForwardQuerySpec(
-            query_path=f"/forward_nautobot_validation/{query_file.removesuffix('.nqe')}"
-        ),
-        network_id=network_id,
-        snapshot_id=snapshot_id,
-        fetch_all=True,
+    query_spec = ForwardQuerySpec(
+        query_path=f"/forward_nautobot_validation/{query_file.removesuffix('.nqe')}",
+        parameters=dict(parameters or {}),
     )
+    try:
+        return client.run_nqe_query(
+            query_spec=query_spec,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            fetch_all=True,
+        )
+    except ForwardClientError:
+        return client.run_nqe_query(
+            query_spec=ForwardQuerySpec(
+                query_text=read_bundled_query_execution_source(query_file),
+                parameters=dict(parameters or {}),
+            ),
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            fetch_all=True,
+        )
 
 
 def run_contrib_cable_sync(
@@ -1392,6 +1406,7 @@ def run_contrib_full_sync(
     include_cloud: bool = True,
     include_cables: bool = True,
     allow_delete: bool = False,
+    filtered_scope: bool = False,
     delete_controls: DeleteControls | None = None,
     job: Any | None = None,
 ) -> dict[str, dict[str, int]]:
@@ -1440,7 +1455,23 @@ def run_contrib_full_sync(
         # after the core sync (both endpoint interfaces must already exist). A
         # failure is isolated to the cable domain — never aborts the run.
         try:
-            cable_rows = _cloud_query_rows(client, network_id, snapshot_id, "forward_cables.nqe")
+            device_names = [
+                str(row.get("name") or "").strip()
+                for row in rows("devices")
+                if str(row.get("name") or "").strip()
+            ]
+            # An empty list means "all devices" to the reusable NQE. In a
+            # filtered run, zero selected devices must therefore produce zero
+            # cable rows rather than accidentally widening back to the network.
+            cable_rows = []
+            if device_names or not filtered_scope:
+                cable_rows = _cloud_query_rows(
+                    client,
+                    network_id,
+                    snapshot_id,
+                    "forward_cables.nqe",
+                    parameters={"forward_device_names": device_names},
+                )
             summaries["cables"] = run_contrib_cable_sync(
                 cable_rows=cable_rows, dryrun=dryrun, job=job
             )

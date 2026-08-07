@@ -53,6 +53,8 @@ class ForwardWritePlan:
     slice_policies: dict[str, dict[str, str]] = field(default_factory=dict)
     delta_mode: bool = False
     delta_models: tuple[str, ...] = ()
+    filtered_scope: bool = False
+    scope_fingerprint: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +66,8 @@ class ForwardWritePlan:
             "slice_policies": {slug: dict(policy) for slug, policy in self.slice_policies.items()},
             "delta_mode": self.delta_mode,
             "delta_models": list(self.delta_models),
+            "filtered_scope": self.filtered_scope,
+            "scope_fingerprint": self.scope_fingerprint,
         }
 
 
@@ -88,6 +92,7 @@ class ForwardWritePlanner:
         source: ForwardSourceAdapter,
         target: NautobotTargetAdapter,
         profile: ForwardConnectionProfileRecord | None = None,
+        filtered_scope: bool = False,
     ) -> ForwardWritePlan:
         operations: list[ForwardWriteOperation] = []
         summary = {"create": 0, "update": 0, "no-change": 0, "blocked": 0}
@@ -103,6 +108,8 @@ class ForwardWritePlanner:
             "delete_policy": getattr(profile, "delete_policy", "ignore")
             if profile is not None
             else "ignore",
+            "filtered_scope": filtered_scope,
+            "missing_reconciliation_enabled": not filtered_scope,
             "slice_policies": {
                 mapping.slug: {
                     "write_mode": mapping.write_mode,
@@ -179,4 +186,5 @@ class ForwardWritePlanner:
                 }
                 for mapping in source.model_mappings
             },
+            filtered_scope=filtered_scope,
         )

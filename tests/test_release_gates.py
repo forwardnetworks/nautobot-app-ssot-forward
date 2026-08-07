@@ -44,6 +44,10 @@ def test_wheel_contents_gate_accepts_required_files(tmp_path):
     with ZipFile(wheel_path, "w") as wheel:
         for expected_file in check_wheel_contents.EXPECTED_FILES:
             wheel.writestr(expected_file, "ok\n")
+        wheel.writestr(
+            "nautobot_app_ssot_forward-0.6.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: nautobot-app-ssot-forward\nVersion: 0.6.0\n",
+        )
 
     exit_code = check_wheel_contents.main(["--wheel-path", str(wheel_path)])
 

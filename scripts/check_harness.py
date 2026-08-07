@@ -15,7 +15,6 @@ REQUIRED_PATHS = [
     "docs/03_Plans/active/2026-06-11-forward-nautobot-production-readiness-checklist.md",
     "docs/03_Plans/active/2026-06-11-forward-nautobot-future-improvements.md",
     "forward_nautobot/migrations/0001_initial.py",
-    ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
     "scripts/check_sensitive_content.py",
     "scripts/check_query_contracts.py",
@@ -49,7 +48,7 @@ REQUIRED_TEXT = {
     ],
     "README.md": [
         "Forward API client",
-        "GitHub Actions CI",
+        "Local-only validation",
         "Security Policy",
         "Validation Matrix",
     ],
@@ -74,31 +73,45 @@ REQUIRED_TEXT = {
         "No live customer credentials",
         "No skipped non-integration tests",
     ],
-    ".github/workflows/ci.yml": [
-        "check_sensitive_content.py",
-        "check_harness.py",
-        "check_query_contracts.py",
-        "generate_contract_diff_report.py",
-        "check_wheel_contents.py",
-        "pytest",
-        "build",
-    ],
     ".github/workflows/release.yml": [
-        "check_sensitive_content.py",
-        "check_harness.py",
-        "check_release_state.py",
-        "check_query_contracts.py",
-        "generate_contract_diff_report.py",
-        "check_wheel_contents.py",
+        "python -m build",
         "softprops/action-gh-release",
+        "pypa/gh-action-pypi-publish",
     ],
 }
+
+FORBIDDEN_PATHS = [".github/workflows/ci.yml"]
+
+FORBIDDEN_RELEASE_WORKFLOW_TEXT = [
+    "check_sensitive_content.py",
+    "check_harness.py",
+    "check_release_state.py",
+    "check_query_contracts.py",
+    "generate_contract_diff_report.py",
+    "check_wheel_contents.py",
+    "python -m pytest",
+    "pre-commit",
+]
 
 
 def _check_required_paths(failures: list[str]) -> None:
     for relative_path in REQUIRED_PATHS:
         if not (REPO_ROOT / relative_path).exists():
             failures.append(f"missing required path: {relative_path}")
+
+
+def _check_local_only_validation(failures: list[str]) -> None:
+    for relative_path in FORBIDDEN_PATHS:
+        if (REPO_ROOT / relative_path).exists():
+            failures.append(f"GitHub validation workflow must not exist: {relative_path}")
+
+    release_path = REPO_ROOT / ".github/workflows/release.yml"
+    if not release_path.exists():
+        return
+    release_text = release_path.read_text(encoding="utf-8")
+    for fragment in FORBIDDEN_RELEASE_WORKFLOW_TEXT:
+        if fragment in release_text:
+            failures.append(f"release workflow must remain delivery-only: {fragment}")
 
 
 def _check_required_text(failures: list[str]) -> None:
@@ -142,6 +155,7 @@ def _check_roadmap_headings(failures: list[str]) -> None:
 def main() -> int:
     failures: list[str] = []
     _check_required_paths(failures)
+    _check_local_only_validation(failures)
     _check_required_text(failures)
     _check_plan_headings(failures)
     _check_roadmap_headings(failures)

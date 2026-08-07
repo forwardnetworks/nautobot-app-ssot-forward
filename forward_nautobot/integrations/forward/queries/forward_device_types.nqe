@@ -1,19 +1,28 @@
 /**
  * @intent Forward device types
- * @description Device type rows for Nautobot ingestion testing and initial device role mapping.
- * @contract-version v1
+ * @description Forward hardware models mapped to Nautobot DeviceType rows.
+ * @contract-version v2
  */
 
-@primaryKey(name)
-@query
-f(forward_location_names: List<String>) =
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isEmpty(forward_location_names)
-  || !isPresent(device.locationName)
-  || device.locationName in forward_location_names
+@primaryKey(manufacturer, name)
+foreach row in (
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isPresent(device.platform.model) && device.platform.model != ""
+  select distinct {
+    manufacturer: toString(device.platform.vendor),
+    name: device.platform.model,
+    scope_device: device.name
+  }
+)
+group row as grouped_rows by {
+  manufacturer: row.manufacturer,
+  name: row.name
+} as key
 select {
-  name: toString(device.platform.deviceType),
-  color: "9e9e9e"
-};
+  manufacturer: key.manufacturer,
+  name: key.name,
+  color: "9e9e9e",
+  scope_devices: distinct(foreach candidate in grouped_rows select candidate.scope_device)
+}

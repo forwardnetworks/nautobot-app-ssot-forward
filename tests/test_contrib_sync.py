@@ -16,6 +16,7 @@ from forward_nautobot.integrations.forward.contrib_sync import (
     cloud_provider_name,
     cloud_resource_type_name,
 )
+from forward_nautobot.integrations.forward.exceptions import ForwardClientError
 
 
 def test_normalize_mac_converges_eui_and_colon_forms():
@@ -146,3 +147,60 @@ def test_canonicalizer_ignores_blank():
     c.add("")
     c.add("   ")
     assert c.names == []
+
+
+def test_filtered_empty_device_scope_does_not_widen_cable_query(monkeypatch):
+    monkeypatch.setattr(contrib_sync, "CONTRIB_AVAILABLE", True)
+    monkeypatch.setattr(contrib_sync, "run_contrib_core_sync", lambda **kwargs: {})
+    monkeypatch.setattr(contrib_sync, "run_contrib_extended_sync", lambda **kwargs: {})
+    monkeypatch.setattr(
+        contrib_sync,
+        "_cloud_query_rows",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("an empty filtered scope must not execute the cable NQE")
+        ),
+    )
+    monkeypatch.setattr(
+        contrib_sync,
+        "run_contrib_cable_sync",
+        lambda *, cable_rows, **kwargs: {"received": len(cable_rows)},
+    )
+
+    result = contrib_sync.run_contrib_full_sync(
+        source_records={"devices": []},
+        profile=SimpleNamespace(),
+        dryrun=True,
+        client=object(),
+        network_id="network-fixture",
+        include_cloud=False,
+        include_cables=True,
+        filtered_scope=True,
+        job=SimpleNamespace(),
+    )
+
+    assert result["cables"] == {"received": 0}
+
+
+def test_auxiliary_query_falls_back_to_bundled_inline_async():
+    class _Client:
+        def __init__(self):
+            self.modes = []
+
+        def run_nqe_query(self, *, query_spec, **_kwargs):
+            self.modes.append(query_spec.execution_mode)
+            if query_spec.execution_mode == "query_path":
+                raise ForwardClientError("not published")
+            assert "@contract-version" in query_spec.query_text
+            return [{"account_id": "fixture-account"}]
+
+    client = _Client()
+
+    rows = contrib_sync._cloud_query_rows(
+        client,
+        "network-fixture",
+        "snapshot-fixture",
+        "forward_cloud_accounts.nqe",
+    )
+
+    assert rows == [{"account_id": "fixture-account"}]
+    assert client.modes == ["query_path", "query"]

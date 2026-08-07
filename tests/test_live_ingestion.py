@@ -15,6 +15,7 @@ from forward_nautobot.integrations.forward.models import (
     ForwardSyncReport,
     ForwardSyncSpec,
 )
+from forward_nautobot.integrations.forward.queries import read_bundled_query_execution_source
 from forward_nautobot.integrations.forward.registry import get_model_mapping, get_model_mappings
 from forward_nautobot.integrations.forward.support import build_support_bundle
 
@@ -61,19 +62,10 @@ def _query_path_for(filename: str) -> str:
     return f"/forward_nautobot_validation/{filename.removesuffix('.nqe')}"
 
 
-_LIVE_LOCATION_NAMES_CACHE: dict[tuple[str, str, str], tuple[str, ...]] = {}
-_LIVE_DEVICE_NAMES_CACHE: dict[tuple[str, str, str], tuple[str, ...]] = {}
-
-
-def _live_cache_key(settings: ForwardConnectionSettings) -> tuple[str, str, str]:
-    return (settings.base_url, settings.username, settings.network_id)
-
-
 def _run_live_query(
     settings: ForwardConnectionSettings,
     filename: str,
     *,
-    parameters: dict[str, object] | None = None,
     limit: int = 3,
     fetch_all: bool = False,
 ):
@@ -82,41 +74,13 @@ def _run_live_query(
     client = ForwardClient(settings)
     query_path = _query_path_for(filename)
     rows = client.run_nqe_query(
-        query_spec=ForwardQuerySpec(query_path=query_path, parameters=parameters or {}),
+        query_spec=ForwardQuerySpec(query_path=query_path),
         network_id=settings.network_id,
         snapshot_id=os.environ.get("FORWARD_LIVE_SNAPSHOT_ID", "latestProcessed"),
         fetch_all=fetch_all,
         limit=limit,
     )
     return client, query_path, rows
-
-
-def _live_location_names(settings: ForwardConnectionSettings) -> tuple[str, ...]:
-    cache_key = _live_cache_key(settings)
-    if cache_key not in _LIVE_LOCATION_NAMES_CACHE:
-        _, _, rows = _run_live_query(settings, "forward_locations.nqe", limit=25)
-        _LIVE_LOCATION_NAMES_CACHE[cache_key] = tuple(
-            row["name"] for row in rows if row.get("name")
-        )
-    return _LIVE_LOCATION_NAMES_CACHE[cache_key]
-
-
-def _live_device_names(
-    settings: ForwardConnectionSettings,
-    *,
-    location_names: tuple[str, ...] | None = None,
-) -> tuple[str, ...]:
-    cache_key = _live_cache_key(settings)
-    if cache_key not in _LIVE_DEVICE_NAMES_CACHE:
-        names = location_names if location_names is not None else _live_location_names(settings)
-        _, _, rows = _run_live_query(
-            settings,
-            "forward_devices.nqe",
-            parameters={"forward_location_names": list(names)},
-            limit=25,
-        )
-        _LIVE_DEVICE_NAMES_CACHE[cache_key] = tuple(row["name"] for row in rows if row.get("name"))
-    return _LIVE_DEVICE_NAMES_CACHE[cache_key]
 
 
 def _require_live_query_path(settings: ForwardConnectionSettings, query_path: str):
@@ -197,8 +161,143 @@ def test_live_async_execution_smoke():
 
     assert rows, "live async smoke returned no rows"
     first_row = rows[0]
-    assert "Device" in first_row
+    assert "name" in first_row
     assert len(first_row) >= 2
+
+
+@pytest.mark.integration
+def test_live_inline_bundled_query_uses_async_execution():
+    _require_live_client()
+    settings = _live_settings()
+    if settings is None:
+        pytest.skip("live Forward credentials not configured")
+
+    client = ForwardClient(settings)
+    rows = client.run_nqe_query_async(
+        query_spec=ForwardQuerySpec(
+            query_text=read_bundled_query_execution_source("forward_devices.nqe"),
+        ),
+        network_id=settings.network_id,
+        snapshot_id=os.environ.get("FORWARD_LIVE_SNAPSHOT_ID", "latestProcessed"),
+        fetch_all=False,
+        limit=3,
+    )
+
+    assert rows, "live inline async smoke returned no rows"
+    assert set(rows[0]) == {
+        "name",
+        "location",
+        "vendor",
+        "device_type",
+        "model",
+        "platform",
+    }
+
+
+@pytest.mark.integration
+def test_live_saved_query_uses_nqe_diff_endpoint():
+    _require_live_client()
+    settings = _live_settings()
+    if settings is None:
+        pytest.skip("live Forward credentials not configured")
+
+    query_path = get_model_mapping("devices").forward_query_path
+    resolved = _require_live_query_path(settings, query_path)
+    client = ForwardClient(settings)
+    snapshots = [
+        row
+        for row in client.get_snapshots(settings.network_id, include_archived=True, limit=20)
+        if str(row.get("id") or "").strip()
+        and str(row.get("state") or "").strip().upper() == "PROCESSED"
+    ]
+    ordered_snapshots = sorted(
+        snapshots,
+        key=lambda row: str(row.get("processed_at") or row.get("created_at") or ""),
+    )
+    unique_snapshots = list(
+        {str(row["id"]).strip(): row for row in ordered_snapshots if row.get("id")}.values()
+    )
+    if len(unique_snapshots) < 2:
+        pytest.skip("live Forward network has fewer than two snapshots for NQE diff proof")
+
+    rows = client.run_nqe_diff(
+        query_id=resolved.resolved_query_id or resolved.query_id or "",
+        commit_id=resolved.resolved_commit_id or resolved.commit_id,
+        before_snapshot_id=str(unique_snapshots[-2]["id"]),
+        after_snapshot_id=str(unique_snapshots[-1]["id"]),
+        fetch_all=False,
+        limit=3,
+    )
+
+    assert isinstance(rows, list)
+
+
+@pytest.mark.integration
+def test_live_device_manufacturer_filter_limits_sync_rows():
+    _require_live_planner()
+    settings = _live_settings()
+    if settings is None:
+        pytest.skip("live Forward credentials not configured")
+    _require_live_query_path(settings, get_model_mapping("devices").forward_query_path)
+
+    _, _, unfiltered = _run_live_query(settings, "forward_devices.nqe", fetch_all=True)
+    if not unfiltered:
+        pytest.skip("live Forward network has no device rows for filter proof")
+    rendered_manufacturer = str(unfiltered[0].get("vendor") or "").strip()
+    manufacturer_enum = rendered_manufacturer.rsplit(".", 1)[-1]
+
+    plan = ForwardIngestionPlanner(ForwardClient(settings)).run(
+        ForwardIngestionRequest(
+            connection=settings,
+            model_names=("devices",),
+            fetch_all=True,
+            device_vendors=(manufacturer_enum,),
+        )
+    )
+    filtered = [record.fields for record in plan.source.records["devices"].values()]
+    expected_names = {
+        str(row["name"])
+        for row in unfiltered
+        if str(row.get("vendor") or "").rsplit(".", 1)[-1].casefold()
+        == manufacturer_enum.casefold()
+    }
+
+    assert filtered
+    assert {str(row["name"]) for row in filtered} == expected_names
+    assert plan.diff_detail["scope_query_mode"] == "bundled_nqe_query_id_async"
+
+
+@pytest.mark.integration
+def test_live_device_type_filter_limits_sync_rows():
+    _require_live_planner()
+    settings = _live_settings()
+    if settings is None:
+        pytest.skip("live Forward credentials not configured")
+    _require_live_query_path(settings, get_model_mapping("devices").forward_query_path)
+
+    _, _, probe_rows = _run_live_query(settings, "forward_devices.nqe", fetch_all=True)
+    if not probe_rows:
+        pytest.skip("live Forward network has no device rows for filter proof")
+    rendered_device_type = str(probe_rows[0].get("device_type") or "").strip()
+    device_type_enum = rendered_device_type.rsplit(".", 1)[-1]
+    expected_names = {
+        str(row["name"])
+        for row in probe_rows
+        if str(row.get("device_type") or "").endswith(device_type_enum)
+    }
+
+    plan = ForwardIngestionPlanner(ForwardClient(settings)).run(
+        ForwardIngestionRequest(
+            connection=settings,
+            model_names=("devices",),
+            fetch_all=True,
+            device_types=(device_type_enum,),
+        )
+    )
+    filtered_rows = [record.fields for record in plan.source.records["devices"].values()]
+
+    assert filtered_rows
+    assert {str(row["name"]) for row in filtered_rows} == expected_names
 
 
 @pytest.mark.integration
@@ -209,7 +308,6 @@ def test_live_device_ingestion_contract():
         pytest.skip("live Forward credentials not configured")
     _require_live_query_path(settings, "/forward_nautobot_validation/forward_devices")
 
-    location_names = _live_location_names(settings)
     client = ForwardClient(settings)
     runner = ForwardSyncRunner(client)
     spec = ForwardSyncSpec(
@@ -217,7 +315,6 @@ def test_live_device_ingestion_contract():
         connection=settings,
         query=ForwardQuerySpec(
             query_path="/forward_nautobot_validation/forward_devices",
-            parameters={"forward_location_names": list(location_names)},
         ),
         fetch_all=False,
         limit=3,
@@ -228,10 +325,17 @@ def test_live_device_ingestion_contract():
 
     assert rows, "live device query returned no rows"
     first_row = rows[0]
-    assert set(first_row) == {"name", "location", "vendor", "model", "device_type"}
+    assert set(first_row) == {
+        "name",
+        "location",
+        "vendor",
+        "device_type",
+        "model",
+        "platform",
+    }
     assert first_row["name"]
     assert first_row["vendor"]
-    assert first_row["device_type"]
+    assert first_row["platform"]
 
     adapter = ForwardSourceAdapter(model_names=("devices",))
     loaded = adapter.load_rows("devices", rows)
@@ -263,12 +367,10 @@ def test_live_device_ingestion_contract_via_async_execution():
         pytest.skip("live Forward credentials not configured")
     _require_live_query_path(settings, "/forward_nautobot_validation/forward_devices")
 
-    location_names = _live_location_names(settings)
     client = ForwardClient(settings)
     rows = client.run_nqe_query_async(
         query_spec=ForwardQuerySpec(
             query_path="/forward_nautobot_validation/forward_devices",
-            parameters={"forward_location_names": list(location_names)},
         ),
         network_id=settings.network_id,
         snapshot_id=os.environ.get("FORWARD_LIVE_SNAPSHOT_ID", "latestProcessed"),
@@ -278,10 +380,17 @@ def test_live_device_ingestion_contract_via_async_execution():
 
     assert rows, "live async device query returned no rows"
     first_row = rows[0]
-    assert set(first_row) == {"name", "location", "vendor", "model", "device_type"}
+    assert set(first_row) == {
+        "name",
+        "location",
+        "vendor",
+        "device_type",
+        "model",
+        "platform",
+    }
     assert first_row["name"]
     assert first_row["vendor"]
-    assert first_row["device_type"]
+    assert first_row["platform"]
 
     adapter = ForwardSourceAdapter(model_names=("devices",))
     loaded = adapter.load_rows("devices", rows)
@@ -330,7 +439,7 @@ def test_live_location_ingestion_contract():
     _, _, rows = _run_live_query(settings, "forward_locations.nqe")
     assert rows, "live location query returned no rows"
     first_row = rows[0]
-    assert set(first_row) == {"name", "city", "country"}
+    assert set(first_row) == {"name", "city", "country", "scope_devices"}
     assert first_row["name"]
 
     adapter = ForwardSourceAdapter(model_names=("locations",))
@@ -351,15 +460,10 @@ def test_live_platform_ingestion_contract():
         pytest.skip("live Forward credentials not configured")
     _require_live_query_path(settings, "/forward_nautobot_validation/forward_platforms")
 
-    location_names = _live_location_names(settings)
-    _, _, rows = _run_live_query(
-        settings,
-        "forward_platforms.nqe",
-        parameters={"forward_location_names": list(location_names)},
-    )
+    _, _, rows = _run_live_query(settings, "forward_platforms.nqe")
     assert rows, "live platform query returned no rows"
     first_row = rows[0]
-    assert set(first_row) == {"name", "manufacturer", "device_type"}
+    assert set(first_row) == {"name", "manufacturer", "scope_devices"}
     assert first_row["name"]
 
     adapter = ForwardSourceAdapter(model_names=("platforms",))
@@ -380,15 +484,10 @@ def test_live_device_type_ingestion_contract():
         pytest.skip("live Forward credentials not configured")
     _require_live_query_path(settings, "/forward_nautobot_validation/forward_device_types")
 
-    location_names = _live_location_names(settings)
-    _, _, rows = _run_live_query(
-        settings,
-        "forward_device_types.nqe",
-        parameters={"forward_location_names": list(location_names)},
-    )
+    _, _, rows = _run_live_query(settings, "forward_device_types.nqe")
     assert rows, "live device type query returned no rows"
     first_row = rows[0]
-    assert set(first_row) == {"name", "color"}
+    assert set(first_row) == {"manufacturer", "name", "color", "scope_devices"}
     assert first_row["name"]
 
     adapter = ForwardSourceAdapter(model_names=("device_types",))
@@ -406,8 +505,16 @@ def test_live_device_type_ingestion_contract():
 @pytest.mark.parametrize(
     ("filename", "model_slug", "expected_keys"),
     (
-        ("forward_vlans.nqe", "vlans", ("site", "vid", "name", "status")),
-        ("forward_vrfs.nqe", "vrfs", ("name", "rd", "description", "enforce_unique")),
+        (
+            "forward_vlans.nqe",
+            "vlans",
+            ("site", "vid", "name", "status", "scope_devices"),
+        ),
+        (
+            "forward_vrfs.nqe",
+            "vrfs",
+            ("name", "rd", "description", "enforce_unique", "scope_devices"),
+        ),
         ("forward_prefixes_ipv4.nqe", "ipv4_prefixes", ("vrf", "prefix", "status")),
         ("forward_prefixes_ipv6.nqe", "ipv6_prefixes", ("vrf", "prefix", "status")),
         (
@@ -455,16 +562,11 @@ def test_live_additional_ingestion_contracts(filename, model_slug, expected_keys
         pytest.skip("live Forward credentials not configured")
     _require_live_query_path(settings, get_model_mapping(model_slug).forward_query_path)
 
-    if filename == "forward_vlans.nqe":
-        parameters = {"forward_location_names": list(_live_location_names(settings))}
-    else:
-        parameters = {"forward_device_names": list(_live_device_names(settings))}
-    _, _, rows = _run_live_query(settings, filename, parameters=parameters)
+    _, _, rows = _run_live_query(settings, filename)
     if filename == "forward_modules.nqe" and not rows:
         _, _, rows = _run_live_query(
             settings,
             filename,
-            parameters={"forward_device_names": []},
             limit=25,
         )
     if filename == "forward_modules.nqe" and not rows:
@@ -504,7 +606,7 @@ def test_live_combined_ingestion_plan_contract():
 
     assert len(plan.reports) == 4
     assert plan.reports[0].row_count >= 1
-    assert plan.reports[0].query_contract_version == "v1"
+    assert plan.reports[0].query_contract_version == "v2"
     assert plan.source_summary["model_counts"]["devices"] >= 1
     assert plan.target_summary["model_slugs"] == [
         "locations",
@@ -568,9 +670,9 @@ def test_live_subset_ingestion_plan_contract():
         ("devices",),
         ("interfaces",),
     ]
-    assert plan.reports[0].query_contract_version == "v1"
-    assert plan.reports[1].query_contract_version == "v1"
-    assert plan.reports[2].query_contract_version == "v1"
+    assert plan.reports[0].query_contract_version == "v2"
+    assert plan.reports[1].query_contract_version == "v2"
+    assert plan.reports[2].query_contract_version == "v2"
     assert plan.reports[0].row_count >= 1
     assert plan.reports[1].row_count >= 1
     assert plan.write_summary["create"] == sum(report.row_count for report in plan.reports)
@@ -600,7 +702,9 @@ def test_live_preview_sync_smoke_is_bounded(monkeypatch):
     spec = ForwardSyncSpec(
         mode="preview",
         connection=settings,
-        query=ForwardQuerySpec(query_path=_query_path_for("forward_locations.nqe")),
+        query=ForwardQuerySpec(
+            query_path=_query_path_for("forward_locations.nqe"),
+        ),
         fetch_all=False,
         limit=1,
         model_names=("locations",),
@@ -636,8 +740,6 @@ def test_live_preview_sync_smoke_for_devices_is_bounded(monkeypatch):
 
     _, _, location_rows = _run_live_query(settings, "forward_locations.nqe")
     assert location_rows, "live location query returned no rows"
-    location_name = location_rows[0]["name"]
-
     client = ForwardClient(settings)
     calls: dict[tuple[str, str], int] = {}
     monkeypatch.setattr(
@@ -652,7 +754,6 @@ def test_live_preview_sync_smoke_for_devices_is_bounded(monkeypatch):
         connection=settings,
         query=ForwardQuerySpec(
             query_path=_query_path_for("forward_devices.nqe"),
-            parameters={"forward_location_names": [location_name]},
         ),
         fetch_all=False,
         limit=1,

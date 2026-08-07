@@ -28,9 +28,9 @@ def test_devices_are_blocked_until_device_defaults_are_set():
         row={
             "name": "device-1",
             "location": "SITE-ALPHA",
-            "vendor": "Vendor.CISCO",
-            "model": "N9K",
-            "device_type": "DeviceType.SWITCH",
+            "vendor": "Example Manufacturer",
+            "model": "MODEL-A",
+            "platform": "EXAMPLE_OS",
         },
     )
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Local CI mirror — run the same gate set GitHub CI runs, before pushing.
+"""Local release gate — run the complete validation set before publishing.
 
-Mirrors .github/workflows/ci.yml so a release is verified locally first.
+Validation is intentionally local-only; GitHub Actions performs delivery only.
 Each gate is a (label, argv) pair; the runner prints a pass/fail summary and
 exits non-zero if any gate fails. Use --fast to skip the slow build + wheel
 checks during iteration.
 
 Usage:
-    python scripts/ci_local.py            # full mirror
+    python scripts/ci_local.py            # full release gate
     python scripts/ci_local.py --fast     # skip build/wheel
     python scripts/ci_local.py --no-sensitive   # skip all-history scan (slow)
 """
@@ -76,7 +76,7 @@ def run_gates(*, fast: bool, sensitive: bool) -> int:
             print(f"--- {label} FAILED (rc={rc}) ---")
 
     print("\n" + "=" * 48)
-    print("CI mirror summary:")
+    print("Local release gate summary:")
     for label, ok, elapsed in results:
         status = "PASS" if ok else "FAIL"
         print(f"  [{status}] {label}  ({elapsed:.1f}s)")
@@ -85,7 +85,7 @@ def run_gates(*, fast: bool, sensitive: bool) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the local CI gate mirror.")
+    parser = argparse.ArgumentParser(description="Run the local release gate.")
     parser.add_argument("--fast", action="store_true", help="skip build + wheel-contents")
     parser.add_argument(
         "--no-sensitive",

@@ -1,16 +1,16 @@
 name: Release
 
-# Tag-triggered release pipeline. The `build` job runs the release gates + tests,
-# builds the sdist + wheel, generates a CycloneDX SBOM, and creates the GitHub
-# release with assets. The `publish-pypi` job then uploads the distributions to
-# PyPI via Trusted Publishing (OIDC) — no API token is stored anywhere.
+# Tag-triggered delivery pipeline. All validation is intentionally run locally
+# before the tag is pushed. This workflow only builds release artifacts, creates
+# the GitHub release, and publishes the distributions to PyPI via Trusted
+# Publishing (OIDC) — no API token is stored anywhere.
 #
 # One-time setup required before the first tag will publish to PyPI:
 #   1. On PyPI: project nautobot-app-ssot-forward -> Manage -> Publishing -> add a
 #      GitHub Trusted Publisher: owner=forwardnetworks,
 #      repo=nautobot-app-ssot-forward, workflow=release.yml, environment=pypi.
 #   2. In this repo: Settings -> Environments -> create an environment named
-#      "pypi" (optionally add required reviewers to gate publishes).
+#      "pypi".
 
 on:
   push:
@@ -34,8 +34,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -45,32 +43,10 @@ jobs:
       - name: Install release tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install build httpx pytest
-          python -m pip install .
-
-      - name: Run sensitive-content gate
-        run: python scripts/check_sensitive_content.py --all-history
-
-      - name: Run repo harness gate
-        run: python scripts/check_harness.py
-
-      - name: Run release-state gate
-        run: python scripts/check_release_state.py
-
-      - name: Run query contract gate
-        run: python scripts/check_query_contracts.py
-
-      - name: Generate contract diff report
-        run: python scripts/generate_contract_diff_report.py --baseline-ref HEAD~1 --output dist/contract-diff-report.json
-
-      - name: Run tests
-        run: python -m pytest -q -m "not integration"
+          python -m pip install build
 
       - name: Build distribution artifacts
         run: python -m build
-
-      - name: Verify wheel contents
-        run: python scripts/check_wheel_contents.py
 
       - name: Generate CycloneDX SBOM
         # Software Bill of Materials over the declared runtime deps, kept OUT of
@@ -103,7 +79,6 @@ jobs:
           files: |
             dist/*.whl
             dist/*.tar.gz
-            dist/contract-diff-report.json
 
   publish-pypi:
     name: Publish to PyPI (Trusted Publishing)
@@ -123,11 +98,6 @@ jobs:
         with:
           name: dist
           path: dist/
-
-      - name: Remove non-distribution assets
-        # The GitHub-release step bundled a contract-diff report into dist/; PyPI
-        # must receive only the sdist + wheel.
-        run: find dist -type f ! -name '*.whl' ! -name '*.tar.gz' -delete
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

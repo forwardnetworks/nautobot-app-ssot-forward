@@ -25,7 +25,7 @@ def test_fixture_payload_is_packaged_and_has_expected_slices():
 
     assert fixture_path().endswith("forward_sample_ingestion.json")
     assert "devices" in payload
-    assert payload["devices"][0]["name"] == "cdl1alfabbcn001"
+    assert payload["devices"][0]["name"] == "device-001"
     assert {
         "locations",
         "devices",
@@ -39,7 +39,7 @@ def test_fixture_payload_is_packaged_and_has_expected_slices():
     assert len(coverage) == 12
     assert tuple(entry["slug"] for entry in coverage) == CORE_MODEL_SLUGS
     assert all(entry["count"] >= 1 for entry in coverage)
-    assert coverage[0]["sample_key"] == "CDL0_DC00-Roseland NJ (NJRSL)"
+    assert coverage[0]["sample_key"] == "SITE-A"
     assert all(entry["description"] for entry in coverage)
     assert {entry["slug"] for entry in coverage} == set(CORE_MODEL_SLUGS)
 

@@ -2,22 +2,23 @@
   "device_types": [
     {
       "color": "9e9e9e",
-      "name": "DeviceType.CONTROLLER"
+      "manufacturer": "Example Manufacturer",
+      "name": "MODEL-A"
     }
   ],
   "devices": [
     {
-      "device_type": "DeviceType.CONTROLLER",
-      "location": "DC01_ModernDC-CDL",
-      "model": "APIC",
-      "name": "cdl1alfabbcn001",
-      "vendor": "Vendor.CISCO"
+      "location": "SITE-A",
+      "model": "MODEL-A",
+      "name": "device-001",
+      "platform": "EXAMPLE_OS",
+      "vendor": "Example Manufacturer"
     }
   ],
   "interfaces": [
     {
       "description": "",
-      "device": "cdl1alfabbcn001",
+      "device": "device-001",
       "enabled": true,
       "lag": "",
       "mode": "",
@@ -29,7 +30,7 @@
     },
     {
       "description": "",
-      "device": "cdl1alfabbcn001",
+      "device": "device-001",
       "enabled": true,
       "lag": "",
       "mode": "",
@@ -44,21 +45,21 @@
     {
       "asset_tag": "",
       "description": "",
-      "device": "cdl1alfabbcn001",
+      "device": "device-001",
       "discovered": true,
       "label": "Chassis",
-      "manufacturer": "Vendor.CISCO",
+      "manufacturer": "Example Manufacturer",
       "name": "Chassis",
-      "part_id": "APIC 5.2(4e)",
+      "part_id": "PART-001",
       "role": "CHASSIS",
-      "serial": "WMP260400UX",
+      "serial": "SERIAL-001",
       "status": "active"
     }
   ],
   "ip_addresses": [
     {
       "address": "127.0.0.1/8",
-      "device": "cdl1alfabbcn001",
+      "device": "device-001",
       "host_ip": "127.0.0.1",
       "interface": "lo",
       "prefix_length": 8,
@@ -67,7 +68,7 @@
     },
     {
       "address": "169.254.1.1/24",
-      "device": "cdl1alfabbcn001",
+      "device": "device-001",
       "host_ip": "169.254.1.1",
       "interface": "teplo-1",
       "prefix_length": 24,
@@ -91,23 +92,23 @@
   ],
   "locations": [
     {
-      "city": "Roseland",
+      "city": "Example City",
       "country": "United States",
-      "name": "CDL0_DC00-Roseland NJ (NJRSL)"
+      "name": "SITE-A"
     },
     {
-      "city": "Alpharetta",
+      "city": "Example City",
       "country": "United States",
-      "name": "CDL0_Alpharetta_GA"
+      "name": "SITE-B"
     }
   ],
   "modules": [
     {
       "asset_tag": "",
       "description": "Line card",
-      "device": "cdl1alfabbcn001",
-      "manufacturer": "Vendor.CISCO",
-      "model": "Line Card",
+      "device": "device-001",
+      "manufacturer": "Example Manufacturer",
+      "model": "MODULE-A",
       "module_bay": "Bay 1",
       "part_number": "LC1",
       "serial": "M-1",
@@ -116,15 +117,14 @@
   ],
   "platforms": [
     {
-      "device_type": "DeviceType.CONTROLLER",
-      "manufacturer": "Vendor.CISCO",
-      "name": "APIC"
+      "manufacturer": "Example Manufacturer",
+      "name": "EXAMPLE_OS"
     }
   ],
   "vlans": [
     {
       "name": "Users",
-      "site": "CDL0_Alpharetta_GA",
+      "site": "SITE-B",
       "status": "active",
       "vid": 100
     }

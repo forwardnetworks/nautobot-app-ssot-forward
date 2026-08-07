@@ -31,37 +31,41 @@ class ForwardLocation(DiffSyncModel):
     name: str
     city: str = ""
     country: str = ""
+    scope_devices: tuple[str, ...] = ()
 
 
 class ForwardPlatform(DiffSyncModel):
     _modelname = "platforms"
     _identifiers = ("name",)
-    _attributes = ("manufacturer", "device_type")
+    _attributes = ("manufacturer",)
 
     name: str
     manufacturer: str = ""
-    device_type: str = ""
+    scope_devices: tuple[str, ...] = ()
 
 
 class ForwardDeviceType(DiffSyncModel):
     _modelname = "device_types"
-    _identifiers = ("name",)
+    _identifiers = ("manufacturer", "name")
     _attributes = ("color",)
 
+    manufacturer: str
     name: str
     color: str = "9e9e9e"
+    scope_devices: tuple[str, ...] = ()
 
 
 class ForwardDevice(DiffSyncModel):
     _modelname = "devices"
     _identifiers = ("name",)
-    _attributes = ("location", "vendor", "model", "device_type")
+    _attributes = ("location", "vendor", "model", "platform")
 
     name: str
     location: str = ""
     vendor: str = ""
-    model: str = ""
     device_type: str = ""
+    model: str = ""
+    platform: str = ""
 
 
 class ForwardInterface(DiffSyncModel):
@@ -99,6 +103,7 @@ class ForwardVLAN(DiffSyncModel):
     vid: int
     name: str = ""
     status: str = "active"
+    scope_devices: tuple[str, ...] = ()
 
 
 class ForwardVRF(DiffSyncModel):
@@ -110,6 +115,7 @@ class ForwardVRF(DiffSyncModel):
     rd: str = ""
     description: str = ""
     enforce_unique: bool = False
+    scope_devices: tuple[str, ...] = ()
 
 
 class ForwardIPv4Prefix(DiffSyncModel):

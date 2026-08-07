@@ -1,21 +1,24 @@
 /**
  * @intent Forward VRFs
  * @description VRF rows derived from Forward network instances.
- * @contract-version v1
+ * @contract-version v2
  */
 
-@query
-f(forward_device_names: List<String>) =
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isEmpty(forward_device_names) || device.name in forward_device_names
-foreach ni in device.networkInstances
-where ni.name != "default"
-where toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE"
-select distinct {
-  name: ni.name,
+@primaryKey(name)
+foreach row in (
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach ni in device.networkInstances
+  where ni.name != "default"
+  where toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE"
+  select distinct {name: ni.name, scope_device: device.name}
+)
+group row as grouped_rows by row.name as name
+select {
+  name: name,
   rd: "",
   description: "",
-  enforce_unique: false
-};
+  enforce_unique: false,
+  scope_devices: distinct(foreach candidate in grouped_rows select candidate.scope_device)
+}

@@ -1,26 +1,23 @@
 /**
  * @intent Forward IPv6 prefixes
  * @description IPv6 prefix rows derived from Forward network instance routes.
- * @contract-version v1
+ * @contract-version v2
  */
 
 @primaryKey(prefix, vrf)
-@query
-f(forward_device_names: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isEmpty(forward_device_names) || device.name in forward_device_names
 foreach ni in device.networkInstances
 where isPresent(ni.afts?.ipv6Unicast?.ipEntries)
 foreach entry in ni.afts.ipv6Unicast.ipEntries
 where length(entry.prefix) > 0
 where length(entry.prefix) < 128
 let prefix = ipSubnet(networkAddress(entry.prefix), length(entry.prefix))
-select {
+select distinct {
   vrf: if ni.name != "default"
     then if toString(ni.instanceType) != "NetworkInstanceType.DEFAULT_INSTANCE" then ni.name else "default"
     else "default",
   prefix: prefix,
   status: "active"
-};
+}

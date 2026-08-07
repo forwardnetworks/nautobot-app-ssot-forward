@@ -577,8 +577,8 @@ class ForwardNautobotWriteBackend:
         name = str(row.get("name") or "").strip()
         location_name = str(row.get("location") or "").strip()
         vendor_name = str(row.get("vendor") or row.get("manufacturer") or "").strip()
-        platform_name = str(row.get("model") or "").strip()
-        device_type_name = str(row.get("device_type") or row.get("model") or "").strip()
+        platform_name = str(row.get("platform") or "").strip()
+        device_type_name = str(row.get("model") or "").strip()
         if not name:
             raise ValueError("Device row is missing `name`.")
         if not location_name:
@@ -586,9 +586,9 @@ class ForwardNautobotWriteBackend:
         if not vendor_name:
             raise ValueError("Device row is missing `vendor`.")
         if not platform_name:
-            raise ValueError("Device row is missing `model`.")
+            raise ValueError("Device row is missing `platform`.")
         if not device_type_name:
-            raise ValueError("Device row is missing `device_type`.")
+            raise ValueError("Device row is missing `model`.")
         location, _ = self._resolve_location_dedup(location_name)
         platform = self._get_or_create_named("dcim", "Platform", platform_name)
         manufacturer = self._get_or_create_named("dcim", "Manufacturer", vendor_name)
@@ -1180,6 +1180,20 @@ class ForwardNautobotWriteExecutor:
         )
         with run_atomic:
             for operation in plan.operations:
+                if plan.filtered_scope and operation.action == "delete":
+                    _tally(
+                        ForwardWriteExecutionItem(
+                            model_slug=operation.model_slug,
+                            record_key=operation.record_key,
+                            planned_action="delete",
+                            status="skipped",
+                            message=(
+                                "Delete was suppressed because this run uses a filtered "
+                                "device scope."
+                            ),
+                        )
+                    )
+                    continue
                 if operation.action != "delete":
                     source_keys_by_slug.setdefault(operation.model_slug, set()).add(
                         operation.record_key
@@ -1189,7 +1203,7 @@ class ForwardNautobotWriteExecutor:
             delta_models = set(getattr(plan, "delta_models", ()) or ())
             if plan.delta_mode and not delta_models:
                 delta_models = set(source_keys_by_slug)
-            if delete_policy in {"delete", "mark_inactive"}:
+            if delete_policy in {"delete", "mark_inactive"} and not plan.filtered_scope:
                 max_delete_fraction = float(
                     getattr(resolved_profile, "reconcile_max_delete_fraction", 0.5) or 0.5
                 )

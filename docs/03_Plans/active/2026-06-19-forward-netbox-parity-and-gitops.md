@@ -108,90 +108,38 @@ helper that captures before/after wall-clock per change.
 
 ---
 
-## Part B — GitOps workflows  (primary new ask)
+## Part B — Local validation and release delivery
 
-### Current state — gap analysis
+Superseded on 2026-08-06 by maintainer policy: validation is local-only. There
+is no push or pull-request validation workflow, and the tag-triggered GitHub
+workflow contains delivery steps only.
 
-| Capability | forward-netbox | nautobot plugin (us) |
-|---|---|---|
-| CI on push/PR | yes | yes |
-| Version matrix | NetBox v4.5.9 + v4.6.2 | **none** (single Py 3.11) |
-| pre-commit | `pre-commit run --all-files` | **none** |
-| Lint/format config | ruff + flake8 + pre-commit hooks | **none** |
-| Harness gate | yes | yes |
-| Live integration in CI | **docker-compose NetBox + PG + Redis + migrate + django checks** | **none** (we tested by hand on 192.168.1.167) |
-| Docs build gate | `mkdocs build --strict` | **none** |
-| Release automation | `scripts/release.py` + `invoke release` | **none** (manual; hit a stale-tag bug this session) |
-| Release publish | GH release + PyPI | GH release only |
-| Local CI mirror | yes (release.py verify stage) | **none** |
+### Current state
 
-### B1. Release automation script  ·  Highest leverage · S
-**Model:** `forward-netbox/scripts/release.py` (`06e357e`) encodes the whole flow
-with CI gotchas baked in: `git add -A` *before* the local mirror (so the
-sensitive-content guard, which is tracked-files-only, sees new files); run
-pre-commit twice for convergence; keep the plan file in the same push (harness
-gate). Stages: `prepare` (bump version + doc tables + scaffold plan),
-`verify` (full local CI mirror), `publish` (branch → push → wait for CI →
-fast-forward main → tag → GH release → PyPI → sync local main), gated behind
-`--publish`.
-**For us:** `scripts/release.py` that:
-1. `prepare` — bump `pyproject.toml` **and** `forward_nautobot/__init__.py`
-   version in lockstep, scaffold the release plan file.
-2. `verify` — run the full gate set locally (all `check_*.py`, pytest non-int,
-   build, wheel-contents).
-3. `publish` (`--publish` only) — branch, push, wait for CI, fast-forward main,
-   **move/create the tag on the right commit**, GH release with artifacts,
-   optional PyPI.
-**Why:** we manually cut v0.2.0 this session and the tag went stale two commits
-later — exactly the class of error this removes. Pure-logic helpers
-(`bump_version_text`, etc.) are unit-testable.
+- `scripts/ci_local.py` runs sensitive-content, harness, release-state,
+  query-contract, contract-diff, non-live tests, build, and wheel-content checks.
+- `pre-commit run --all-files` provides the local lint and formatting gate.
+- Disposable PostgreSQL/Redis stacks validate each supported Nautobot version
+  locally before release.
+- Live API tests remain opt-in and credentialed; no live identifiers or returned
+  data are written to the repository.
+- `scripts/release.py verify` invokes the complete local release gate and does
+  not wait for any GitHub status check.
+- `.github/workflows/release.yml` builds tagged artifacts, creates the GitHub
+  release, and publishes to PyPI through trusted publishing. It runs no tests,
+  contract checks, or approval gates.
 
-### B2. pre-commit config + lint/format  ·  S
-Add `.pre-commit-config.yaml` (ruff, ruff-format / black, end-of-file, trailing
-whitespace, yaml/json check) and wire `pre-commit run --all-files` into CI.
-We currently have no lint gate at all.
+### Maintainer workflow
 
-### B3. Nautobot version matrix in CI  ·  S–M
-Run the test job across a Nautobot version matrix (e.g. 3.1.x current + the next
-minor) like forward-netbox's NetBox matrix, so we catch ORM/API drift before a
-user does. `Role`-vs-`DeviceRole` (which bit us on 192.168.1.167) is exactly the
-breakage a matrix surfaces.
-
-### B4. Live Nautobot integration in CI  ·  M  ·  highest correctness value
-Spin up Postgres + Redis + Nautobot in docker-compose in CI, run migrations,
-django system checks, and our integration tests (the locations-write,
-skip-if-same-snapshot, and diff-path checks we ran by hand on the Linux box).
-Forward-netbox does exactly this for NetBox. Gate live-API tests behind presence
-of `FORWARD_LIVE_*` secrets so forks/PRs still pass without creds.
-
-### B5. Local CI mirror  ·  S
-`invoke ci` (or `scripts/ci_local.py`) that runs the identical gate set CI runs,
-so a release is verified before push. Folded into `release.py verify`.
-
-### B6. Publish to PyPI on release  ·  S
-Extend `release.yml` to `twine upload` (trusted publishing / OIDC preferred) in
-addition to GH release assets. Currently we attach wheels to the GH release only.
-
-### B7. Dependabot / action pinning  ·  S
-Add `.github/dependabot.yml` for GitHub Actions + pip, and pin actions to SHAs.
-Our workflows mix `@v5`/`@v6`/`@v7.0.1` tags.
-
----
-
-## Suggested execution order
-
-1. **B1 release automation** (immediate toil + stale-tag fix; we just felt the pain).
-2. **B2 pre-commit + B5 local CI mirror** (foundation the rest leans on).
-3. **B3 version matrix + B7 dependabot** (cheap drift protection).
-4. **B4 live integration in CI** (highest correctness value; larger).
-5. **A1 signal suppression** (biggest framework-safe write speedup).
-6. **A2 source-proof gate** (closes the production-trust hole our perf plan flags).
-7. **A3 aggregating audit + A7 parity discipline** (governance).
-8. **A4–A6** (observability surfaces) as a follow-on tranche.
-9. **B6 PyPI publish** once a PyPI project exists.
+1. Run `pre-commit run --all-files`.
+2. Run `python scripts/ci_local.py`.
+3. Run the supported-version disposable stacks and authorized live smoke when
+   the change affects runtime integration.
+4. Merge the reviewed change, tag the validated commit, and let the delivery
+   workflow publish the already-validated source.
+5. Verify the GitHub release assets and public package index after delivery.
 
 ## Verification
 - Unit: `python -m pytest -q -m "not integration"`
 - Gates: every `scripts/check_*.py` + the new `scripts/release.py` helper tests
-- Live: docker-compose Nautobot in CI (B4); manual WF smoke on 192.168.1.167
-  until B4 lands.
+- Runtime: local disposable Nautobot stacks plus an authorized live smoke when applicable.

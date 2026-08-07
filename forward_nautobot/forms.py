@@ -16,6 +16,9 @@ FORWARD_PROFILE_FORM_FIELDS: tuple[str, ...] = (
     "verify_tls",
     "snapshot_id",
     "enabled_models",
+    "device_vendors",
+    "device_types",
+    "device_models",
     "query_contract_version",
     "default_location_type_name",
     "default_location_status_name",
@@ -47,6 +50,14 @@ def _coerce_bool(value: Any) -> bool:
         return value
     normalized = str(value or "").strip().lower()
     return normalized in {"1", "true", "t", "yes", "on", "y"}
+
+
+def _coerce_csv(value: Any) -> tuple[str, ...]:
+    if isinstance(value, (list, tuple)):
+        values = value
+    else:
+        values = str(value or "").split(",")
+    return tuple(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
 
 
 try:
@@ -93,14 +104,16 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
             if not self.cleaned_data["snapshot_id"]:
                 self.cleaned_data["snapshot_id"] = "latestProcessed"
             if not self.cleaned_data["query_contract_version"]:
-                self.cleaned_data["query_contract_version"] = "v1"
+                self.cleaned_data["query_contract_version"] = "v2"
             if not self.cleaned_data["delete_policy"]:
                 self.cleaned_data["delete_policy"] = "ignore"
-            self.cleaned_data["enabled_models"] = tuple(
-                part.strip()
-                for part in str(self.data.get("enabled_models") or "").split(",")
-                if part.strip()
-            )
+            for field_name in (
+                "enabled_models",
+                "device_vendors",
+                "device_types",
+                "device_models",
+            ):
+                self.cleaned_data[field_name] = _coerce_csv(self.data.get(field_name))
             self.cleaned_data["is_default"] = str(
                 self.data.get("is_default") or ""
             ).strip().lower() in {
@@ -133,7 +146,19 @@ else:
             required=False,
             help_text="Comma-separated Forward model slugs.",
         )
-        query_contract_version = forms.CharField(required=False, initial="v1")
+        device_vendors = forms.CharField(
+            required=False,
+            help_text="Comma-separated Forward manufacturer enum values.",
+        )
+        device_types = forms.CharField(
+            required=False,
+            help_text="Comma-separated Forward functional device-class enum values.",
+        )
+        device_models = forms.CharField(
+            required=False,
+            help_text="Comma-separated exact hardware model values.",
+        )
+        query_contract_version = forms.CharField(required=False, initial="v2")
         default_location_type_name = forms.CharField(required=False)
         default_location_status_name = forms.CharField(required=False)
         default_device_role_name = forms.CharField(required=False)
@@ -146,12 +171,16 @@ else:
         is_default = forms.BooleanField(required=False)
 
         def clean_enabled_models(self):
-            raw_value = self.cleaned_data.get("enabled_models", "")
-            if isinstance(raw_value, (list, tuple)):
-                return tuple(str(item).strip() for item in raw_value if str(item).strip())
-                return tuple(
-                    part.strip() for part in str(raw_value or "").split(",") if part.strip()
-                )
+            return _coerce_csv(self.cleaned_data.get("enabled_models", ""))
+
+        def clean_device_vendors(self):
+            return _coerce_csv(self.cleaned_data.get("device_vendors", ""))
+
+        def clean_device_types(self):
+            return _coerce_csv(self.cleaned_data.get("device_types", ""))
+
+        def clean_device_models(self):
+            return _coerce_csv(self.cleaned_data.get("device_models", ""))
 
         def clean_verify_tls(self):
             raw_value = self.data.get("verify_tls", "")

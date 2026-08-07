@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tomllib
+from email.parser import BytesParser
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -18,21 +20,32 @@ EXPECTED_FILES = (
     "forward_nautobot/views.py",
     "forward_nautobot/migrations/__init__.py",
     "forward_nautobot/migrations/0001_initial.py",
+    "forward_nautobot/migrations/0007_device_scope_filters.py",
     "forward_nautobot/integrations/forward/dry_run.py",
+    "forward_nautobot/integrations/forward/query_publishing.py",
     "forward_nautobot/integrations/forward/write_executor.py",
     "forward_nautobot/integrations/forward/write_path.py",
     "forward_nautobot/management/commands/forward_dry_run.py",
+    "forward_nautobot/management/commands/forward_publish_queries.py",
     "forward_nautobot/integrations/forward/queries/README.md",
 ) + tuple(f"forward_nautobot/integrations/forward/queries/{name}" for name in QUERY_FILENAMES)
 
 
-def _resolve_wheel_path(value: str | None) -> Path:
+def _package_version() -> str:
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return str(pyproject["tool"]["poetry"]["version"]).strip()
+
+
+def _resolve_wheel_path(value: str | None, *, version: str) -> Path:
     if value:
         return Path(value)
     dist_dir = Path("dist")
-    wheels = sorted(dist_dir.glob("*.whl"), key=lambda path: path.stat().st_mtime)
+    wheels = sorted(
+        dist_dir.glob(f"nautobot_app_ssot_forward-{version}-*.whl"),
+        key=lambda path: path.stat().st_mtime,
+    )
     if not wheels:
-        raise FileNotFoundError("No wheel found in dist/.")
+        raise FileNotFoundError(f"No nautobot-app-ssot-forward {version} wheel found in dist/.")
     return wheels[-1]
 
 
@@ -41,13 +54,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wheel-path", default="", help="Path to a built wheel.")
     args = parser.parse_args(argv)
 
-    wheel_path = _resolve_wheel_path(args.wheel_path or None)
+    version = _package_version()
+    wheel_path = _resolve_wheel_path(args.wheel_path or None, version=version)
     with ZipFile(wheel_path) as wheel:
         names = set(wheel.namelist())
+        metadata_names = sorted(name for name in names if name.endswith(".dist-info/METADATA"))
+        metadata = (
+            BytesParser().parsebytes(wheel.read(metadata_names[0])) if metadata_names else None
+        )
 
     failures = [
         f"missing wheel file: {expected}" for expected in EXPECTED_FILES if expected not in names
     ]
+    if metadata is None:
+        failures.append("missing wheel distribution METADATA")
+    elif metadata.get("Version") != version:
+        failures.append(
+            f"wheel metadata version {metadata.get('Version')!r} does not match {version!r}"
+        )
 
     if failures:
         print(f"Wheel contents check failed for {wheel_path}:")

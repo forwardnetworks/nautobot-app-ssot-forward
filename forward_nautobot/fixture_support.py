@@ -24,7 +24,7 @@ def profile_record() -> ForwardConnectionProfileRecord:
         network_id="replay-network",
         snapshot_id="latestProcessed",
         enabled_models=CORE_MODEL_SLUGS,
-        query_contract_version="v1",
+        query_contract_version="v2",
         default_location_type_name="Building",
         default_location_status_name="Active",
         default_device_role_name="Access Switch",

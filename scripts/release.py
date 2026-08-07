@@ -11,9 +11,9 @@ The version lives in TWO places that must move in lockstep:
 
 Stages:
   prepare  - bump both versions, scaffold the release plan file
-  verify   - run the local CI mirror (scripts/ci_local.py)
-  publish  - branch, push, wait for GitHub CI, fast-forward main, tag the
-             RELEASE COMMIT, create the GitHub release  (ONLY with --publish)
+  verify   - run the local release gate (scripts/ci_local.py)
+  publish  - branch, push, fast-forward main, tag the RELEASE COMMIT, and
+             create the GitHub release (ONLY with --publish)
 
 Pushing the ``v*`` tag triggers .github/workflows/release.yml, which builds the
 sdist + wheel, attaches them to the GitHub release, and publishes them to PyPI via
@@ -139,7 +139,7 @@ def stage_prepare(version: str, summary: str, *, write: bool, date: str) -> None
 
 
 def stage_verify() -> None:
-    print("[verify] running local CI mirror")
+    print("[verify] running local release gate")
     run([sys.executable, "scripts/ci_local.py"])
 
 
@@ -151,8 +151,6 @@ def stage_publish(version: str, *, summary: str) -> None:
     run(["git", "add", "-A"])
     run(["git", "commit", "-m", f"release: cut {tag}\n\n{summary}"])
     run(["git", "push", "-u", "origin", branch])
-    # Wait for CI on the branch before fast-forwarding main.
-    run(["gh", "run", "watch", "--exit-status"], check=False)
     run(["git", "checkout", "main"])
     run(["git", "merge", "--ff-only", branch])
     run(["git", "push", "origin", "main"])
@@ -172,8 +170,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Release automation.")
     parser.add_argument("version", help="new semver version, e.g. 0.3.0")
     parser.add_argument("--summary", default="", help="one-line release summary")
-    parser.add_argument("--publish", action="store_true", help="run the publish stage (gated)")
-    parser.add_argument("--no-verify", action="store_true", help="skip the local CI mirror")
+    parser.add_argument("--publish", action="store_true", help="run the publish stage")
+    parser.add_argument("--no-verify", action="store_true", help="skip the local release gate")
     parser.add_argument("--dry-run", action="store_true", help="prepare without writing files")
     args = parser.parse_args(argv)
 

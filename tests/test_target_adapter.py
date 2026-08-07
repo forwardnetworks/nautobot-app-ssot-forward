@@ -20,7 +20,7 @@ def test_target_adapter_plans_raw_rows_without_normalization():
             "location": "Site A",
             "vendor": "Vendor.CISCO",
             "model": "N9K",
-            "device_type": "DeviceType.SWITCH",
+            "platform": "CISCO_NXOS",
         }
     ]
 
@@ -128,9 +128,8 @@ def test_target_adapter_loads_current_orm_state_for_supported_models(monkeypatch
     manufacturer = SimpleNamespace(name="Cisco")
     location = SimpleNamespace(name="SITE-ALPHA", city="Austin", country="US")
     platform = SimpleNamespace(
-        name="NX-9000",
+        name="CISCO_NXOS",
         manufacturer=manufacturer,
-        cf={"device_type": "NX-9000"},
     )
     device_type = SimpleNamespace(
         model="NX-9000",
@@ -249,14 +248,14 @@ def test_target_adapter_loads_current_orm_state_for_supported_models(monkeypatch
     _assert_record_fields(
         target.get_all("platforms")[0],
         {
-            "name": "NX-9000",
+            "name": "CISCO_NXOS",
             "manufacturer": "Cisco",
-            "device_type": "NX-9000",
         },
     )
     _assert_record_fields(
         target.get_all("device_types")[0],
         {
+            "manufacturer": "Cisco",
             "name": "NX-9000",
             "color": "9e9e9e",
         },
@@ -268,7 +267,7 @@ def test_target_adapter_loads_current_orm_state_for_supported_models(monkeypatch
             "location": "SITE-ALPHA",
             "vendor": "Cisco",
             "model": "NX-9000",
-            "device_type": "NX-9000",
+            "platform": "CISCO_NXOS",
         },
     )
     _assert_record_fields(
@@ -372,7 +371,7 @@ def test_target_adapter_slice_for_model_reuses_loaded_rows():
             "location": "Site A",
             "vendor": "Vendor.CISCO",
             "model": "N9K",
-            "device_type": "DeviceType.SWITCH",
+            "platform": "CISCO_NXOS",
         }
     ]
 

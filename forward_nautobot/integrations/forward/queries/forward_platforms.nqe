@@ -1,20 +1,23 @@
 /**
  * @intent Forward platforms
- * @description Platform rows for Nautobot ingestion testing and initial platform mapping.
- * @contract-version v1
+ * @description Forward operating-system families mapped to Nautobot Platform rows.
+ * @contract-version v2
  */
 
 @primaryKey(name)
-@query
-f(forward_location_names: List<String>) =
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isEmpty(forward_location_names)
-  || !isPresent(device.locationName)
-  || device.locationName in forward_location_names
+foreach row in (
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  select distinct {
+    name: toString(device.platform.os),
+    manufacturer: toString(device.platform.vendor),
+    scope_device: device.name
+  }
+)
+group row as grouped_rows by row.name as name
 select {
-  name: if isPresent(device.platform.model) then device.platform.model else "",
-  manufacturer: toString(device.platform.vendor),
-  device_type: toString(device.platform.deviceType)
-};
+  name: name,
+  manufacturer: min(foreach candidate in grouped_rows select candidate.manufacturer),
+  scope_devices: distinct(foreach candidate in grouped_rows select candidate.scope_device)
+}

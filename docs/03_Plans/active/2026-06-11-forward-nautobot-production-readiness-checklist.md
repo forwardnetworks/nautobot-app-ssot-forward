@@ -26,8 +26,8 @@ reach full production quality.
 | Support-bundle capture and redaction | `forward_nautobot/integrations/forward/support.py`, `tests/test_support.py` | done |
 | Resolved query identity and commit pinning | `forward_nautobot/integrations/forward/client.py`, `forward_nautobot/integrations/forward/models.py`, `tests/test_client.py` | done |
 | Sanitized fixture coverage | `tests/fixtures/forward_ingestion_sample.json`, `tests/test_fixture_ingestion.py`, `tests/test_dry_run.py` | done |
-| Query contract drift checks | `scripts/check_query_contracts.py`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` | done |
-| Wheel/build/release gates | `scripts/check_wheel_contents.py`, `scripts/check_release_state.py`, `.github/workflows/ci.yml`, `.github/workflows/release.yml` | done |
+| Query contract drift checks | `scripts/check_query_contracts.py`, `scripts/ci_local.py` | done |
+| Wheel/build/release gates | `scripts/check_wheel_contents.py`, `scripts/check_release_state.py`, `scripts/ci_local.py` | done |
 | User-facing SSoT wording | `README.md`, `ARCHITECTURE.md`, `forward_nautobot/views.py` | done |
 | Sync log object linkage | `forward_nautobot/integrations/forward/jobs.py`, `tests/test_plugin.py` | done |
 | Persistent SSoT profile selection | `forward_nautobot/forms.py`, `forward_nautobot/models.py`, `forward_nautobot/views.py`, `forward_nautobot/integrations/forward/jobs.py`, `tests/test_plugin.py` | done |

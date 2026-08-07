@@ -276,9 +276,9 @@ def test_write_executor_applies_core_slices_with_fake_backend(monkeypatch):
                     "location": "SITE-ALPHA",
                     "vendor": "Cisco",
                     "model": "NX-9000",
-                    "device_type": "NX-9000",
+                    "platform": "CISCO_NXOS",
                 },
-                contract_version="v1",
+                contract_version="v2",
             ),
         ),
         summary={"create": 4, "update": 0, "no-change": 0, "blocked": 0},
@@ -383,6 +383,38 @@ def test_write_executor_honors_delete_policy(monkeypatch):
     assert not models[("dcim", "Location")].objects.records.get((("name", "SITE-OLD"),))
 
 
+def test_write_executor_suppresses_deletes_for_filtered_scope(monkeypatch):
+    models, resolve = _fake_model_resolver()
+    monkeypatch.setattr(write_executor, "django_apps", object())
+    monkeypatch.setattr(write_executor, "ContentType", None)
+
+    backend = ForwardNautobotWriteBackend(model_resolver=resolve)
+    existing = models[("dcim", "Location")].objects.get_or_create(name="SITE-OLD")[0]
+    plan = ForwardWritePlan(
+        operations=(
+            ForwardWriteOperation(
+                model_slug="locations",
+                record_key="SITE-OLD",
+                nautobot_scope="dcim.location",
+                action="delete",
+                fields={"name": "SITE-OLD"},
+                contract_version="v2",
+            ),
+        ),
+        filtered_scope=True,
+        configuration_status={"profile_provided": True, "write_ready": True},
+    )
+
+    execution = ForwardNautobotWriteExecutor(backend=backend).execute(
+        plan,
+        _profile(delete_policy="delete"),
+    )
+
+    assert execution.summary["deleted"] == 0
+    assert execution.summary["skipped"] == 1
+    assert models[("dcim", "Location")].objects.get(name="SITE-OLD") is existing
+
+
 def test_write_executor_applies_expanded_slices_with_fake_backend(monkeypatch):
     models, resolve = _fake_model_resolver()
     monkeypatch.setattr(write_executor, "django_apps", object())
@@ -437,9 +469,9 @@ def test_write_executor_applies_expanded_slices_with_fake_backend(monkeypatch):
                     "location": "SITE-ALPHA",
                     "vendor": "Cisco",
                     "model": "NX-9000",
-                    "device_type": "NX-9000",
+                    "platform": "CISCO_NXOS",
                 },
-                contract_version="v1",
+                contract_version="v2",
             ),
             ForwardWriteOperation(
                 model_slug="interfaces",
@@ -581,9 +613,9 @@ def _device_op(name: str) -> ForwardWriteOperation:
             "location": "SITE-ALPHA",
             "vendor": "Cisco",
             "model": "NX-9000",
-            "device_type": "NX-9000",
+            "platform": "CISCO_NXOS",
         },
-        contract_version="v1",
+        contract_version="v2",
     )
 
 
@@ -714,9 +746,9 @@ def test_write_executor_savepoint_isolates_failing_row(monkeypatch):
                     "name": "device-bad",
                     "vendor": "Cisco",
                     "model": "NX-9000",
-                    "device_type": "NX-9000",
+                    "platform": "CISCO_NXOS",
                 },
-                contract_version="v1",
+                contract_version="v2",
             ),
             _device_op("device-2"),
         ),

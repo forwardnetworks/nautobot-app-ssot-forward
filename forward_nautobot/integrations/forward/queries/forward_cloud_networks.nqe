@@ -34,7 +34,5 @@ cloud_subnets() =
   };
 
 @primaryKey(network_id)
-@query
-f() =
 foreach row in ( cloud_vpcs() + cloud_subnets() )
-select row;
+select row

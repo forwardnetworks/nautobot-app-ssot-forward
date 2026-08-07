@@ -13,12 +13,24 @@ from forward_nautobot.integrations.forward.queries import (
     QUERY_CONTRACT_VERSIONS,
     QUERY_FILENAMES,
     get_query_contract_field_sets,
+    read_bundled_query_execution_source,
+    read_bundled_query_source,
 )
 
 
 def main() -> int:
     failures: list[str] = []
     for filename in QUERY_FILENAMES:
+        saved_source = read_bundled_query_source(filename)
+        execution_source = read_bundled_query_execution_source(filename)
+        if saved_source.count("@primaryKey(") != 1:
+            failures.append(f"{filename}: saved source must declare exactly one @primaryKey")
+        if "@query" in saved_source:
+            failures.append(f"{filename}: saved source must remain unparameterized")
+        if "@primaryKey" in execution_source:
+            failures.append(f"{filename}: inline source retained saved-query metadata")
+        if execution_source.rstrip().endswith(";"):
+            failures.append(f"{filename}: final inline expression must not end with a semicolon")
         expected = QUERY_CONTRACT_FIELDS[filename]
         field_sets = get_query_contract_field_sets(filename)
         if not field_sets:
@@ -26,9 +38,9 @@ def main() -> int:
                 f"{filename}: no contract fields could be parsed from the bundled query"
             )
             continue
-        if any(field_set != expected for field_set in field_sets):
+        if expected not in field_sets:
             failures.append(
-                f"{filename}: parsed contract fields do not match the expected bundle contract"
+                f"{filename}: no parsed result shape matches the expected bundle contract"
             )
         if not QUERY_CONTRACT_VERSIONS.get(filename):
             failures.append(f"{filename}: missing contract version header")

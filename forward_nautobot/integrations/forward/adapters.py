@@ -389,11 +389,11 @@ class NautobotTargetAdapter(Adapter):
         return {
             "name": _string_value(getattr(instance, "name", "")),
             "manufacturer": _string_value(getattr(instance, "manufacturer", None), "name"),
-            "device_type": _string_value(self._cf_value(instance, "device_type")),
         }
 
     def _serialize_device_type(self, instance: Any) -> dict[str, Any]:
         return {
+            "manufacturer": _string_value(getattr(instance, "manufacturer", None), "name"),
             "name": _string_value(getattr(instance, "model", ""), "name"),
             "color": _string_value(self._cf_value(instance, "color")) or "9e9e9e",
         }
@@ -405,16 +405,14 @@ class NautobotTargetAdapter(Adapter):
         vendor = _string_value(getattr(getattr(device_type, "manufacturer", None), "name", ""))
         if not vendor:
             vendor = _string_value(getattr(platform, "manufacturer", None), "name")
-        model = _string_value(getattr(platform, "name", ""), "name")
-        device_type_name = _string_value(getattr(device_type, "model", ""), "name")
-        if not device_type_name:
-            device_type_name = _string_value(self._cf_value(instance, "device_type"))
+        model = _string_value(getattr(device_type, "model", ""), "name")
+        platform_name = _string_value(getattr(platform, "name", ""), "name")
         return {
             "name": _string_value(getattr(instance, "name", "")),
             "location": _string_value(location, "name"),
             "vendor": vendor,
             "model": model,
-            "device_type": device_type_name,
+            "platform": platform_name,
         }
 
     def _serialize_interface(self, instance: Any) -> dict[str, Any]:
