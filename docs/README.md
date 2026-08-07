@@ -18,15 +18,16 @@ focused on run behavior and validation.
 
 ## Release and Validation Surface
 
-Release workflow:
+Local release process:
 
 - `python scripts/ci_local.py` — complete local release gate (`--fast` skips build/wheel)
 - `python scripts/release.py X.Y.Z --summary "..."` — prepare (bump pyproject + `__init__` in lockstep, scaffold plan) + verify
-- `python scripts/release.py X.Y.Z --summary "..." --publish` — branch → push → fast-forward main → tag the release commit → GitHub release
+- `python scripts/release.py X.Y.Z --summary "..." --publish` — branch → push → fast-forward main → tag → upload the local wheel/sdist to GitHub Releases and PyPI
 - `pre-commit run --all-files` — ruff lint + format + sensitive-content + whitespace/yaml/json hooks
 
-Validation is local-only. The tag-triggered GitHub workflow builds and delivers
-artifacts; it contains no test or approval gates.
+Validation and publishing are local-only. The repository has no GitHub Actions or
+Dependabot automation. PyPI credentials come from the maintainer's local keyring
+or Twine environment variables and are never stored in the repository.
 
 Individual gates (run by `ci_local.py`):
 
@@ -35,6 +36,7 @@ Individual gates (run by `ci_local.py`):
 - `python scripts/check_harness.py`
 - `python scripts/check_query_contracts.py`
 - `python scripts/check_wheel_contents.py`
+- `python -m twine check dist/*.whl dist/*.tar.gz`
 - `python scripts/check_release_state.py` — also fails on pyproject/`__init__` version drift
 - `python -m unittest discover -s scripts/tests -p 'test_*.py'`
 - `pytest -q`

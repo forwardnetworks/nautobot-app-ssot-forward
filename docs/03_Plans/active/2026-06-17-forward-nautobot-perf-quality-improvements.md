@@ -1,8 +1,8 @@
 # Forward Nautobot Performance & Quality Improvements
 
 Date: 2026-06-17
-Context: Switched back to async NQE on Forward 26.6. Live testing against the Wells Fargo
-dataset surfaced an execution-payload bug and exposed several performance and quality
+Context: Switched back to async NQE on Forward 26.6. Testing against an authorized
+live dataset surfaced an execution-payload bug and exposed several performance and quality
 opportunities across the client, planner, and bundled NQE queries.
 
 ## Goal
@@ -32,7 +32,7 @@ breaks every live async execution.
 - Evidence: `forward_nautobot/integrations/forward/client.py:725-726` (bad body),
   `client.py:689` (correct Accept header).
 - Impact: every live async run fails / every live test skips. This is the root cause of the
-  skipped Wells Fargo smoke runs.
+  skipped live smoke runs.
 
 **Action**
 
@@ -47,7 +47,7 @@ breaks every live async execution.
    - `tests/test_client.py:553` and `tests/test_client.py:646`
      (assert `payload["options"]["itemFormat"]` — these pass only because mocks accept
      anything; the live API does not).
-4. Re-run the live Wells Fargo async smoke to prove the full submit → poll → result path.
+4. Re-run the authorized live async smoke to prove the full submit → poll → result path.
 
 ---
 
@@ -146,7 +146,7 @@ resolved, and surface the failing slice/query in the job error.
 ## Verification
 
 - Unit: `python3 -m pytest tests/test_client.py tests/test_runner.py tests/test_planner.py`
-- Live: load `.env` (Wells Fargo `FORWARD_WELLS_*`, mapped to `FORWARD_LIVE_*`), run
-  `tests/test_live_ingestion.py -m integration`. The WF `org` repo does not publish the
+- Live: load private `FORWARD_LIVE_*` values outside the repository and run
+  `tests/test_live_ingestion.py -m integration`. The validation repository may not publish the
   `/forward_nautobot_validation/*` paths, so live coverage requires publishing the
   bundled queries into a repository folder first.

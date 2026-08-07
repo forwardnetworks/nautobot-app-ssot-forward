@@ -145,7 +145,7 @@ As the model set expands, keep the Forward load bounded:
 
 - prefer query IDs and `nqe-diffs` when a saved query is available
 - allow inline query text for ad hoc runs
-- keep query filters parameterized where possible
+- keep saved queries unparameterized and primary-keyed so NQE diffs remain available
 - avoid repeated lookups and avoid turning a single model batch into many small API calls
 
 ## Recommended Rollout Order

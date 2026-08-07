@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local release gate — run the complete validation set before publishing.
 
-Validation is intentionally local-only; GitHub Actions performs delivery only.
+Validation and publishing are intentionally local-only. No GitHub Actions run.
 Each gate is a (label, argv) pair; the runner prints a pass/fail summary and
 exits non-zero if any gate fails. Use --fast to skip the slow build + wheel
 checks during iteration.
@@ -19,11 +19,19 @@ import os
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 PY = sys.executable
+
+
+def _distribution_paths() -> list[str]:
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = str(pyproject["tool"]["poetry"]["version"]).strip()
+    stem = f"dist/nautobot_app_ssot_forward-{version}"
+    return [f"{stem}-py3-none-any.whl", f"{stem}.tar.gz"]
 
 
 def _gates(*, fast: bool, sensitive: bool) -> list[tuple[str, list[str]]]:
@@ -53,6 +61,7 @@ def _gates(*, fast: bool, sensitive: bool) -> list[tuple[str, list[str]]]:
         gates += [
             ("build", [PY, "-m", "build"]),
             ("wheel-contents", [PY, "scripts/check_wheel_contents.py"]),
+            ("twine-check", [PY, "-m", "twine", "check", *_distribution_paths()]),
         ]
     return gates
 

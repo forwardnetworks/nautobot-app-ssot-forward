@@ -43,7 +43,7 @@ The most useful hardening patterns to keep carrying forward are contractual:
 | Increase target-state fidelity | Keep deep Nautobot target hydration aligned with real ORM state as the write model grows. | `forward_nautobot/integrations/forward/adapters.py`, `forward_nautobot/integrations/forward/planner.py`, `tests/test_target_adapter.py`, `tests/test_planner.py` |
 | Reduce query load and request pressure | Minimize unnecessary Forward API calls, avoid repeated repository lookups, keep request shapes explicit and efficient, and scope child queries from already loaded parent keys when possible. | `forward_nautobot/integrations/forward/client.py`, `forward_nautobot/integrations/forward/planner.py`, query contracts |
 | Tighten contract governance | Keep bundled contracts versioned and detect drift in the local release gate. | `forward_nautobot/integrations/forward/queries/`, `scripts/check_query_contracts.py`, `scripts/ci_local.py` |
-| Strengthen release automation | Keep local wheel and release-state checks deterministic while retaining tag-driven artifact delivery. | `scripts/check_wheel_contents.py`, `scripts/check_release_state.py`, `scripts/ci_local.py`, `.github/workflows/release.yml` |
+| Strengthen release operations | Keep local wheel, release-state, and artifact-publishing steps deterministic. | `scripts/check_wheel_contents.py`, `scripts/check_release_state.py`, `scripts/ci_local.py`, `scripts/release.py` |
 | Improve operator UX | Surface clearer readiness, status, and failure context in the UI and job output. | `forward_nautobot/views.py`, `forward_nautobot/jobs.py`, `forward_nautobot/integrations/forward/jobs.py`, `forward_nautobot/integrations/forward/support.py` |
 
 ## 100% Production Quality

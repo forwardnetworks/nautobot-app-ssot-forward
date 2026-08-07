@@ -34,8 +34,8 @@ capture, with support for Forward async query execution.
 - SSoT UI pages for overview, configuration, status, diagnostics, and slice detail
 - Local release gates for query contracts, wheel contents, sensitive-content checks, and release state
 
-Local-only validation is intentional. GitHub Actions performs tag-driven artifact and
-package delivery; it does not run tests or approval gates.
+Local-only validation and publishing are intentional. No GitHub Actions or
+Dependabot automation runs for this repository.
 
 ## Supported Model Slices
 
@@ -257,6 +257,7 @@ Run before tag/release:
 - `python scripts/check_query_contracts.py`
 - `python scripts/check_wheel_contents.py`
 - `python scripts/check_release_state.py`
+- `python -m twine check dist/*.whl dist/*.tar.gz`
 
 The live validation surface should include:
 
@@ -267,3 +268,15 @@ The live validation surface should include:
 
 For local live-dataset work, keep credentials/snapshots out of source code and
 document them only in your private environment.
+
+Local publication requires `build`, `twine`, an authenticated `gh` CLI, and PyPI
+credentials supplied through the local keyring or Twine environment variables:
+
+```bash
+python scripts/release.py X.Y.Z --summary "release summary" --publish
+```
+
+The script runs the local release gate, builds the wheel and sdist, tags the
+validated commit, uploads those exact local files to GitHub Releases, and then
+uploads the same files to PyPI. Publishing credentials must never be added to the
+repository.

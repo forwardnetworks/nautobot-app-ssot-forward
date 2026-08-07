@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _SPEC = importlib.util.spec_from_file_location(
     "release", Path(__file__).resolve().parents[1] / "release.py"
@@ -68,6 +71,47 @@ class PlanScaffold(unittest.TestCase):
         self.assertIn("gitops", out)
         self.assertIn("2026-06-19", out)
         self.assertIn("--publish", out)
+
+
+class DistributionFilenames(unittest.TestCase):
+    def test_returns_exact_wheel_and_sdist_names(self):
+        self.assertEqual(
+            release.distribution_filenames("0.6.1"),
+            (
+                "nautobot_app_ssot_forward-0.6.1-py3-none-any.whl",
+                "nautobot_app_ssot_forward-0.6.1.tar.gz",
+            ),
+        )
+
+    def test_publish_uploads_the_same_local_artifacts_to_both_destinations(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            dist_dir = repo_root / "dist"
+            dist_dir.mkdir()
+            for name in release.distribution_filenames("0.6.1"):
+                (dist_dir / name).write_bytes(b"test artifact")
+
+            with (
+                mock.patch.object(release, "REPO_ROOT", repo_root),
+                mock.patch.object(release, "DIST_DIR", dist_dir),
+                mock.patch.object(release, "run") as run_mock,
+            ):
+                release.stage_publish("0.6.1", summary="test release")
+
+            commands = [call.args[0] for call in run_mock.call_args_list]
+            github_upload = next(
+                command for command in commands if command[:3] == ["gh", "release", "create"]
+            )
+            pypi_upload = next(
+                command
+                for command in commands
+                if command[:5] == [sys.executable, "-m", "twine", "upload", "--non-interactive"]
+            )
+            expected_artifacts = [
+                f"dist/{name}" for name in release.distribution_filenames("0.6.1")
+            ]
+            self.assertEqual(github_upload[-2:], expected_artifacts)
+            self.assertEqual(pypi_upload[-2:], expected_artifacts)
 
 
 if __name__ == "__main__":
