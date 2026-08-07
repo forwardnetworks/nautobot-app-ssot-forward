@@ -11,7 +11,7 @@ publishing.
 | Planner or write-path change | `python -m pytest -q tests/test_planner.py tests/test_write_path.py tests/test_write_executor.py tests/test_target_adapter.py` |
 | SSoT job or Nautobot UI change | `python -m pytest -q tests/test_plugin.py tests/test_views.py tests/test_nautobot_job_refresh.py` |
 | Security or credential handling change | `python -m pytest -q tests/test_configuration.py tests/test_release_gates.py`, `python scripts/check_sensitive_content.py --all-history` |
-| Release workflow or packaging change | `python scripts/ci_local.py`, then inspect the local build artifacts |
+| Release or packaging change | `python scripts/ci_local.py`, then inspect the local build artifacts |
 | Device-filter or query-publication change | publisher unit tests, filtered-delete safety tests, exact committed-source audit, async full-query live smoke, strict NQE-diff live smoke |
 
 ## Release Gate

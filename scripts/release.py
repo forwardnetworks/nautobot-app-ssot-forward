@@ -13,12 +13,11 @@ Stages:
   prepare  - bump both versions, scaffold the release plan file
   verify   - run the local release gate (scripts/ci_local.py)
   publish  - branch, push, fast-forward main, tag the RELEASE COMMIT, and
-             create the GitHub release (ONLY with --publish)
+             upload local artifacts to GitHub Releases and PyPI
 
-Pushing the ``v*`` tag triggers .github/workflows/release.yml, which builds the
-sdist + wheel, attaches them to the GitHub release, and publishes them to PyPI via
-Trusted Publishing (OIDC — no stored token). See that workflow's header for the
-one-time PyPI publisher + ``pypi`` environment setup.
+There are no GitHub Actions workflows. Publishing is initiated only by this local
+script. Configure Twine credentials outside the repository (for example through a
+local keyring or ``TWINE_USERNAME``/``TWINE_PASSWORD`` environment variables).
 
 Default run is prepare + verify. Rollout never happens without --publish, so a
 default run is a safe dry build.
@@ -40,6 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 INIT_PY = REPO_ROOT / "forward_nautobot/__init__.py"
 PLAN_DIR = REPO_ROOT / "docs/03_Plans/active"
+DIST_DIR = REPO_ROOT / "dist"
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
@@ -97,6 +97,22 @@ def plan_scaffold(version: str, summary: str, date: str) -> str:
     )
 
 
+def distribution_filenames(version: str) -> tuple[str, str]:
+    """Return the exact wheel and sdist names produced for a release version."""
+    stem = f"nautobot_app_ssot_forward-{version}"
+    return f"{stem}-py3-none-any.whl", f"{stem}.tar.gz"
+
+
+def distribution_paths(version: str) -> list[Path]:
+    """Resolve the locally built release files, failing if either is absent."""
+    paths = [DIST_DIR / name for name in distribution_filenames(version)]
+    missing = [path.relative_to(REPO_ROOT) for path in paths if not path.is_file()]
+    if missing:
+        rendered = ", ".join(str(path) for path in missing)
+        raise ReleaseError(f"missing locally built release artifact(s): {rendered}")
+    return paths
+
+
 # ---- side-effecting stages -----------------------------------------------------
 
 
@@ -146,6 +162,9 @@ def stage_verify() -> None:
 def stage_publish(version: str, *, summary: str) -> None:
     tag = f"v{version}"
     branch = f"release/{version}"
+    artifacts = distribution_paths(version)
+    artifact_args = [str(path.relative_to(REPO_ROOT)) for path in artifacts]
+    run([sys.executable, "-m", "twine", "check", *artifact_args])
     print(f"[publish] branch {branch}, tag {tag} on the release commit")
     run(["git", "checkout", "-b", branch])
     run(["git", "add", "-A"])
@@ -157,13 +176,23 @@ def stage_publish(version: str, *, summary: str) -> None:
     # Tag the release commit (now HEAD of main), never a stale earlier commit.
     run(["git", "tag", tag])
     run(["git", "push", "origin", tag])
-    run(["gh", "release", "create", tag, "--title", tag, "--notes", summary])
-    print(f"[publish] {tag} released")
-    print(
-        "[publish] the tag triggers .github/workflows/release.yml: it uploads the "
-        "sdist + wheel to the GitHub release and publishes them to PyPI via Trusted "
-        "Publishing. Watch: gh run watch --exit-status"
+    run(
+        [
+            "gh",
+            "release",
+            "create",
+            tag,
+            "--verify-tag",
+            "--title",
+            tag,
+            "--notes",
+            summary,
+            *artifact_args,
+        ]
     )
+    run([sys.executable, "-m", "twine", "upload", "--non-interactive", *artifact_args])
+    print(f"[publish] {tag} released")
+    print("[publish] local artifacts uploaded to GitHub Releases and PyPI")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -69,7 +69,7 @@ The most useful hardening patterns for this repo are contractual rather than pla
 - Replay tooling should be able to rebuild a dry run from a saved fixture or exported bundle without requiring live credentials.
 - Request pressure should stay bounded through query-index caching, conservative pagination,
   retry/backoff behavior, and at most two concurrent async submissions per dependency tier.
-- The local release gate should keep checking contract drift, wheel contents, release/tag state, and sensitive-content hygiene. GitHub automation remains delivery-only.
+- The local release gate should keep checking contract drift, wheel contents, release/tag state, and sensitive-content hygiene. Artifact publication is also initiated locally; the repository has no GitHub-hosted automation.
 - The SSoT job lifecycle already covers run history, so there is no separate orchestration layer to recreate here.
 
 ## Current Boundaries

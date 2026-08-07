@@ -10,7 +10,7 @@ Make the Forward Nautobot plugin release process boring: no customer data in tra
 - keep sensitive-content checks strong enough to block customer-derived identifiers
 - keep live smoke tests bounded and representative
 - keep scope-parameter regression coverage aligned with the bundled NQE contracts
-- keep the release workflow publishable from a tagged commit
+- keep local artifact publication deterministic from a validated commit
 
 ## Checklist
 
@@ -18,7 +18,7 @@ Make the Forward Nautobot plugin release process boring: no customer data in tra
 | --- | --- | --- |
 | Full pytest suite passes | `tests/` | done |
 | Wheel and sdist build cleanly | `python -m build` | done |
-| Tag-triggered release workflow succeeds | `.github/workflows/release.yml` | done |
+| Local artifact publication is scripted | `scripts/release.py` | done |
 | Sensitive-content gate passes | `scripts/check_sensitive_content.py` | done |
 | Sensitive-content gate has direct regression coverage | `tests/test_release_gates.py` | done |
 | Live preview/sync smoke is bounded | `tests/test_live_ingestion.py` | done |
@@ -34,6 +34,6 @@ Make the Forward Nautobot plugin release process boring: no customer data in tra
 ## Exit Criteria
 
 - no sensitive identifiers appear in tracked files or release artifacts
-- the release workflow succeeds from a tagged commit
+- local publication uses the exact wheel and sdist that passed the release gate
 - live preview/sync smokes remain bounded and representative
 - the current supported slice set has regression coverage for query scope, contract drift, and packaging

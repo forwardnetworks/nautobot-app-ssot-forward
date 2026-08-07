@@ -23,6 +23,7 @@ nautobot-ssot = ">=4.4,<5.0"
 [tool.poetry.group.dev.dependencies]
 build = "^1.2.2"
 pytest = "^8.3"
+twine = "^6.2"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

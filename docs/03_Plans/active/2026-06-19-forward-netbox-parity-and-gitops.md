@@ -32,7 +32,7 @@ disconnect the hot Nautobot signals — dynamic-group membership recompute,
 `m2m_changed` cache refresh, webhook enqueue — behind a config flag. Keep change
 logging on.
 **Why:** per-`save()` signal tax is the single biggest framework-safe write-path
-cost on the Wells Fargo–scale dataset.
+cost on a large authorized validation dataset.
 
 ### A2. Live query source-proof gate  ·  High value · M
 **forward-netbox:** `management/commands/forward_validation_org_query_audit.py`
@@ -110,9 +110,8 @@ helper that captures before/after wall-clock per change.
 
 ## Part B — Local validation and release delivery
 
-Superseded on 2026-08-06 by maintainer policy: validation is local-only. There
-is no push or pull-request validation workflow, and the tag-triggered GitHub
-workflow contains delivery steps only.
+Superseded on 2026-08-06 by maintainer policy: validation and publishing are
+local-only. The repository contains no GitHub-hosted automation.
 
 ### Current state
 
@@ -125,9 +124,8 @@ workflow contains delivery steps only.
   data are written to the repository.
 - `scripts/release.py verify` invokes the complete local release gate and does
   not wait for any GitHub status check.
-- `.github/workflows/release.yml` builds tagged artifacts, creates the GitHub
-  release, and publishes to PyPI through trusted publishing. It runs no tests,
-  contract checks, or approval gates.
+- `scripts/release.py` uploads locally built artifacts to GitHub Releases and
+  PyPI after the local gate passes.
 
 ### Maintainer workflow
 
@@ -135,8 +133,8 @@ workflow contains delivery steps only.
 2. Run `python scripts/ci_local.py`.
 3. Run the supported-version disposable stacks and authorized live smoke when
    the change affects runtime integration.
-4. Merge the reviewed change, tag the validated commit, and let the delivery
-   workflow publish the already-validated source.
+4. Merge the reviewed change, tag the validated commit, and publish the exact
+   locally built artifacts with `scripts/release.py`.
 5. Verify the GitHub release assets and public package index after delivery.
 
 ## Verification

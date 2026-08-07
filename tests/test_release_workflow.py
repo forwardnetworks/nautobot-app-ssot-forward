@@ -21,21 +21,17 @@ def test_validation_matrix_pins_blake_regression_and_live_gate():
     assert "No skipped non-integration tests" in matrix
 
 
-def test_github_validation_is_removed_and_release_workflow_is_delivery_only():
-    assert not Path(".github/workflows/ci.yml").exists()
+def test_github_automation_is_removed_and_release_is_local():
+    workflows = Path(".github/workflows")
+    assert not workflows.exists() or not any(path.is_file() for path in workflows.rglob("*"))
+    assert not Path(".github/dependabot.yml").exists()
+    assert not Path(".github/dependabot.yaml").exists()
 
-    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-
-    assert "python -m build" in workflow
-    assert "softprops/action-gh-release" in workflow
-    assert "pypa/gh-action-pypi-publish" in workflow
-    assert "check_sensitive_content.py" not in workflow
-    assert "check_harness.py" not in workflow
-    assert "check_release_state.py" not in workflow
-    assert "check_query_contracts.py" not in workflow
-    assert "generate_contract_diff_report.py" not in workflow
-    assert "check_wheel_contents.py" not in workflow
-    assert "python -m pytest" not in workflow
+    release_script = Path("scripts/release.py").read_text(encoding="utf-8")
+    assert "There are no GitHub Actions workflows" in release_script
+    assert '"gh",\n            "release",\n            "create"' in release_script
+    assert '"twine", "upload", "--non-interactive"' in release_script
+    assert ".github/workflows" not in release_script
 
 
 def test_readme_documents_release_readiness_checks():
