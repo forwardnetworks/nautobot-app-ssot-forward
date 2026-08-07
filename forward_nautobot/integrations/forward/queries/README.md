@@ -30,6 +30,11 @@ device result and applies exact-set manufacturer, functional-class, and model fi
 full or diff execution. Direct device-backed rows expose `device`; shared rows expose the raw
 `scope_devices` contributor list without reshaping it in Python.
 
+Cloud queries are also unparameterized. Runtime loads current account membership, applies
+cloud-type and account-ID filters in Python, and uses cloud-type/account-qualified primary keys
+for accounts and child resources. Saved cloud-query diffs decide whether a complete current cloud
+source needs to be hydrated for native Nautobot DiffSync.
+
 The prefix queries are deliberately compact and do not expose `scope_devices`: grouping large
 route tables by contributing device can exceed Forward's result-group limit. They run normally
 without device filters and fail closed (zero accepted rows) during a filtered sync.

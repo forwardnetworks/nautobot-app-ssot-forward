@@ -16,6 +16,9 @@ def test_connection_profile_record_round_trips_connection_settings():
         network_id="net-fixture-1",
         snapshot_id="latestProcessed",
         enabled_models=("devices", "locations"),
+        sync_mode="cloud",
+        cloud_types=("TYPE_A",),
+        cloud_account_ids=("account-fixture",),
         default_location_type_name="Building",
         default_location_status_name="Active",
         default_device_role_name="Access Switch",
@@ -37,6 +40,9 @@ def test_connection_profile_record_round_trips_connection_settings():
     assert settings.network_id == "net-fixture-1"
     assert settings.verify_tls is True
     assert profile.as_dict()["enabled_models"] == ["devices", "locations"]
+    assert profile.as_dict()["sync_mode"] == "cloud"
+    assert profile.as_dict()["cloud_types"] == ["TYPE_A"]
+    assert profile.as_dict()["cloud_account_ids"] == ["account-fixture"]
     assert profile.write_ready
     assert profile.as_dict()["default_device_role_name"] == "Access Switch"
     assert profile.as_dict()["delete_policy"] == "mark_inactive"
@@ -46,6 +52,15 @@ def test_connection_profile_record_round_trips_connection_settings():
     assert profile.status_record().as_dict()["last_query_reference"] == "forward_devices.nqe"
     assert profile.status_record().as_dict()["last_query_mode"] == "bundled_nqe_query_id_diff"
     assert profile.status_record().as_dict()["last_snapshot_id"] == "snap-1"
+    assert profile.status_record().as_dict()["sync_mode"] == "cloud"
+
+
+def test_connection_profile_invalid_sync_mode_defaults_to_network():
+    profile = ForwardConnectionProfileRecord.from_mapping(
+        {"name": "invalid-mode", "sync_mode": "unexpected"}
+    )
+
+    assert profile.sync_mode == "network"
 
 
 def test_connection_profile_record_invalid_delete_policy_defaults_to_ignore():

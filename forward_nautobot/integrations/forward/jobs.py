@@ -10,11 +10,13 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from ...models import (
+    SYNC_MODES,
     WRITE_DEFAULT_FIELD_NAMES,
     ForwardConnectionProfile,
     ForwardConnectionProfileRecord,
 )
 from .client import ForwardClient
+from .cloud import ForwardCloudIngestionPlan, ForwardCloudIngestionPlanner
 from .models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings
 from .planner import ForwardIngestionPlanner, ForwardIngestionRequest
 from .query_publishing import publish_bundled_queries
@@ -114,7 +116,11 @@ def _has_meaningful_profile_inputs(data) -> bool:
         if str(data.get(field_name) or "").strip():
             return True
     delete_policy = str(data.get("delete_policy") or "ignore").strip()
-    return delete_policy != "ignore"
+    if delete_policy != "ignore":
+        return True
+    if str(data.get("sync_mode") or "").strip() in SYNC_MODES:
+        return True
+    return bool(_split_csv(data.get("cloud_types")) or _split_csv(data.get("cloud_account_ids")))
 
 
 def _split_unique_id(unique_id: str) -> tuple[str, ...]:
@@ -257,6 +263,13 @@ def _build_ingestion_request(*, dryrun: bool, **data):
             return requested
         return tuple(getattr(connection_profile, field_name, ()) or ())
 
+    requested_sync_mode = str(data.get("sync_mode") or "").strip().lower()
+    sync_mode = (
+        requested_sync_mode
+        if requested_sync_mode in SYNC_MODES
+        else str(getattr(connection_profile, "sync_mode", "network") or "network")
+    )
+
     return ForwardIngestionRequest(
         connection=connection,
         model_names=selected_models,
@@ -264,9 +277,12 @@ def _build_ingestion_request(*, dryrun: bool, **data):
         limit=limit or None,
         snapshot_id=data.get("snapshot_id") or LATEST_PROCESSED_SNAPSHOT,
         connection_profile=connection_profile,
+        sync_mode=sync_mode,
         device_vendors=_filter_values("device_vendors"),
         device_types=_filter_values("device_types"),
         device_models=_filter_values("device_models"),
+        cloud_types=_filter_values("cloud_types"),
+        cloud_account_ids=_filter_values("cloud_account_ids"),
     )
 
 
@@ -323,6 +339,7 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
     client = ForwardClient(request.connection)
     query_publication: dict = {}
     planner = ForwardIngestionPlanner(client)
+    cloud_plan: ForwardCloudIngestionPlan | None = None
     try:
         if _coerce_bool(data.get("publish_queries")):
             if dryrun:
@@ -337,6 +354,32 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                         "Bundled Forward NQE publication/source verification did not pass."
                     )
         plan = planner.run(request)
+        if request.cloud_enabled and not plan.diff_detail.get("skipped"):
+            if not _contrib_include_cloud():
+                raise RuntimeError(
+                    "Cloud sync is disabled by the forward_nautobot contrib_include_cloud setting."
+                )
+            cloud_plan = ForwardCloudIngestionPlanner(client).run(
+                source_url=request.connection.base_url,
+                network_id=str(request.connection.network_id or ""),
+                current_snapshot_id=str(plan.diff_detail.get("current_snapshot_id") or ""),
+                baseline_snapshot_id=str(plan.diff_detail.get("baseline_snapshot_id") or ""),
+                cloud_types=request.cloud_types,
+                cloud_account_ids=request.cloud_account_ids,
+                limit=request.limit or request.connection.nqe_page_size,
+                snapshot_metrics=dict(
+                    plan.diff_detail.get("snapshot_completeness", {}).get("failure_counts") or {}
+                ),
+            )
+            plan.reports = (*plan.reports, *cloud_plan.reports)
+            plan.diff_detail["cloud"] = cloud_plan.as_dict()
+        plan.write_plan.configuration_status.update(
+            {
+                "sync_mode": request.sync_mode,
+                "cloud_enabled": request.cloud_enabled,
+                "cloud_filtered_scope": request.cloud_filtered_scope,
+            }
+        )
     except Exception as exc:
         # A hard failure (auth/TLS/network/NQE) must leave a failure trace on the
         # profile so the operator does not see a stale "last success". Record it
@@ -361,15 +404,28 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
             )
             _save_profile_record(failed)
         raise
-    write_execution = {}
-    if not dryrun:
+    write_execution: dict = {}
+    profile = request.connection_profile
+    override_reason = str(data.get("delete_override_reason") or "").strip()
+    from .delete_policy import DeleteControls
+
+    controls = DeleteControls(
+        override=bool(override_reason),
+        override_reason=override_reason,
+        user=str(data.get("acting_user") or ""),
+    )
+    allow_delete = (
+        getattr(profile, "effective_delete_policy", "ignore") == "delete"
+        and not request.filtered_scope
+        and bool(plan.diff_detail.get("destructive_reconciliation_enabled", True))
+    )
+    if not dryrun and request.network_enabled:
         if _use_contrib_sync():
             # Cutover path: write through nautobot-ssot contrib CRUD (delete-safe)
             # across the full network + cloud model set, instead of the hand-rolled
             # write executor. Flag-gated via PLUGINS_CONFIG so the legacy path stays
             # the default until the contrib path is promoted.
             from . import contrib_sync
-            from .delete_policy import DeleteControls
 
             source_records = {
                 slug: [dict(rec.fields) for rec in recs.values()]
@@ -378,17 +434,6 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
             # Deletes are opt-in via the profile's delete_policy and still gated
             # per model (zero-rows / fraction) by the governor; an operator can
             # force past a block with a recorded override reason.
-            profile = request.connection_profile
-            allow_delete = (
-                getattr(profile, "effective_delete_policy", "ignore") == "delete"
-                and not request.filtered_scope
-            )
-            override_reason = str(data.get("delete_override_reason") or "").strip()
-            controls = DeleteControls(
-                override=bool(override_reason),
-                override_reason=override_reason,
-                user=str(data.get("acting_user") or ""),
-            )
             write_execution = {
                 "engine": "contrib",
                 "summaries": contrib_sync.run_contrib_full_sync(
@@ -398,7 +443,7 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                     client=client,
                     network_id=str(request.connection.network_id or ""),
                     snapshot_id=plan.diff_detail.get("current_snapshot_id"),
-                    include_cloud=_contrib_include_cloud(),
+                    include_cloud=False,
                     include_cables=_contrib_include_cables(),
                     allow_delete=allow_delete,
                     filtered_scope=request.filtered_scope,
@@ -414,6 +459,50 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                 )
                 .as_dict()
             )
+
+    if cloud_plan is not None:
+        if "summaries" not in write_execution:
+            if write_execution:
+                write_execution = {
+                    "engine": "mixed",
+                    "summaries": {"network": write_execution},
+                }
+            else:
+                write_execution = {"engine": "contrib", "summaries": {}}
+        if cloud_plan.should_sync:
+            from . import contrib_sync
+
+            cloud_summary = contrib_sync.run_contrib_cloud_sync(
+                account_rows=[dict(row) for row in cloud_plan.account_rows],
+                network_rows=[dict(row) for row in cloud_plan.network_rows],
+                service_rows=[dict(row) for row in cloud_plan.service_rows],
+                dryrun=dryrun,
+                # Cloud target ownership is not broad enough for safe removal yet.
+                # NQE deletion deltas remain reported but never applied.
+                allow_delete=False,
+                delete_controls=controls,
+            )
+            write_execution["summaries"]["cloud"] = cloud_summary
+            for source_key, target_key in (
+                ("create", "create"),
+                ("update", "update"),
+                ("no-change", "no-change"),
+                ("delete", "deleted"),
+            ):
+                value = cloud_summary.get(source_key, 0)
+                if isinstance(value, int):
+                    plan.diff_summary[target_key] = plan.diff_summary.get(target_key, 0) + value
+                    plan.write_plan.summary[target_key] = (
+                        plan.write_plan.summary.get(target_key, 0) + value
+                    )
+        else:
+            write_execution["summaries"]["cloud"] = {
+                "skipped": (
+                    "no selected cloud accounts"
+                    if cloud_plan.as_dict().get("scope_empty")
+                    else "no relevant cloud changes"
+                )
+            }
 
     failure_classification = (
         "clean"
@@ -445,9 +534,12 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                 prof = saved_profile
         profile_status = prof.status_record(last_run=run_at).as_dict()
     elif plan.reports:
+        source_summary = plan.source_summary
+        if cloud_plan is not None:
+            source_summary = {**source_summary, "cloud": cloud_plan.as_dict()}
         bundle, shared_bundle = build_support_bundle_pair(
             plan.reports[0],
-            source_summary=plan.source_summary,
+            source_summary=source_summary,
             target_summary=plan.target_summary,
             write_summary=plan.write_summary,
             diff_summary=plan.diff_summary,
@@ -512,7 +604,10 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
 
     result = {
         "reports": [report.as_dict() for report in plan.reports],
-        "source_summary": plan.source_summary,
+        "source_summary": {
+            **plan.source_summary,
+            **({"cloud": cloud_plan.as_dict()} if cloud_plan is not None else {}),
+        },
         "target_summary": plan.target_summary,
         "write_summary": plan.write_summary,
         "configuration_status": plan.configuration_status,
@@ -595,6 +690,17 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
         default="",
         description="Comma-separated model slugs to include in the sync, or leave blank to use the selected profile.",
     )
+    sync_mode = ChoiceVar(
+        choices=(
+            ("", "Use selected profile"),
+            ("network", "Network inventory only"),
+            ("cloud", "Cloud inventory only"),
+            ("all", "Network and cloud inventory"),
+        ),
+        default="",
+        required=False,
+        description="Select network inventory, native Nautobot cloud inventory, or both.",
+    )
     device_vendors = StringVar(
         required=False,
         default="",
@@ -616,6 +722,16 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
         description=(
             "Comma-separated exact hardware model values; blank uses the selected profile."
         ),
+    )
+    cloud_types = StringVar(
+        required=False,
+        default="",
+        description="Comma-separated Forward cloud-type values; blank uses the selected profile.",
+    )
+    cloud_account_ids = StringVar(
+        required=False,
+        default="",
+        description="Comma-separated Forward cloud account IDs; blank uses the selected profile.",
     )
     publish_queries = BooleanVar(
         default=False,
@@ -703,7 +819,7 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
     @classmethod
     def data_mappings(cls):
         """Describe the Forward query slices surfaced to the SSoT dashboard."""
-        return [
+        mappings = [
             DataMapping(
                 source_name=f"Forward {mapping.slug}",
                 source_url="",
@@ -712,6 +828,14 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
             )
             for mapping in CORE_MODEL_MAPPINGS
         ]
+        mappings.extend(
+            (
+                DataMapping("Forward cloud accounts", "", "cloud.cloudaccount", ""),
+                DataMapping("Forward cloud networks", "", "cloud.cloudnetwork", ""),
+                DataMapping("Forward cloud services", "", "cloud.cloudservice", ""),
+            )
+        )
+        return mappings
 
     @classmethod
     def config_information(cls):
@@ -724,7 +848,9 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
             "Snapshot": f"Defaults to {LATEST_PROCESSED_SNAPSHOT}.",
             "Profile selection": "Uses a persisted profile by name or the default saved profile when available.",
             "Model selection": "Use selected_models to override a saved profile's enabled model set; leave it blank to use the profile defaults.",
+            "Sync domain": "Choose network inventory, native Nautobot cloud inventory, or both.",
             "Device population": "Optional manufacturer, functional device-class, and hardware-model allowlists are applied in NQE. Filtered runs never delete or deactivate excluded objects.",
+            "Cloud population": "Optional cloud-type and account-ID allowlists are applied after NQE execution so saved-query diffs remain available. Filtered cloud runs never delete excluded objects.",
             "Query input": "Bundled Forward NQE contracts only.",
             "Query lifecycle": "The job can publish and source-verify bundled NQEs explicitly; full snapshots use async query IDs and changed snapshots use strict NQE diffs.",
             "Write behavior": "SSoT dry run plans only; non-dry-run applies supported Nautobot writes.",

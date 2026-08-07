@@ -29,13 +29,34 @@ class ForwardIngestionRequest:
     offset: int = 0
     snapshot_id: str | None = None
     connection_profile: ForwardConnectionProfileRecord | None = None
+    sync_mode: str = "network"
     device_vendors: tuple[str, ...] = ()
     device_types: tuple[str, ...] = ()
     device_models: tuple[str, ...] = ()
+    cloud_types: tuple[str, ...] = ()
+    cloud_account_ids: tuple[str, ...] = ()
+
+    @property
+    def network_enabled(self) -> bool:
+        return self.sync_mode in {"network", "all"}
+
+    @property
+    def cloud_enabled(self) -> bool:
+        return self.sync_mode in {"cloud", "all"}
+
+    @property
+    def device_filtered_scope(self) -> bool:
+        return self.network_enabled and bool(
+            self.device_vendors or self.device_types or self.device_models
+        )
+
+    @property
+    def cloud_filtered_scope(self) -> bool:
+        return self.cloud_enabled and bool(self.cloud_types or self.cloud_account_ids)
 
     @property
     def filtered_scope(self) -> bool:
-        return bool(self.device_vendors or self.device_types or self.device_models)
+        return self.device_filtered_scope or self.cloud_filtered_scope
 
 
 def _scope_token(value: Any) -> str:
@@ -151,12 +172,13 @@ class ForwardIngestionPlanner:
         destructive_reconciliation_enabled = bool(
             completeness.get("destructive_reconciliation_enabled", True)
         )
+        missing_defaults = (
+            list(profile.missing_write_defaults()) if profile is not None and model_mappings else []
+        )
         return {
             "profile_provided": profile is not None,
-            "write_ready": bool(profile.write_ready) if profile is not None else False,
-            "missing_defaults": list(profile.missing_write_defaults())
-            if profile is not None
-            else [],
+            "write_ready": bool(profile is not None and not missing_defaults),
+            "missing_defaults": missing_defaults,
             "delete_policy": getattr(profile, "delete_policy", "ignore")
             if profile is not None
             else "ignore",
@@ -447,6 +469,8 @@ class ForwardIngestionPlanner:
         since both require the source adapter to be populated before the query
         parameters can be computed.
         """
+        if not mappings:
+            return []
         selected_slugs = {m.slug for m in mappings}
         deps_by_slug: dict[str, list[str]] = {}
         for m in mappings:
@@ -593,16 +617,25 @@ class ForwardIngestionPlanner:
         network_id = str(connection.network_id or "").strip()
         if not network_id:
             raise ValueError("Forward network ID is required.")
-        model_mappings = get_model_mappings(request.model_names)
+        model_mappings = get_model_mappings(request.model_names) if request.network_enabled else ()
         current_scope_fingerprint = build_sync_scope_fingerprint(
             model_names=tuple(mapping.slug for mapping in model_mappings),
+            sync_mode=request.sync_mode,
             device_vendors=request.device_vendors,
             device_types=request.device_types,
             device_models=request.device_models,
+            cloud_types=request.cloud_types,
+            cloud_account_ids=request.cloud_account_ids,
         )
-        target = NautobotTargetAdapter(model_names=request.model_names)
+        target = NautobotTargetAdapter(
+            model_names=request.model_names,
+            use_defaults=request.network_enabled,
+        )
         target.load()
-        source = ForwardSourceAdapter(model_names=request.model_names)
+        source = ForwardSourceAdapter(
+            model_names=request.model_names,
+            use_defaults=request.network_enabled,
+        )
         reports: list[ForwardSyncReport] = []
         current_snapshot_id = self.client.resolve_snapshot_id(
             network_id, request.snapshot_id or connection.snapshot_id
@@ -690,11 +723,12 @@ class ForwardIngestionPlanner:
         # Warm the NQE query index cache before parallel tier dispatch.
         # All bundled mappings share org:head — one fetch fills the cache so
         # N parallel workers don't race on the same endpoint.
-        self.client.get_nqe_repository_query_index(repository="org", commit_id="head")
+        if model_mappings:
+            self.client.get_nqe_repository_query_index(repository="org", commit_id="head")
 
         device_scope: ForwardDeviceScope | None = None
         scope_query_mode = ""
-        if request.filtered_scope:
+        if request.device_filtered_scope:
             try:
                 (
                     scope_rows,

@@ -3,7 +3,7 @@
  * @description VPC/VNet and subnet rows for Nautobot cloud.CloudNetwork. VPC rows
  *   have empty parent_id and kind="vpc"; subnet rows carry parent_id=<vpc id> and
  *   kind="subnet". Identical shape so a single slice loads both levels.
- * @contract-version v1
+ * @contract-version v2
  */
 
 cloud_vpcs() =
@@ -33,6 +33,6 @@ cloud_subnets() =
     cidrs: subnet.addresses
   };
 
-@primaryKey(network_id)
+@primaryKey(cloud_type, account_id, network_id)
 foreach row in ( cloud_vpcs() + cloud_subnets() )
 select row

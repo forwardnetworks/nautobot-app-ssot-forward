@@ -25,6 +25,8 @@ on a real Nautobot, not the DB-less unit suite.
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Mapping
 from typing import Any
 
 from .delete_policy import (
@@ -101,7 +103,7 @@ def cable_action(
 
 
 try:
-    from diffsync import Adapter
+    from diffsync import Adapter, DiffSyncFlags
     from django.contrib.contenttypes.models import ContentType
     from nautobot.cloud.models import CloudAccount, CloudNetwork, CloudResourceType, CloudService
     from nautobot.dcim.choices import InterfaceTypeChoices
@@ -182,6 +184,41 @@ def cloud_resource_type_name(cloud_type: str, kind: str) -> str:
         "nat-gateway": "NAT Gateway",
     }.get(str(kind or "").strip(), str(kind or "").strip())
     return f"{ct} {pretty}".strip()
+
+
+def cloud_account_identity(cloud_type: str, account_id: str) -> str:
+    """Return an unambiguous provider-qualified account identity string."""
+
+    return f"{_cloud_type_key(cloud_type)}\x1f{str(account_id or '').strip()}"
+
+
+def cloud_object_name(
+    kind: str,
+    external_id: str,
+    *,
+    account_id: str = "",
+) -> str:
+    """Return a readable, globally unique Nautobot cloud object name.
+
+    Forward display names are not globally unique, while Nautobot cloud names are.
+    The stable digest also keeps long provider-native identifiers within Nautobot's
+    255-character name limit. The full identifiers remain in native account fields
+    or resource ``extra_config``.
+    """
+
+    identity = "\0".join(
+        (
+            str(kind or "cloud").strip(),
+            str(account_id or "").strip(),
+            str(external_id or "").strip(),
+        )
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    suffix = f" [{str(kind or 'cloud').strip()}:{digest}]"
+    # The identifier must not change when an operator renames the source object.
+    # Human-readable display text is persisted separately in ``description``.
+    label = str(external_id or kind or "cloud").strip()
+    return f"{label[: 255 - len(suffix)]}{suffix}"
 
 
 class _ForwardContribDeleteMixin:
@@ -472,10 +509,15 @@ if CONTRIB_AVAILABLE:
         _model = CloudAccount
         _modelname = "cloud_account"
         _identifiers = ("name",)
-        _attributes = ("account_number", "provider__name")
+        _attributes = ("account_number", "provider__name", "description")
         name: str
         account_number: str
         provider__name: str
+        description: str
+
+        @classmethod
+        def get_queryset(cls):
+            return CloudAccount.objects.filter(name__regex=r" \[account:[0-9a-f]{16}\]$")
 
     class ForwardContribCloudVPC(_ForwardContribDeleteMixin, NautobotModel):
         # Top-level cloud networks (VPCs/VNets). Disjoint queryset (parent IS NULL)
@@ -483,14 +525,23 @@ if CONTRIB_AVAILABLE:
         _model = CloudNetwork
         _modelname = "cloud_vpc"
         _identifiers = ("name",)
-        _attributes = ("cloud_resource_type__name", "cloud_account__name")
+        _attributes = (
+            "cloud_resource_type__name",
+            "cloud_account__name",
+            "description",
+            "extra_config",
+        )
         name: str
         cloud_resource_type__name: str
         cloud_account__name: str
+        description: str
+        extra_config: dict[str, Any] | None
 
         @classmethod
         def get_queryset(cls):
-            return CloudNetwork.objects.filter(parent__isnull=True)
+            return CloudNetwork.objects.filter(
+                name__regex=r" \[network:[0-9a-f]{16}\]$", parent__isnull=True
+            )
 
     class ForwardContribCloudSubnet(_ForwardContribDeleteMixin, NautobotModel):
         # Child cloud networks (subnets), parented to their VPC. Synced after VPCs
@@ -498,24 +549,45 @@ if CONTRIB_AVAILABLE:
         _model = CloudNetwork
         _modelname = "cloud_subnet"
         _identifiers = ("name",)
-        _attributes = ("cloud_resource_type__name", "cloud_account__name", "parent__name")
+        _attributes = (
+            "cloud_resource_type__name",
+            "cloud_account__name",
+            "parent__name",
+            "description",
+            "extra_config",
+        )
         name: str
         cloud_resource_type__name: str
         cloud_account__name: str
         parent__name: str
+        description: str
+        extra_config: dict[str, Any] | None
 
         @classmethod
         def get_queryset(cls):
-            return CloudNetwork.objects.filter(parent__isnull=False)
+            return CloudNetwork.objects.filter(
+                name__regex=r" \[network:[0-9a-f]{16}\]$", parent__isnull=False
+            )
 
     class ForwardContribCloudService(_ForwardContribDeleteMixin, NautobotModel):
         _model = CloudService
         _modelname = "cloud_service"
         _identifiers = ("name",)
-        _attributes = ("cloud_resource_type__name", "cloud_account__name")
+        _attributes = (
+            "cloud_resource_type__name",
+            "cloud_account__name",
+            "description",
+            "extra_config",
+        )
         name: str
         cloud_resource_type__name: str
         cloud_account__name: str
+        description: str
+        extra_config: dict[str, Any] | None
+
+        @classmethod
+        def get_queryset(cls):
+            return CloudService.objects.filter(name__regex=r" \[service:[0-9a-f]{16}\]$")
 
     _CLOUD_TOP_LEVEL = ["cloud_account", "cloud_vpc", "cloud_subnet", "cloud_service"]
 
@@ -539,56 +611,95 @@ if CONTRIB_AVAILABLE:
             account_rows: list[dict[str, Any]],
             network_rows: list[dict[str, Any]],
             service_rows: list[dict[str, Any]],
+            existing_extra_config: Mapping[str, Mapping[str, Any]] | None = None,
             **kwargs,
         ):
             super().__init__(**kwargs)
             self._account_rows = account_rows
             self._network_rows = network_rows
             self._service_rows = service_rows
+            self._existing_extra_config = existing_extra_config or {}
+
+        def _merge_forward_extra_config(
+            self, name: str, forward_metadata: Mapping[str, Any]
+        ) -> dict[str, Any]:
+            """Update plugin-owned metadata without discarding operator-owned keys."""
+
+            existing = dict(self._existing_extra_config.get(name) or {})
+            prior_forward = existing.get("forward")
+            merged_forward = dict(prior_forward) if isinstance(prior_forward, Mapping) else {}
+            merged_forward.update(forward_metadata)
+            existing["forward"] = merged_forward
+            return existing
 
         def load(self):
             # Map account id -> account name so network/service rows (which carry
             # only account_id) can reference the account by name for the FK lookup.
-            account_name_by_id: dict[str, str] = {}
+            account_name_by_id: dict[tuple[str, str], str] = {}
             seen_accounts: set[str] = set()
             for row in self._account_rows:
                 acct_id = str(row.get("account_id") or "").strip()
-                name = str(row.get("name") or "").strip() or acct_id
+                display_name = str(row.get("name") or "").strip() or acct_id
                 cloud_type = str(row.get("cloud_type") or "").strip()
+                cloud_type_key = _cloud_type_key(cloud_type)
+                name = cloud_object_name("account", acct_id, account_id=cloud_type_key)
                 if not acct_id or name in seen_accounts:
                     continue
                 seen_accounts.add(name)
-                account_name_by_id[acct_id] = name
+                account_name_by_id[(cloud_type_key, acct_id)] = name
                 self.add(
                     ForwardContribCloudAccount(
                         name=name,
                         account_number=acct_id,
                         provider__name=cloud_provider_name(cloud_type),
+                        description=display_name[:255],
                     )
                 )
 
             # Forward network id -> Nautobot CloudNetwork name, so a subnet can
             # reference its parent VPC by name (rows carry the parent's Forward id).
-            name_by_network_id: dict[str, str] = {}
+            name_by_network_id: dict[tuple[str, str, str], str] = {}
             for row in self._network_rows:
                 nid = str(row.get("network_id") or "").strip()
-                nm = str(row.get("name") or "").strip()
-                if nid and nm:
-                    name_by_network_id.setdefault(nid, nm)
+                acct_id = str(row.get("account_id") or "").strip()
+                cloud_type = str(row.get("cloud_type") or "").strip()
+                cloud_type_key = _cloud_type_key(cloud_type)
+                if nid and acct_id:
+                    name_by_network_id.setdefault(
+                        (cloud_type_key, acct_id, nid),
+                        cloud_object_name(
+                            "network",
+                            nid,
+                            account_id=cloud_account_identity(cloud_type, acct_id),
+                        ),
+                    )
 
             seen_networks: set[str] = set()
             for row in self._network_rows:
-                name = str(row.get("name") or "").strip()
                 acct_id = str(row.get("account_id") or "").strip()
+                network_id = str(row.get("network_id") or "").strip()
+                display_name = str(row.get("name") or "").strip() or network_id
                 cloud_type = str(row.get("cloud_type") or "").strip()
+                cloud_type_key = _cloud_type_key(cloud_type)
+                name = cloud_object_name(
+                    "network",
+                    network_id,
+                    account_id=cloud_account_identity(cloud_type, acct_id),
+                )
                 kind = str(row.get("kind") or "vpc").strip()
-                account_name = account_name_by_id.get(acct_id)
-                if not (name and account_name) or name in seen_networks:
+                account_name = account_name_by_id.get((cloud_type_key, acct_id))
+                if not (network_id and account_name) or name in seen_networks:
                     continue
                 seen_networks.add(name)
                 rtype = cloud_resource_type_name(cloud_type, kind)
                 if kind == "subnet":
-                    parent_name = name_by_network_id.get(str(row.get("parent_id") or "").strip())
+                    parent_name = name_by_network_id.get(
+                        (
+                            cloud_type_key,
+                            acct_id,
+                            str(row.get("parent_id") or "").strip(),
+                        )
+                    )
                     if not parent_name:
                         continue  # orphan subnet (parent VPC not in the set) — skip
                     self.add(
@@ -597,6 +708,16 @@ if CONTRIB_AVAILABLE:
                             cloud_resource_type__name=rtype,
                             cloud_account__name=account_name,
                             parent__name=parent_name,
+                            description=display_name[:255],
+                            extra_config=self._merge_forward_extra_config(
+                                name,
+                                {
+                                    "account_id": acct_id,
+                                    "cloud_type": cloud_type,
+                                    "network_id": network_id,
+                                    "display_name": display_name,
+                                },
+                            ),
                         )
                     )
                 else:
@@ -605,17 +726,34 @@ if CONTRIB_AVAILABLE:
                             name=name,
                             cloud_resource_type__name=rtype,
                             cloud_account__name=account_name,
+                            description=display_name[:255],
+                            extra_config=self._merge_forward_extra_config(
+                                name,
+                                {
+                                    "account_id": acct_id,
+                                    "cloud_type": cloud_type,
+                                    "network_id": network_id,
+                                    "display_name": display_name,
+                                },
+                            ),
                         )
                     )
 
             seen_services: set[str] = set()
             for row in self._service_rows:
-                name = str(row.get("name") or "").strip()
                 acct_id = str(row.get("account_id") or "").strip()
+                service_id = str(row.get("service_id") or "").strip()
+                display_name = str(row.get("name") or "").strip() or service_id
                 cloud_type = str(row.get("cloud_type") or "").strip()
+                cloud_type_key = _cloud_type_key(cloud_type)
+                name = cloud_object_name(
+                    "service",
+                    service_id,
+                    account_id=cloud_account_identity(cloud_type, acct_id),
+                )
                 kind = str(row.get("service_kind") or "").strip()
-                account_name = account_name_by_id.get(acct_id)
-                if not (name and account_name) or name in seen_services:
+                account_name = account_name_by_id.get((cloud_type_key, acct_id))
+                if not (service_id and account_name) or name in seen_services:
                     continue
                 seen_services.add(name)
                 self.add(
@@ -623,6 +761,16 @@ if CONTRIB_AVAILABLE:
                         name=name,
                         cloud_resource_type__name=cloud_resource_type_name(cloud_type, kind),
                         cloud_account__name=account_name,
+                        description=display_name[:255],
+                        extra_config=self._merge_forward_extra_config(
+                            name,
+                            {
+                                "account_id": acct_id,
+                                "cloud_type": cloud_type,
+                                "service_id": service_id,
+                                "display_name": display_name,
+                            },
+                        ),
                     )
                 )
 
@@ -1214,6 +1362,20 @@ def ensure_cloud_prerequisites(
         )
 
 
+def _cloud_summary_with_delete_safety(
+    summary: dict[str, Any], *, allow_delete: bool
+) -> dict[str, Any]:
+    """Make an unapplied cloud removal explicit instead of reporting it as a delete."""
+
+    safe_summary = dict(summary)
+    if not allow_delete:
+        delete_count = safe_summary.get("delete", 0)
+        if isinstance(delete_count, int) and delete_count:
+            safe_summary["delete_suppressed"] = delete_count
+            safe_summary["delete"] = 0
+    return safe_summary
+
+
 def run_contrib_cloud_sync(
     *,
     account_rows: list[dict[str, Any]],
@@ -1236,15 +1398,26 @@ def run_contrib_cloud_sync(
     target = ForwardContribCloudTarget(job=job)
     target.allow_delete = bool(allow_delete)
     target.load()
+    existing_extra_config = {
+        obj.name: dict(obj.extra_config or {})
+        for model_name in ("cloud_vpc", "cloud_subnet", "cloud_service")
+        for obj in target.get_all(model_name)
+    }
     source = ForwardContribCloudSource(
-        account_rows=account_rows, network_rows=network_rows, service_rows=service_rows
+        account_rows=account_rows,
+        network_rows=network_rows,
+        service_rows=service_rows,
+        existing_extra_config=existing_extra_config,
     )
     source.load()
     diff = source.diff_to(target)
-    summary = dict(diff.summary())
+    summary = _cloud_summary_with_delete_safety(dict(diff.summary()), allow_delete=allow_delete)
     audit = _govern_deletes(source, target, allow_delete=allow_delete, controls=delete_controls)
     if not dryrun:
-        source.sync_to(target)
+        sync_flags = DiffSyncFlags.NONE if allow_delete else DiffSyncFlags.SKIP_UNMATCHED_DST
+        # Recalculate with the apply flags: a precomputed unflagged diff retains
+        # delete actions even when the syncer itself receives SKIP_UNMATCHED_DST.
+        source.sync_to(target, flags=sync_flags)
         _link_cloud_relationships(network_rows=network_rows, service_rows=service_rows)
     summary["delete_governance"] = audit
     return summary
@@ -1263,29 +1436,75 @@ def _link_cloud_relationships(
     done as an idempotent post-pass rather than diffsync attributes."""
     if not CONTRIB_AVAILABLE:  # pragma: no cover
         return
-    ns, _ = Namespace.objects.get_or_create(name=namespace_name)
     status = _ensure_status_with_content_types(status_name, [Prefix])
+    namespaces: dict[tuple[str, str], Any] = {}
     name_by_network_id = {
-        str(r.get("network_id") or "").strip(): str(r.get("name") or "").strip()
+        (
+            _cloud_type_key(str(r.get("cloud_type") or "")),
+            str(r.get("account_id") or "").strip(),
+            str(r.get("network_id") or "").strip(),
+        ): cloud_object_name(
+            "network",
+            str(r.get("network_id") or "").strip(),
+            account_id=cloud_account_identity(
+                str(r.get("cloud_type") or ""),
+                str(r.get("account_id") or "").strip(),
+            ),
+        )
         for r in network_rows
-        if r.get("network_id") and r.get("name")
+        if r.get("network_id") and r.get("account_id")
     }
     # CIDRs -> Prefixes attached to their CloudNetwork.
     for row in network_rows:
-        cn = CloudNetwork.objects.filter(name=str(row.get("name") or "").strip()).first()
+        network_id = str(row.get("network_id") or "").strip()
+        account_id = str(row.get("account_id") or "").strip()
+        cloud_type = str(row.get("cloud_type") or "").strip()
+        cn = CloudNetwork.objects.filter(
+            name=cloud_object_name(
+                "network",
+                network_id,
+                account_id=cloud_account_identity(cloud_type, account_id),
+            )
+        ).first()
         if cn is None:
             continue
         for cidr in row.get("cidrs") or []:
             if "/" not in str(cidr):
                 continue
+            account_key = (_cloud_type_key(cloud_type), account_id)
+            ns = namespaces.get(account_key)
+            if ns is None:
+                ns, _ = Namespace.objects.get_or_create(
+                    name=cloud_object_name(
+                        "namespace",
+                        account_id,
+                        account_id=f"{namespace_name}\x1f{_cloud_type_key(cloud_type)}",
+                    )
+                )
+                namespaces[account_key] = ns
             prefix, _ = Prefix.objects.get_or_create(
                 prefix=str(cidr), namespace=ns, defaults={"status": status}
             )
             cn.prefixes.add(prefix)
     # Service -> its VPC.
     for row in service_rows:
-        svc = CloudService.objects.filter(name=str(row.get("name") or "").strip()).first()
-        vpc_name = name_by_network_id.get(str(row.get("vpc_id") or "").strip())
+        service_id = str(row.get("service_id") or "").strip()
+        account_id = str(row.get("account_id") or "").strip()
+        cloud_type = str(row.get("cloud_type") or "").strip()
+        svc = CloudService.objects.filter(
+            name=cloud_object_name(
+                "service",
+                service_id,
+                account_id=cloud_account_identity(cloud_type, account_id),
+            )
+        ).first()
+        vpc_name = name_by_network_id.get(
+            (
+                _cloud_type_key(cloud_type),
+                account_id,
+                str(row.get("vpc_id") or "").strip(),
+            )
+        )
         if svc is None or not vpc_name:
             continue
         vpc = CloudNetwork.objects.filter(name=vpc_name, parent__isnull=True).first()

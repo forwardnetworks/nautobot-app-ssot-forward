@@ -15,7 +15,7 @@ capture, with support for Forward async query execution.
 
 | Plugin | Nautobot | nautobot-ssot | Forward | Status |
 | --- | --- | --- | --- | --- |
-| `0.6.0` | `3.1.8`, `3.2.2` | `4.4` - `<5.0` | `26.6+` for async execution | Current |
+| `0.7.0` | `3.1.8`, `3.2.2` | `4.4` - `<5.0` | `26.6+` for async execution and NQE diffs | Current |
 
 ## Overview
 
@@ -23,6 +23,7 @@ capture, with support for Forward async query execution.
 - SSoT data source entrypoint and job registration in `forward_nautobot/jobs.py`
 - Forward API client with snapshot lookup, query resolution, and paging
 - Persisted device-population filters applied to full-query and NQE-diff rows
+- Native Nautobot cloud ingestion with cloud-only execution and account closure
 - Idempotent bundled-query publication with committed-source parity checks
 - Query identity resolution (`query_path`/`query_id`) to a concrete runtime query ID
 - Contracted query set shipped with the plugin in
@@ -56,6 +57,14 @@ The following model slugs are currently in the shipped scope.
 | `inventory_items` | `dcim.inventoryitem` | `device`, `name` | disabled | Depends on `devices` |
 | `modules` | `dcim.module` | `device`, `module_bay` | disabled | Depends on `devices` |
 
+Cloud sync writes these native Nautobot models when `sync_mode` is `cloud` or `all`:
+
+| Forward slice | Nautobot target | Identity and relationships |
+| --- | --- | --- |
+| Cloud accounts | `cloud.CloudAccount` | Cloud type + Forward account ID; provider relationship |
+| Cloud networks and subnets | `cloud.CloudNetwork` | Cloud type + account + network ID; parent and account-specific prefix relationships |
+| Cloud services | `cloud.CloudService` | Cloud type + account + service ID; cloud-network relationship |
+
 ## Installation
 
 ### Install
@@ -63,7 +72,7 @@ The following model slugs are currently in the shipped scope.
 From wheel or source distribution:
 
 ```bash
-pip install /path/to/nautobot_app_ssot_forward-0.6.0-py3-none-any.whl
+pip install /path/to/nautobot_app_ssot_forward-0.7.0-py3-none-any.whl
 ```
 
 Install dependencies before loading in Nautobot:
@@ -102,6 +111,7 @@ Collect static and run the server as usual for your Nautobot deployment.
 3. Confirm or create at least one saved profile with:
    - `name`, `base_url`, `username`, `password`, `network_id`
    - `snapshot_id` (default `latestProcessed`)
+   - `sync_mode` (`network`, `cloud`, or `all`; default `network`)
    - one or more model slugs in `enabled_models`
    - `query_contract_version` (default `v2`)
    - optional device manufacturer, functional class, and hardware-model allowlists
@@ -122,10 +132,13 @@ The profile form includes these fields:
 - `network_id`
 - `snapshot_id` (`latestProcessed` or explicit snapshot ID)
 - `enabled_models` (comma-separated slugs)
+- `sync_mode` (`network`, `cloud`, or `all`; default `network`)
 - `query_contract_version` (currently `v2`)
 - `device_vendors` (comma-separated Forward manufacturer values)
 - `device_types` (comma-separated Forward functional device-class values)
 - `device_models` (comma-separated Forward hardware model strings)
+- `cloud_types` (optional comma-separated cloud-type values)
+- `cloud_account_ids` (optional comma-separated Forward cloud account IDs)
 - `default_location_type_name`
 - `default_location_status_name`
 - `default_device_role_name`
@@ -158,6 +171,34 @@ device can exceed Forward's NQE result-group limit. Consequently, filtered runs 
 closed for IPv4/IPv6 prefix slices and write no prefixes; unfiltered prefix runs remain
 fully supported and diff-eligible.
 
+### Native cloud ingestion and scoping
+
+Set `sync_mode=cloud` to query, compare, and write only native Nautobot cloud objects. Set
+`sync_mode=all` to run network and cloud inventory together. The default remains `network`, so
+upgrading does not unexpectedly import cloud inventory.
+
+Use `cloud_types` as a coarse selector and `cloud_account_ids` as the tenancy boundary. Values
+within each field are ORed; when both fields are populated they are combined with AND. The plugin
+queries current accounts first, builds the selected account set, and then retains only networks,
+subnets, prefixes, and services belonging to those accounts. Filters are applied after the
+unparameterized query executes so saved queries remain eligible for NQE diffs.
+
+Nautobot cloud names are globally unique while source display names may repeat or change. The
+plugin derives the Nautobot identity from immutable account/resource IDs, keeps the source display
+label in `description`, stores account IDs in `CloudAccount.account_number`, and stores
+network/service IDs in `extra_config`. This prevents same-name resources in different accounts
+from collapsing and prevents a rename from creating a second object. Existing operator-owned
+`extra_config` keys are preserved. DiffSync loads only objects carrying the plugin's stable name
+suffix, so unrelated native cloud inventory is outside its reconciliation target.
+
+Cloud objects created by the earlier opt-in preview used mutable display names and do not carry
+that stable ownership suffix. Version 0.7.0 does not rename or adopt those objects automatically;
+review them before enabling `cloud` or `all` mode to avoid retaining both preview and stable-ID
+records. The default `network` mode makes this an explicit upgrade decision.
+
+Cloud deletion is deliberately disabled in this release. Filtered runs, incomplete snapshots,
+and NQE deletion deltas remain create/update-only and report the suppressed removal evidence.
+
 ## Async NQE and Query Identity
 
 All full-snapshot query execution uses the Forward 26.6+ async execution API.
@@ -171,6 +212,9 @@ so publication is not a prerequisite for running a sync.
   endpoint can compare snapshots without unsupported request parameters.
 - A prior snapshot is reused only when its scope fingerprint matches; changed snapshots
   then use the NQE diff endpoint with no silent full-query fallback.
+- Saved cloud-query diffs act as the change detector. A relevant create/update delta triggers
+  async hydration of the complete current cloud source required by native DiffSync; an unchanged
+  cloud delta avoids the larger network/service queries.
 - Live and fixture paths stay versioned and validated locally through query-contract checks.
 - Snapshot resolution supports explicit snapshot IDs and `latestProcessed`.
 

@@ -2,7 +2,7 @@
  * @intent Forward cloud services
  * @description Load balancer and NAT-gateway rows for Nautobot cloud.CloudService,
  *   scoped to their account and VPC. service_kind drives the CloudResourceType.
- * @contract-version v1
+ * @contract-version v2
  */
 
 cloud_load_balancers() =
@@ -31,6 +31,6 @@ cloud_nat_gateways() =
     service_kind: "nat-gateway"
   };
 
-@primaryKey(service_id)
+@primaryKey(cloud_type, account_id, service_id)
 foreach row in ( cloud_load_balancers() + cloud_nat_gateways() )
 select row

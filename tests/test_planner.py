@@ -41,16 +41,75 @@ def _require_planner():
 
 def _scope_fingerprint(
     *model_names: str,
+    sync_mode: str = "network",
     device_vendors: tuple[str, ...] = (),
     device_types: tuple[str, ...] = (),
     device_models: tuple[str, ...] = (),
+    cloud_types: tuple[str, ...] = (),
+    cloud_account_ids: tuple[str, ...] = (),
 ) -> str:
     return build_sync_scope_fingerprint(
         model_names=model_names,
+        sync_mode=sync_mode,
         device_vendors=device_vendors,
         device_types=device_types,
         device_models=device_models,
+        cloud_types=cloud_types,
+        cloud_account_ids=cloud_account_ids,
     )
+
+
+def test_cloud_only_planner_skips_all_network_queries(monkeypatch):
+    _require_planner()
+
+    monkeypatch.setattr(ForwardClient, "resolve_snapshot_id", lambda self, *args: "snap-cloud")
+    monkeypatch.setattr(
+        ForwardClient,
+        "get_snapshot_metrics",
+        lambda self, snapshot_id: {
+            "numCollectionFailureDevices": 0,
+            "numProcessingFailureDevices": 0,
+            "numCollectionFailureEndpoints": 0,
+            "numProcessingFailureEndpoints": 0,
+        },
+    )
+    monkeypatch.setattr(
+        ForwardClient,
+        "get_nqe_repository_query_index",
+        lambda self, **kwargs: (_ for _ in ()).throw(
+            AssertionError("cloud-only network planning must not warm network queries")
+        ),
+    )
+    monkeypatch.setattr(
+        ForwardClient,
+        "run_nqe_query",
+        lambda self, **kwargs: (_ for _ in ()).throw(
+            AssertionError("cloud-only network planning must not execute network NQE")
+        ),
+    )
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=_mock_transport(),
+    )
+    plan = ForwardIngestionPlanner(client).run(
+        ForwardIngestionRequest(
+            connection=client.settings,
+            sync_mode="cloud",
+            cloud_account_ids=("account-1",),
+        )
+    )
+
+    assert plan.source_summary == {"model_counts": {}, "model_slugs": []}
+    assert plan.target_summary["model_slugs"] == []
+    assert plan.reports == ()
+    assert plan.diff_detail["current_snapshot_id"] == "snap-cloud"
+    assert plan.write_plan.filtered_scope is True
 
 
 def test_planner_syncs_rows_with_diffsync():

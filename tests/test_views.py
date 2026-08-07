@@ -159,6 +159,9 @@ def test_configuration_view_can_persist_profile(monkeypatch):
                 "verify_tls": "0",
                 "snapshot_id": "latestProcessed",
                 "enabled_models": "devices,interfaces",
+                "sync_mode": "cloud",
+                "cloud_types": "TYPE_A,TYPE_B",
+                "cloud_account_ids": "account-1,account-2",
                 "query_contract_version": "v1",
                 "default_location_type_name": "Building",
                 "default_location_status_name": "Active",
@@ -178,6 +181,9 @@ def test_configuration_view_can_persist_profile(monkeypatch):
     assert "Ready profiles" in text
     assert "secret" not in text
     assert manager.rows["primary"].enabled_models == ["devices", "interfaces"]
+    assert manager.rows["primary"].sync_mode == "cloud"
+    assert manager.rows["primary"].cloud_types == ["TYPE_A", "TYPE_B"]
+    assert manager.rows["primary"].cloud_account_ids == ["account-1", "account-2"]
     assert manager.rows["primary"].is_default is True
     assert manager.rows["primary"].verify_tls is False
 

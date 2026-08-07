@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .models import WRITE_DEFAULT_FIELD_NAMES
+from .models import SYNC_MODES, WRITE_DEFAULT_FIELD_NAMES
 
 FORWARD_PROFILE_FORM_FIELDS: tuple[str, ...] = (
     "name",
@@ -16,9 +16,12 @@ FORWARD_PROFILE_FORM_FIELDS: tuple[str, ...] = (
     "verify_tls",
     "snapshot_id",
     "enabled_models",
+    "sync_mode",
     "device_vendors",
     "device_types",
     "device_models",
+    "cloud_types",
+    "cloud_account_ids",
     "query_contract_version",
     "default_location_type_name",
     "default_location_status_name",
@@ -42,6 +45,12 @@ DELETE_POLICY_CHOICES: tuple[tuple[str, str], ...] = (
     ("ignore", "Ignore missing rows"),
     ("mark_inactive", "Mark missing rows inactive"),
     ("delete", "Delete missing rows"),
+)
+
+SYNC_MODE_CHOICES: tuple[tuple[str, str], ...] = (
+    ("network", "Network inventory only"),
+    ("cloud", "Cloud inventory only"),
+    ("all", "Network and cloud inventory"),
 )
 
 
@@ -107,11 +116,17 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
                 self.cleaned_data["query_contract_version"] = "v2"
             if not self.cleaned_data["delete_policy"]:
                 self.cleaned_data["delete_policy"] = "ignore"
+            sync_mode = str(self.data.get("sync_mode") or "network").strip().lower()
+            self.cleaned_data["sync_mode"] = sync_mode
+            if sync_mode not in SYNC_MODES:
+                self.errors.setdefault("sync_mode", []).append("Select a valid choice.")
             for field_name in (
                 "enabled_models",
                 "device_vendors",
                 "device_types",
                 "device_models",
+                "cloud_types",
+                "cloud_account_ids",
             ):
                 self.cleaned_data[field_name] = _coerce_csv(self.data.get(field_name))
             self.cleaned_data["is_default"] = str(
@@ -146,6 +161,11 @@ else:
             required=False,
             help_text="Comma-separated Forward model slugs.",
         )
+        sync_mode = forms.ChoiceField(
+            required=False,
+            choices=SYNC_MODE_CHOICES,
+            initial="network",
+        )
         device_vendors = forms.CharField(
             required=False,
             help_text="Comma-separated Forward manufacturer enum values.",
@@ -157,6 +177,14 @@ else:
         device_models = forms.CharField(
             required=False,
             help_text="Comma-separated exact hardware model values.",
+        )
+        cloud_types = forms.CharField(
+            required=False,
+            help_text="Comma-separated Forward cloud-type values.",
+        )
+        cloud_account_ids = forms.CharField(
+            required=False,
+            help_text="Comma-separated Forward cloud account IDs.",
         )
         query_contract_version = forms.CharField(required=False, initial="v2")
         default_location_type_name = forms.CharField(required=False)
@@ -181,6 +209,12 @@ else:
 
         def clean_device_models(self):
             return _coerce_csv(self.cleaned_data.get("device_models", ""))
+
+        def clean_cloud_types(self):
+            return _coerce_csv(self.cleaned_data.get("cloud_types", ""))
+
+        def clean_cloud_account_ids(self):
+            return _coerce_csv(self.cleaned_data.get("cloud_account_ids", ""))
 
         def clean_verify_tls(self):
             raw_value = self.data.get("verify_tls", "")

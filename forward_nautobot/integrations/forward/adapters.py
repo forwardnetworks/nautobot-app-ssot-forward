@@ -193,9 +193,16 @@ class ForwardSourceAdapter(Adapter):
     inventory_items = ForwardInventoryItem
     modules = ForwardModule
 
-    def __init__(self, model_names: tuple[str, ...] | list[str] | None = None):
+    def __init__(
+        self,
+        model_names: tuple[str, ...] | list[str] | None = None,
+        *,
+        use_defaults: bool = True,
+    ):
         super().__init__(name="forward_source")
-        self.model_mappings: tuple[ForwardModelMapping, ...] = get_model_mappings(model_names)
+        self.model_mappings: tuple[ForwardModelMapping, ...] = (
+            get_model_mappings(model_names) if use_defaults else ()
+        )
         self._mapping_by_slug = {mapping.slug: mapping for mapping in CORE_MODEL_MAPPINGS}
         self.records: dict[str, dict[str, ForwardLoadedRecord]] = {
             mapping.slug: {} for mapping in self.model_mappings
@@ -294,9 +301,16 @@ class NautobotTargetAdapter(Adapter):
     inventory_items = ForwardInventoryItem
     modules = ForwardModule
 
-    def __init__(self, model_names: tuple[str, ...] | list[str] | None = None):
+    def __init__(
+        self,
+        model_names: tuple[str, ...] | list[str] | None = None,
+        *,
+        use_defaults: bool = True,
+    ):
         super().__init__(name="nautobot_target")
-        self.model_mappings: tuple[ForwardModelMapping, ...] = get_model_mappings(model_names)
+        self.model_mappings: tuple[ForwardModelMapping, ...] = (
+            get_model_mappings(model_names) if use_defaults else ()
+        )
         self._mapping_by_slug = {mapping.slug: mapping for mapping in CORE_MODEL_MAPPINGS}
         self.loaded_records: dict[str, dict[str, ForwardPlannedWrite]] = {
             mapping.slug: {} for mapping in self.model_mappings

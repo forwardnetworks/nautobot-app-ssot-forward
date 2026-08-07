@@ -12,6 +12,7 @@ from typing import Any
 from .integrations.forward.models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings
 
 DELETE_POLICIES: tuple[str, ...] = ("ignore", "mark_inactive", "delete")
+SYNC_MODES: tuple[str, ...] = ("network", "cloud", "all")
 WRITE_DEFAULT_FIELD_NAMES: tuple[str, ...] = (
     "default_location_type_name",
     "default_location_status_name",
@@ -36,16 +37,28 @@ def _coerce_models(value: Any) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in items if str(item).strip())
 
 
+def _coerce_sync_mode(value: Any) -> str:
+    candidate = str(value or "network").strip().lower() or "network"
+    return candidate if candidate in SYNC_MODES else "network"
+
+
 def build_sync_scope_fingerprint(
     *,
     model_names: tuple[str, ...] | list[str] = (),
+    sync_mode: str = "network",
     device_vendors: tuple[str, ...] | list[str] = (),
     device_types: tuple[str, ...] | list[str] = (),
     device_models: tuple[str, ...] | list[str] = (),
+    cloud_types: tuple[str, ...] | list[str] = (),
+    cloud_account_ids: tuple[str, ...] | list[str] = (),
 ) -> str:
     """Return a stable, non-reversible identity for a sync's ownership scope."""
 
     payload = {
+        "cloud_account_ids": sorted(
+            {str(value).strip() for value in cloud_account_ids if str(value).strip()}
+        ),
+        "cloud_types": sorted({str(value).strip() for value in cloud_types if str(value).strip()}),
         "device_models": sorted(
             {str(value).strip() for value in device_models if str(value).strip()}
         ),
@@ -56,6 +69,7 @@ def build_sync_scope_fingerprint(
             {str(value).strip() for value in device_vendors if str(value).strip()}
         ),
         "model_names": sorted({str(value).strip() for value in model_names if str(value).strip()}),
+        "sync_mode": _coerce_sync_mode(sync_mode),
     }
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -125,9 +139,12 @@ class ForwardProfileStatus:
     missing_defaults: tuple[str, ...] = ()
     delete_policy: str = "ignore"
     enabled_models: tuple[str, ...] = ()
+    sync_mode: str = "network"
     device_vendors: tuple[str, ...] = ()
     device_types: tuple[str, ...] = ()
     device_models: tuple[str, ...] = ()
+    cloud_types: tuple[str, ...] = ()
+    cloud_account_ids: tuple[str, ...] = ()
     network_id: str = ""
     snapshot_id: str = ""
     base_url: str = "https://fwd.app"
@@ -148,9 +165,12 @@ class ForwardProfileStatus:
             "missing_defaults": list(self.missing_defaults),
             "delete_policy": self.delete_policy,
             "enabled_models": list(self.enabled_models),
+            "sync_mode": self.sync_mode,
             "device_vendors": list(self.device_vendors),
             "device_types": list(self.device_types),
             "device_models": list(self.device_models),
+            "cloud_types": list(self.cloud_types),
+            "cloud_account_ids": list(self.cloud_account_ids),
             "network_id": self.network_id,
             "snapshot_id": self.snapshot_id,
             "base_url": self.base_url,
@@ -177,9 +197,12 @@ class ForwardConnectionProfileRecord:
     verify_tls: bool = True
     snapshot_id: str = LATEST_PROCESSED_SNAPSHOT
     enabled_models: tuple[str, ...] = ()
+    sync_mode: str = "network"
     device_vendors: tuple[str, ...] = ()
     device_types: tuple[str, ...] = ()
     device_models: tuple[str, ...] = ()
+    cloud_types: tuple[str, ...] = ()
+    cloud_account_ids: tuple[str, ...] = ()
     query_contract_version: str = "v2"
     default_location_type_name: str = ""
     default_location_status_name: str = ""
@@ -230,11 +253,16 @@ class ForwardConnectionProfileRecord:
         enabled_models = _coerce_models(
             data.get("enabled_models") or base.get("enabled_models") or ()
         )
+        sync_mode = _coerce_sync_mode(data.get("sync_mode") or base.get("sync_mode") or "network")
         device_vendors = _coerce_models(
             data.get("device_vendors") or base.get("device_vendors") or ()
         )
         device_types = _coerce_models(data.get("device_types") or base.get("device_types") or ())
         device_models = _coerce_models(data.get("device_models") or base.get("device_models") or ())
+        cloud_types = _coerce_models(data.get("cloud_types") or base.get("cloud_types") or ())
+        cloud_account_ids = _coerce_models(
+            data.get("cloud_account_ids") or base.get("cloud_account_ids") or ()
+        )
         query_contract_version = (
             str(
                 data.get("query_contract_version") or base.get("query_contract_version") or "v2"
@@ -269,9 +297,12 @@ class ForwardConnectionProfileRecord:
             verify_tls=verify_tls,
             snapshot_id=snapshot_id,
             enabled_models=enabled_models,
+            sync_mode=sync_mode,
             device_vendors=device_vendors,
             device_types=device_types,
             device_models=device_models,
+            cloud_types=cloud_types,
+            cloud_account_ids=cloud_account_ids,
             query_contract_version=query_contract_version,
             default_location_type_name=default_location_type_name,
             default_location_status_name=default_location_status_name,
@@ -328,9 +359,12 @@ class ForwardConnectionProfileRecord:
             "verify_tls": self.verify_tls,
             "snapshot_id": self.snapshot_id,
             "enabled_models": list(self.enabled_models),
+            "sync_mode": self.sync_mode,
             "device_vendors": list(self.device_vendors),
             "device_types": list(self.device_types),
             "device_models": list(self.device_models),
+            "cloud_types": list(self.cloud_types),
+            "cloud_account_ids": list(self.cloud_account_ids),
             "query_contract_version": self.query_contract_version,
             "default_location_type_name": self.default_location_type_name,
             "default_location_status_name": self.default_location_status_name,
@@ -372,9 +406,12 @@ class ForwardConnectionProfileRecord:
             missing_defaults=self.missing_write_defaults(),
             delete_policy=self.effective_delete_policy,
             enabled_models=self.enabled_models,
+            sync_mode=self.sync_mode,
             device_vendors=self.device_vendors,
             device_types=self.device_types,
             device_models=self.device_models,
+            cloud_types=self.cloud_types,
+            cloud_account_ids=self.cloud_account_ids,
             network_id=self.network_id,
             snapshot_id=self.snapshot_id,
             base_url=self.base_url,
@@ -569,9 +606,12 @@ if models is not None:
             default=LATEST_PROCESSED_SNAPSHOT,
         )
         enabled_models = models.JSONField(default=list, blank=True)
+        sync_mode = models.CharField(max_length=16, default="network")
         device_vendors = models.JSONField(default=list, blank=True)
         device_types = models.JSONField(default=list, blank=True)
         device_models = models.JSONField(default=list, blank=True)
+        cloud_types = models.JSONField(default=list, blank=True)
+        cloud_account_ids = models.JSONField(default=list, blank=True)
         query_contract_version = models.CharField(max_length=32, default="v2")
         default_location_type_name = models.CharField(max_length=128, blank=True, default="")
         default_location_status_name = models.CharField(max_length=128, blank=True, default="")
@@ -603,6 +643,7 @@ if models is not None:
                 enabled_models=tuple(
                     str(name).strip() for name in self.enabled_models if str(name).strip()
                 ),
+                sync_mode=_coerce_sync_mode(self.sync_mode),
                 device_vendors=tuple(
                     str(name).strip() for name in self.device_vendors if str(name).strip()
                 ),
@@ -611,6 +652,12 @@ if models is not None:
                 ),
                 device_models=tuple(
                     str(name).strip() for name in self.device_models if str(name).strip()
+                ),
+                cloud_types=tuple(
+                    str(name).strip() for name in self.cloud_types if str(name).strip()
+                ),
+                cloud_account_ids=tuple(
+                    str(name).strip() for name in self.cloud_account_ids if str(name).strip()
                 ),
                 query_contract_version=self.query_contract_version,
                 default_location_type_name=self.default_location_type_name,

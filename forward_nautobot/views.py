@@ -30,7 +30,12 @@ except ModuleNotFoundError:  # pragma: no cover - local compatibility import pat
 
 
 from .fixture_support import fixture_coverage
-from .forms import DELETE_POLICY_CHOICES, FORWARD_PROFILE_FORM_FIELDS, ForwardConnectionProfileForm
+from .forms import (
+    DELETE_POLICY_CHOICES,
+    FORWARD_PROFILE_FORM_FIELDS,
+    SYNC_MODE_CHOICES,
+    ForwardConnectionProfileForm,
+)
 from .integrations.forward.registry import CORE_MODEL_MAPPINGS
 from .models import (
     WRITE_DEFAULT_FIELD_NAMES,
@@ -98,12 +103,22 @@ def _render_profile_editor(
             "device_vendors",
             "device_types",
             "device_models",
+            "cloud_types",
+            "cloud_account_ids",
         } and isinstance(value, (list, tuple)):
             value = ", ".join(str(item) for item in value if str(item).strip())
         if field_name == "delete_policy":
             options = []
             for option_value, option_label in DELETE_POLICY_CHOICES:
                 selected = " selected" if str(value or "ignore") == option_value else ""
+                options.append(
+                    f'<option value="{escape(option_value)}"{selected}>{escape(option_label)}</option>'
+                )
+            control = f'<select name="{escape(field_name)}">{"".join(options)}</select>'
+        elif field_name == "sync_mode":
+            options = []
+            for option_value, option_label in SYNC_MODE_CHOICES:
+                selected = " selected" if str(value or "network") == option_value else ""
                 options.append(
                     f'<option value="{escape(option_value)}"{selected}>{escape(option_label)}</option>'
                 )

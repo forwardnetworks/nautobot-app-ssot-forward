@@ -308,6 +308,9 @@ def test_build_ingestion_request_uses_profile_models_and_selected_overrides(monk
         network_id="net-1",
         snapshot_id="latestProcessed",
         enabled_models=("devices", "interfaces"),
+        sync_mode="cloud",
+        cloud_types=("TYPE_A",),
+        cloud_account_ids=("account-1",),
         default_location_type_name="Building",
         default_location_status_name="Active",
         default_device_role_name="Access Switch",
@@ -341,6 +344,9 @@ def test_build_ingestion_request_uses_profile_models_and_selected_overrides(monk
     assert request.connection.base_url == "https://fwd.example"
     assert request.connection.snapshot_id == "latestProcessed"
     assert request.connection.verify_tls is True
+    assert request.sync_mode == "cloud"
+    assert request.cloud_types == ("TYPE_A",)
+    assert request.cloud_account_ids == ("account-1",)
 
     override_request = _build_ingestion_request(
         dryrun=True,
@@ -368,6 +374,104 @@ def test_build_ingestion_request_uses_profile_models_and_selected_overrides(monk
         verify_tls="false",
     )
     assert direct_connection_request.connection.verify_tls is False
+
+
+def test_cloud_only_dryrun_uses_native_cloud_sync_without_network_writer(monkeypatch):
+    _require_jobs_module()
+    _require_httpx()
+    import forward_nautobot.integrations.forward.contrib_sync as contrib_sync
+    from forward_nautobot.integrations.forward.cloud import ForwardCloudIngestionPlan
+    from forward_nautobot.integrations.forward.models import ForwardSyncReport
+
+    stored_profile = ForwardConnectionProfileRecord(
+        name="cloud-profile",
+        base_url="https://fwd.example",
+        username="alice",
+        password="secret",
+        network_id="net-1",
+        sync_mode="cloud",
+        cloud_types=("TYPE_A",),
+        cloud_account_ids=("account-1",),
+        is_default=True,
+    )
+    captured = {"cloud_sync": 0, "network_write": 0}
+
+    class _FakeManager:
+        def all(self):
+            return [SimpleNamespace(to_record=lambda: stored_profile)]
+
+    class _FakeCloudPlanner:
+        def __init__(self, client):
+            captured["cloud_client"] = client
+
+        def run(self, **kwargs):
+            captured["cloud_kwargs"] = kwargs
+            report = ForwardSyncReport(
+                mode="preview",
+                source_url="https://fwd.example",
+                network_id="net-1",
+                snapshot_id=kwargs["current_snapshot_id"],
+                query_mode="bundled_nqe_query_id_async",
+                query_reference="forward_cloud_accounts.nqe",
+                query_contract_version="v1",
+                row_count=1,
+                rows=({"account_id": "account-1", "cloud_type": "TYPE_A"},),
+                planned_models=("cloud_accounts",),
+            )
+            return ForwardCloudIngestionPlan(
+                account_rows=(
+                    {
+                        "account_id": "account-1",
+                        "name": "Account One",
+                        "cloud_type": "TYPE_A",
+                    },
+                ),
+                network_rows=(),
+                service_rows=(),
+                reports=(report,),
+                should_sync=True,
+                detail={"selected_account_count": 1, "scope_empty": False},
+            )
+
+    def _cloud_sync(**kwargs):
+        captured["cloud_sync"] += 1
+        captured["cloud_sync_kwargs"] = kwargs
+        return {"create": 1, "update": 0, "delete": 0}
+
+    class _ForbiddenNetworkWriter:
+        def execute(self, *args, **kwargs):
+            captured["network_write"] += 1
+            raise AssertionError("cloud-only mode must not execute the network writer")
+
+    monkeypatch.setattr(
+        jobs_module, "ForwardConnectionProfile", SimpleNamespace(objects=_FakeManager())
+    )
+    monkeypatch.setattr(
+        jobs_module,
+        "ForwardClient",
+        lambda settings: ForwardClient(settings, transport=_mock_transport()),
+    )
+    monkeypatch.setattr(jobs_module, "ForwardCloudIngestionPlanner", _FakeCloudPlanner)
+    monkeypatch.setattr(jobs_module, "ForwardNautobotWriteExecutor", _ForbiddenNetworkWriter)
+    monkeypatch.setattr(contrib_sync, "run_contrib_cloud_sync", _cloud_sync)
+
+    result, plan, write_execution = jobs_module._run_ingestion_plan(
+        dryrun=True,
+        profile_name="cloud-profile",
+        snapshot_id="snap-2",
+        fetch_all=True,
+        limit=1000,
+    )
+
+    assert captured["network_write"] == 0
+    assert captured["cloud_sync"] == 1
+    assert captured["cloud_sync_kwargs"]["dryrun"] is True
+    assert captured["cloud_sync_kwargs"]["allow_delete"] is False
+    assert captured["cloud_kwargs"]["cloud_types"] == ("TYPE_A",)
+    assert captured["cloud_kwargs"]["cloud_account_ids"] == ("account-1",)
+    assert plan.source_summary == {"model_counts": {}, "model_slugs": []}
+    assert result["source_summary"]["cloud"]["account_count"] == 1
+    assert write_execution["summaries"]["cloud"]["create"] == 1
 
 
 def test_ssot_lookup_object_resolves_real_objects(monkeypatch):

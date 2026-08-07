@@ -6,11 +6,13 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 
 import forward_nautobot.integrations.forward.contrib_sync as contrib_sync
 from forward_nautobot.integrations.forward.contrib_sync import (
     CONTRIB_AVAILABLE,
     LocationCanonicalizer,
+    _cloud_summary_with_delete_safety,
     _normalize_mac,
     _profile_defaults,
     cloud_provider_name,
@@ -113,6 +115,181 @@ def test_cloud_resource_type_name_pretty():
     assert cloud_resource_type_name("AZURE", "load-balancer") == "AZURE Load Balancer"
     assert cloud_resource_type_name("GCP", "nat-gateway") == "GCP NAT Gateway"
     assert cloud_resource_type_name("CloudType.AWS", "vpc") == "AWS VPC"
+
+
+def test_cloud_source_uses_stable_identity_and_preserves_display_name():
+    if not CONTRIB_AVAILABLE:
+        return
+    source = contrib_sync.ForwardContribCloudSource(
+        account_rows=[
+            {"account_id": "account-1", "name": "Shared", "cloud_type": "TYPE_A"},
+            {"account_id": "account-2", "name": "Shared", "cloud_type": "TYPE_A"},
+        ],
+        network_rows=[
+            {
+                "account_id": "account-1",
+                "cloud_type": "TYPE_A",
+                "network_id": "network-1",
+                "name": "Shared network",
+                "parent_id": "",
+                "kind": "vpc",
+                "cidrs": [],
+            },
+            {
+                "account_id": "account-2",
+                "cloud_type": "TYPE_A",
+                "network_id": "network-1",
+                "name": "Shared network",
+                "parent_id": "",
+                "kind": "vpc",
+                "cidrs": [],
+            },
+        ],
+        service_rows=[],
+    )
+
+    source.load()
+
+    accounts = list(source.get_all("cloud_account"))
+    networks = list(source.get_all("cloud_vpc"))
+    assert len(accounts) == 2
+    assert len({account.name for account in accounts}) == 2
+    assert {account.description for account in accounts} == {"Shared"}
+    assert len(networks) == 2
+    assert len({network.name for network in networks}) == 2
+    assert {network.description for network in networks} == {"Shared network"}
+    assert {network.extra_config["forward"]["account_id"] for network in networks} == {
+        "account-1",
+        "account-2",
+    }
+
+    renamed = contrib_sync.ForwardContribCloudSource(
+        account_rows=[
+            {"account_id": "account-1", "name": "Renamed account", "cloud_type": "TYPE_A"}
+        ],
+        network_rows=[
+            {
+                "account_id": "account-1",
+                "cloud_type": "TYPE_A",
+                "network_id": "network-1",
+                "name": "Renamed network",
+                "parent_id": "",
+                "kind": "vpc",
+                "cidrs": [],
+            }
+        ],
+        service_rows=[],
+    )
+    renamed.load()
+    assert renamed.get_all("cloud_account")[0].name == accounts[0].name
+    assert renamed.get_all("cloud_vpc")[0].name == networks[0].name
+    assert renamed.get_all("cloud_vpc")[0].description == "Renamed network"
+
+
+def test_cloud_delete_summary_reports_suppression_when_removal_is_disabled():
+    suppressed = _cloud_summary_with_delete_safety({"create": 2, "delete": 7}, allow_delete=False)
+    allowed = _cloud_summary_with_delete_safety({"delete": 7}, allow_delete=True)
+
+    assert suppressed == {"create": 2, "delete": 0, "delete_suppressed": 7}
+    assert allowed == {"delete": 7}
+
+
+def test_cloud_source_qualifies_same_account_and_resource_ids_by_cloud_type():
+    if not CONTRIB_AVAILABLE:
+        return
+    source = contrib_sync.ForwardContribCloudSource(
+        account_rows=[
+            {"account_id": "shared", "name": "One", "cloud_type": "TYPE_A"},
+            {"account_id": "shared", "name": "Two", "cloud_type": "TYPE_B"},
+        ],
+        network_rows=[
+            {
+                "account_id": "shared",
+                "cloud_type": cloud_type,
+                "network_id": "shared-network",
+                "name": "Network",
+                "parent_id": "",
+                "kind": "vpc",
+                "cidrs": [],
+            }
+            for cloud_type in ("TYPE_A", "TYPE_B")
+        ],
+        service_rows=[],
+    )
+
+    source.load()
+
+    assert len(source.get_all("cloud_account")) == 2
+    assert len({row.name for row in source.get_all("cloud_account")}) == 2
+    assert len(source.get_all("cloud_vpc")) == 2
+    assert len({row.name for row in source.get_all("cloud_vpc")}) == 2
+
+
+def test_cloud_source_preserves_operator_extra_config():
+    if not CONTRIB_AVAILABLE:
+        return
+    network_name = contrib_sync.cloud_object_name(
+        "network",
+        "network-1",
+        account_id=contrib_sync.cloud_account_identity("TYPE_A", "account-1"),
+    )
+    source = contrib_sync.ForwardContribCloudSource(
+        account_rows=[{"account_id": "account-1", "name": "Account", "cloud_type": "TYPE_A"}],
+        network_rows=[
+            {
+                "account_id": "account-1",
+                "cloud_type": "TYPE_A",
+                "network_id": "network-1",
+                "name": "Network",
+                "parent_id": "",
+                "kind": "vpc",
+                "cidrs": [],
+            }
+        ],
+        service_rows=[],
+        existing_extra_config={
+            network_name: {
+                "operator": {"owner": "cloud-team"},
+                "forward": {"operator_note": "keep"},
+            }
+        },
+    )
+
+    source.load()
+
+    config = source.get_all("cloud_vpc")[0].extra_config
+    assert config["operator"] == {"owner": "cloud-team"}
+    assert config["forward"]["operator_note"] == "keep"
+    assert config["forward"]["network_id"] == "network-1"
+
+
+def test_cloud_target_accepts_null_extra_config_from_existing_objects():
+    if not CONTRIB_AVAILABLE:
+        return
+
+    for model in (
+        contrib_sync.ForwardContribCloudVPC,
+        contrib_sync.ForwardContribCloudSubnet,
+        contrib_sync.ForwardContribCloudService,
+    ):
+        assert model.model_fields["extra_config"].is_required()
+        assert type(None) in get_args(model.model_fields["extra_config"].annotation)
+
+
+def test_cloud_target_querysets_are_limited_to_plugin_identity_names():
+    if not CONTRIB_AVAILABLE:
+        return
+
+    expected_markers = {
+        contrib_sync.ForwardContribCloudAccount: "account",
+        contrib_sync.ForwardContribCloudVPC: "network",
+        contrib_sync.ForwardContribCloudSubnet: "network",
+        contrib_sync.ForwardContribCloudService: "service",
+    }
+    for model, marker in expected_markers.items():
+        query = str(model.get_queryset().query)
+        assert f"[{marker}:" in query
+        assert "[0-9a-f]{16}" in query
 
 
 def test_canonicalizer_collapses_variants_to_first_seen():

@@ -57,6 +57,14 @@ The most useful hardening patterns for this repo are contractual rather than pla
 - Device scope is a raw-contract and planner boundary. The plugin builds an exact current-device
   membership set from the bundled device query, then filters device-backed and shared rows from
   full-query or NQE-diff results. Shared query rows retain their raw `scope_devices` contributors.
+- Cloud scope is account-first. The plugin loads current accounts, applies generic cloud-type and
+  account-ID allowlists, and closes cloud-network and service rows over the selected,
+  cloud-type-qualified account set.
+  Saved cloud-query diffs detect relevant changes; native DiffSync receives a complete current
+  source only when a change requires reconciliation.
+- Native cloud target loading is restricted to the plugin's stable identity suffix. This keeps
+  unrelated cloud inventory outside reconciliation, while plugin metadata updates merge with
+  operator-owned `extra_config` keys.
 - Saved bundle queries are unparameterized and primary-keyed because the Forward `nqe-diffs`
   endpoint does not accept query parameters. Inline fallback strips the primary-key annotation,
   uses the same query body asynchronously, and remains full-query-only.
@@ -82,6 +90,8 @@ The most useful hardening patterns for this repo are contractual rather than pla
 - `forward_nautobot/integrations/forward/planner.py` turns bundled NQE rows into a raw ingestion
   plan across selected slices, builds current-device scope membership, and applies that scope to
   both full-query and NQE-diff rows.
+- `forward_nautobot/integrations/forward/cloud.py` owns cloud account scope, saved-query diff
+  detection, inline async fallback, and complete-source hydration for native Nautobot cloud CRUD.
 - `forward_nautobot/integrations/forward/support.py` turns a report into a sanitized support bundle with raw row samples and adapter summaries.
 - `forward_nautobot/integrations/forward/registry.py` defines the first model slices and the expected Forward query filenames.
 - `forward_nautobot/integrations/forward/jobs.py` owns Nautobot job inputs, SSoT `DataSource`
