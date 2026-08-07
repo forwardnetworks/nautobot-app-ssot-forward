@@ -115,7 +115,7 @@ jobs:
       - name: Wait for startup migrations
         run: |
           container_id="$(docker compose -f development/docker-compose.yml ps -q nautobot)"
-          for attempt in {1..120}; do
+          for attempt in {1..300}; do
             health="$(docker inspect --format '{{.State.Health.Status}}' "$container_id")"
             if [ "$health" = "healthy" ]; then
               exit 0
