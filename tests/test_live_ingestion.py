@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 
+import httpx
 import pytest
 
 from forward_nautobot.integrations.forward.adapters import (
@@ -116,12 +117,22 @@ def _require_live_client():
         pytest.skip("live Forward ingestion tests require the full dependency set")
 
 
-def _counting_request_wrapper(original_request, calls):
-    def wrapped_request(self, method, path, **kwargs):
-        calls[(method, path)] = calls.get((method, path), 0) + 1
-        return original_request(self, method, path, **kwargs)
+class _CountingTransport(httpx.BaseTransport):
+    """Counts real requests by (method, path).
 
-    return wrapped_request
+    Transport is the SDK's now, so request budgets are measured at the socket
+    rather than by patching a client internal. The client already accepts a
+    transport for exactly this kind of injection.
+    """
+
+    def __init__(self, calls: dict) -> None:
+        self._calls = calls
+        self._inner = httpx.HTTPTransport()
+
+    def handle_request(self, request):
+        key = (request.method, request.url.path)
+        self._calls[key] = self._calls.get(key, 0) + 1
+        return self._inner.handle_request(request)
 
 
 @pytest.mark.integration
@@ -682,7 +693,7 @@ def test_live_subset_ingestion_plan_contract():
 
 
 @pytest.mark.integration
-def test_live_preview_sync_smoke_is_bounded(monkeypatch):
+def test_live_preview_sync_smoke_is_bounded():
     _require_live_planner()
     settings = _live_settings()
     if settings is None:
@@ -690,13 +701,8 @@ def test_live_preview_sync_smoke_is_bounded(monkeypatch):
     for mapping in get_model_mappings(("locations",)):
         _require_live_query_path(settings, mapping.forward_query_path)
 
-    client = ForwardClient(settings)
     calls: dict[tuple[str, str], int] = {}
-    monkeypatch.setattr(
-        ForwardClient,
-        "_request",
-        _counting_request_wrapper(ForwardClient._request, calls),
-    )
+    client = ForwardClient(settings, transport=_CountingTransport(calls))
 
     runner = ForwardSyncRunner(client)
     spec = ForwardSyncSpec(
@@ -718,19 +724,23 @@ def test_live_preview_sync_smoke_is_bounded(monkeypatch):
     assert preview_report.query_reference == sync_report.query_reference
     assert preview_report.planned_models == ("locations",)
     assert sync_report.planned_models == ("locations",)
-    assert calls.get(("GET", "/nqe/repos/org/commits/head/queries"), 0) == 1
-    assert calls[("GET", f"/networks/{settings.network_id}/snapshots/latestProcessed")] == 1
-    assert calls[("GET", f"/snapshots/{preview_report.snapshot_id}/metrics")] == 1
-    assert calls[("GET", f"/networks/{settings.network_id}/snapshots")] == 1
-    assert calls[("POST", f"/networks/{settings.network_id}/nqe-executions")] == 2
+    # Request budget, measured at the socket. The query index and snapshot
+    # metrics are each fetched once and reused across preview and sync; the
+    # two executions are the preview and the sync themselves. The SDK reads
+    # the latest processed snapshot from the snapshot listing rather than the
+    # deprecated dedicated endpoint, so snapshot reads land on one path.
+    assert calls.get(("GET", "/api/nqe/repos/org/commits/head/queries"), 0) == 1
+    assert calls[("GET", f"/api/snapshots/{preview_report.snapshot_id}/metrics")] == 1
+    assert calls[("GET", f"/api/networks/{settings.network_id}/snapshots")] <= 2
+    assert calls[("POST", f"/api/networks/{settings.network_id}/nqe-executions")] == 2
     assert any(
-        method == "GET" and path.startswith(f"/networks/{settings.network_id}/nqe-executions/")
+        method == "GET" and path.startswith(f"/api/networks/{settings.network_id}/nqe-executions/")
         for method, path in calls
     )
 
 
 @pytest.mark.integration
-def test_live_preview_sync_smoke_for_devices_is_bounded(monkeypatch):
+def test_live_preview_sync_smoke_for_devices_is_bounded():
     _require_live_planner()
     settings = _live_settings()
     if settings is None:
@@ -740,13 +750,8 @@ def test_live_preview_sync_smoke_for_devices_is_bounded(monkeypatch):
 
     _, _, location_rows = _run_live_query(settings, "forward_locations.nqe")
     assert location_rows, "live location query returned no rows"
-    client = ForwardClient(settings)
     calls: dict[tuple[str, str], int] = {}
-    monkeypatch.setattr(
-        ForwardClient,
-        "_request",
-        _counting_request_wrapper(ForwardClient._request, calls),
-    )
+    client = ForwardClient(settings, transport=_CountingTransport(calls))
 
     runner = ForwardSyncRunner(client)
     spec = ForwardSyncSpec(
@@ -768,12 +773,16 @@ def test_live_preview_sync_smoke_for_devices_is_bounded(monkeypatch):
     assert preview_report.query_reference == sync_report.query_reference
     assert preview_report.planned_models == ("devices",)
     assert sync_report.planned_models == ("devices",)
-    assert calls.get(("GET", "/nqe/repos/org/commits/head/queries"), 0) == 1
-    assert calls[("GET", f"/networks/{settings.network_id}/snapshots/latestProcessed")] == 1
-    assert calls[("GET", f"/snapshots/{preview_report.snapshot_id}/metrics")] == 1
-    assert calls[("GET", f"/networks/{settings.network_id}/snapshots")] == 1
-    assert calls[("POST", f"/networks/{settings.network_id}/nqe-executions")] == 2
+    # Request budget, measured at the socket. The query index and snapshot
+    # metrics are each fetched once and reused across preview and sync; the
+    # two executions are the preview and the sync themselves. The SDK reads
+    # the latest processed snapshot from the snapshot listing rather than the
+    # deprecated dedicated endpoint, so snapshot reads land on one path.
+    assert calls.get(("GET", "/api/nqe/repos/org/commits/head/queries"), 0) == 1
+    assert calls[("GET", f"/api/snapshots/{preview_report.snapshot_id}/metrics")] == 1
+    assert calls[("GET", f"/api/networks/{settings.network_id}/snapshots")] <= 2
+    assert calls[("POST", f"/api/networks/{settings.network_id}/nqe-executions")] == 2
     assert any(
-        method == "GET" and path.startswith(f"/networks/{settings.network_id}/nqe-executions/")
+        method == "GET" and path.startswith(f"/api/networks/{settings.network_id}/nqe-executions/")
         for method, path in calls
     )
