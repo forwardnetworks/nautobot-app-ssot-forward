@@ -1,407 +1,236 @@
-"""Forward API client for Nautobot sync jobs."""
+"""Forward API access, delegating transport to the official ``forward-sdk``.
 
-import json
-import random
+This replaces the hand-rolled httpx client. Retry, backoff, rate limiting,
+pagination guards, the async NQE poll loop and the query library workflow are
+all owned by the SDK now. What stays here is the plugin's own vocabulary: its
+``ForwardConnectionSettings`` and ``ForwardQuerySpec`` shapes, the response
+reshaping its adapters expect, and the telemetry its SSoT job result persists.
+"""
+
+from __future__ import annotations
+
 import threading
-import time
-from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import quote
 
 import httpx
+from forward_sdk import ForwardClient as SdkForwardClient
+from forward_sdk import QueryRef
+from forward_sdk._sync.services.nqe import NqeExecution
+from forward_sdk.errors import ForwardError
 
-from ... import __version__
 from .exceptions import ForwardClientError, ForwardConfigurationError
 from .models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings, ForwardQuerySpec
 
-TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+
+def _sdk_snapshot(snapshot_id: str | None) -> str | None:
+    """Map the plugin's ``latestProcessed`` sentinel onto the SDK's ``None``."""
+    value = str(snapshot_id or "").strip()
+    if not value or value == LATEST_PROCESSED_SNAPSHOT:
+        return None
+    return value
 
 
-@dataclass
-class ForwardClientCounters:
-    """Forward-API transport telemetry for one client lifetime.
+def _query_ref(spec: ForwardQuerySpec) -> QueryRef:
+    """Translate a plugin query spec into the SDK's reference type."""
+    query_id = spec.resolved_query_id or spec.query_id
+    commit_id = spec.resolved_commit_id or spec.commit_id
+    if query_id:
+        ref = QueryRef.by_id(query_id, commit_id=commit_id)
+    elif spec.query_path:
+        ref = QueryRef.by_path(spec.query_path, commit_id=commit_id)
+    elif spec.query_text:
+        ref = QueryRef.inline(spec.query_text)
+    else:
+        raise ForwardConfigurationError("Query spec carries no query text, ID, or path.")
+    if spec.parameters:
+        ref = replace(ref, parameters=dict(spec.parameters))
+    if spec.sort_keys:
+        ref = ref.with_sort(*spec.sort_keys)
+    return ref
 
-    nautobot-ssot tracks DiffSync object CRUD but knows nothing about the Forward
-    REST transport, so silent throttling/retries are invisible. These counters
-    make them a shareable signal (surfaced in the support bundle). Increments are
-    locked because the planner fans slice fetches across a thread pool sharing one
-    client.
+
+def _reshape_snapshot(snapshot: Any) -> dict[str, Any]:
+    """Adapters expect snake_case snapshot rows with a display label."""
+    get = (lambda k: getattr(snapshot, k, None)) if not isinstance(snapshot, dict) else snapshot.get
+    identifier = str(get("id") or "")
+    state = str(get("state") or "")
+    created_at = str(get("created_at") or get("createdAt") or "").strip()
+    processed_at = str(get("processed_at") or get("processedAt") or "").strip()
+    label_parts = [identifier]
+    if state:
+        label_parts.append(state)
+    if processed_at:
+        label_parts.append(processed_at)
+    elif created_at:
+        label_parts.append(created_at)
+    return {
+        "id": identifier,
+        "state": state,
+        "created_at": created_at,
+        "processed_at": processed_at,
+        "label": " | ".join(label_parts),
+    }
+
+
+class _Counters:
+    """SDK counters, plus the aliases this plugin's job result already records.
+
+    ``jobs.py`` reads ``nqe_query_calls`` when it annotates a failure, so that
+    name has to keep resolving; the SDK's nearest equivalent is the number of
+    executions started.
     """
 
-    http_attempts: int = 0
-    http_transient: int = 0
-    http_429: int = 0
-    http_retries: int = 0
-    nqe_query_calls: int = 0
-    nqe_poll_calls: int = 0
-    nqe_poll_sleep_seconds: float = 0.0
-    throttle_sleep_seconds: float = 0.0
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    def __init__(self, snapshot: Any) -> None:
+        self._snapshot = snapshot
 
-    def bump(self, name: str, amount: float = 1) -> None:
-        with self._lock:
-            setattr(self, name, getattr(self, name) + amount)
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._snapshot, name)
 
-    def as_dict(self) -> dict[str, float | int]:
-        with self._lock:
-            return {
-                "http_attempts": self.http_attempts,
-                "http_transient": self.http_transient,
-                "http_429": self.http_429,
-                "http_retries": self.http_retries,
-                "nqe_query_calls": self.nqe_query_calls,
-                "nqe_poll_calls": self.nqe_poll_calls,
-                "nqe_poll_sleep_seconds": round(self.nqe_poll_sleep_seconds, 3),
-                "throttle_sleep_seconds": round(self.throttle_sleep_seconds, 3),
-            }
-
-
-# Exponential backoff bounds for retrying transient failures (separate from the
-# per-request min-interval throttle). Honors Retry-After when the server sends it.
-_RETRY_BACKOFF_BASE_SECONDS = 0.5
-_RETRY_BACKOFF_CAP_SECONDS = 8.0
-NQE_ASYNC_RESULT_ACCEPT = "application/x-ndjson, application/jsonl;q=0.9, application/json;q=0.1"
+    def as_dict(self) -> dict[str, Any]:
+        counters = dict(self._snapshot.as_dict())
+        counters.setdefault("nqe_query_calls", counters.get("nqe_executions", 0))
+        return counters
 
 
 @dataclass(slots=True)
 class ForwardClient:
-    """Small, testable wrapper around the Forward REST API."""
+    """Plugin-facing Forward client. Transport is the SDK's."""
 
     settings: ForwardConnectionSettings
     transport: httpx.BaseTransport | None = None
-    _resolved_query_cache: dict[tuple[str, str, str, bool], dict[str, Any]] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _resolved_query_index_cache: dict[tuple[str, str], dict[str, Any]] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _resolved_snapshot_cache: dict[tuple[str, str], str] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _latest_processed_snapshot_cache: dict[str, dict[str, Any]] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _snapshot_metrics_cache: dict[str, dict[str, Any]] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _snapshots_cache: dict[tuple[str, bool, int], list[dict[str, Any]]] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _nqe_query_history_cache: dict[str, list[dict[str, Any]]] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _org_nqe_head_commit_id_cache: str = field(default="", init=False, repr=False)
-    _nqe_execution_records: list[dict[str, Any]] = field(
-        default_factory=list, init=False, repr=False
-    )
-    _nqe_execution_records_lock: threading.Lock = field(
-        default_factory=threading.Lock, init=False, repr=False
-    )
-    _last_request_completed_at: float | None = field(default=None, init=False, repr=False)
-    _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
-    counters: ForwardClientCounters = field(
-        default_factory=ForwardClientCounters, init=False, repr=False
-    )
+    _sdk: Any = field(default=None, init=False, repr=False)
+    # A sync pins one snapshot and snapshots are immutable, so these are cached
+    # for the client's lifetime. The SDK caches the query index but not these,
+    # and the planner resolves a snapshot once per slice across a thread pool.
+    _snapshot_cache: dict[Any, Any] = field(default_factory=dict, init=False, repr=False)
+    _cache_lock: Any = field(default_factory=threading.Lock, init=False, repr=False)
 
-    def nqe_execution_telemetry(self) -> list[dict[str, Any]]:
-        """Return redaction-safe async execution progress captured by this client."""
-
-        with self._nqe_execution_records_lock:
-            return [dict(record) for record in self._nqe_execution_records]
-
-    def _record_nqe_execution(self, record: dict[str, Any]) -> None:
-        with self._nqe_execution_records_lock:
-            self._nqe_execution_records.append(dict(record))
-
-    def _get_http_client(self) -> httpx.Client:
-        if self._http_client is None:
-            self._http_client = httpx.Client(
-                timeout=self.timeout,
-                verify=self.verify,
+    # -- lifecycle ---------------------------------------------------------
+    @property
+    def sdk(self) -> SdkForwardClient:
+        if self._sdk is None:
+            self._sdk = SdkForwardClient(
+                self.settings.base_url,
+                username=self.settings.username or None,
+                password=self.settings.password or None,
+                verify=bool(self.settings.verify_tls),
+                timeout=float(self.settings.timeout_seconds),
+                retries=int(self.settings.retries),
+                rate_limit_rpm=self._rate_limit(),
+                network_id=self.settings.network_id or None,
+                snapshot_id=_sdk_snapshot(self.settings.snapshot_id),
                 transport=self.transport,
-                trust_env=True,
             )
-        return self._http_client
+        return self._sdk
+
+    def _rate_limit(self) -> Any:
+        interval = float(self.settings.request_min_interval_seconds or 0.0)
+        return int(60.0 / interval) if interval > 0 else "auto"
+
+    def _cached(self, key: Any, produce: Any) -> Any:
+        with self._cache_lock:
+            if key in self._snapshot_cache:
+                return self._snapshot_cache[key]
+        value = produce()
+        with self._cache_lock:
+            return self._snapshot_cache.setdefault(key, value)
 
     def close(self) -> None:
-        if self._http_client is not None:
-            self._http_client.close()
-            self._http_client = None
+        if self._sdk is not None:
+            self._sdk.close()
+            self._sdk = None
 
-    def __enter__(self):
+    def __enter__(self) -> ForwardClient:
         return self
 
-    def __exit__(self, *_) -> None:
+    def __exit__(self, *_exc: object) -> None:
         self.close()
 
+    # -- telemetry ---------------------------------------------------------
     @property
-    def base_url(self) -> str:
-        return self.settings.base_url.rstrip("/")
+    def counters(self) -> Any:
+        return _Counters(self.sdk.counters)
 
-    @property
-    def timeout(self) -> httpx.Timeout:
-        return httpx.Timeout(self.settings.timeout_seconds)
+    def nqe_execution_telemetry(self) -> list[dict[str, Any]]:
+        return [report.as_dict() for report in self.sdk.nqe.execution_reports()]
 
-    @property
-    def verify(self) -> bool:
-        return bool(self.settings.verify_tls)
-
-    @property
-    def auth(self):
-        if self.settings.has_basic_auth:
-            return (self.settings.username, self.settings.password)
-        return None
-
-    def _api_url(self, path: str) -> str:
-        normalized_path = path if path.startswith("/") else f"/{path}"
-        if self.base_url.endswith("/api"):
-            return f"{self.base_url}{normalized_path}"
-        return f"{self.base_url}/api{normalized_path}"
-
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": f"nautobot-app-ssot-forward/{__version__}",
-        }
-
-    def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: dict[str, Any] | None = None,
-        json_body: dict[str, Any] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> httpx.Response:
-        last_error: Exception | None = None
-        for attempt in range(self.settings.retries + 1):
-            try:
-                self._respect_min_interval()
-                self.counters.bump("http_attempts")
-                response = self._get_http_client().request(
-                    method,
-                    self._api_url(path),
-                    params=params,
-                    json=json_body,
-                    headers={**self._headers(), **(headers or {})},
-                    auth=self.auth,
-                )
-                if response.status_code in TRANSIENT_HTTP_STATUS_CODES:
-                    self.counters.bump("http_transient")
-                    if response.status_code == 429:
-                        self.counters.bump("http_429")
-                    raise httpx.HTTPStatusError(
-                        f"transient HTTP {response.status_code}",
-                        request=response.request,
-                        response=response,
-                    )
-                response.raise_for_status()
-                self._last_request_completed_at = time.monotonic()
-                return response
-            except httpx.HTTPStatusError as exc:
-                self._last_request_completed_at = time.monotonic()
-                status_code = exc.response.status_code
-                if (
-                    status_code not in TRANSIENT_HTTP_STATUS_CODES
-                    or attempt >= self.settings.retries
-                ):
-                    raise ForwardClientError(
-                        f"Forward API request failed with HTTP {status_code}: {exc.response.text}"
-                    ) from exc
-                last_error = exc
-                self._sleep_before_retry(attempt, exc.response.headers.get("Retry-After"))
-            except (httpx.TimeoutException, httpx.RequestError) as exc:
-                self._last_request_completed_at = time.monotonic()
-                if attempt >= self.settings.retries:
-                    raise ForwardClientError(f"Forward API request failed: {exc}") from exc
-                last_error = exc
-                self._sleep_before_retry(attempt, None)
-
-        raise ForwardClientError("Forward API request failed.") from last_error
-
-    @staticmethod
-    def _retry_after_seconds(retry_after: str | None) -> float | None:
-        """Parse a Retry-After header value (delta-seconds or HTTP-date)."""
-        if not retry_after:
-            return None
-        value = str(retry_after).strip()
-        try:
-            return max(0.0, float(int(value)))
-        except (TypeError, ValueError):
-            pass
-        try:
-            when = parsedate_to_datetime(value)
-        except (TypeError, ValueError):
-            return None
-        if when is None:
-            return None
-        delta = when.timestamp() - time.time()
-        return max(0.0, delta)
-
-    def _sleep_before_retry(self, attempt: int, retry_after: str | None) -> None:
-        """Back off between retries: honor Retry-After, else exponential + jitter.
-
-        Decorrelated jitter matters because the planner fans requests across a
-        thread pool sharing this client; without it N workers would retry in
-        lockstep and re-stampede a throttled Forward API.
-        """
-        self.counters.bump("http_retries")
-        wait = self._retry_after_seconds(retry_after)
-        if wait is None:
-            backoff = min(_RETRY_BACKOFF_BASE_SECONDS * (2**attempt), _RETRY_BACKOFF_CAP_SECONDS)
-            wait = backoff + random.uniform(0.0, _RETRY_BACKOFF_BASE_SECONDS)
-        if wait > 0:
-            self.counters.bump("throttle_sleep_seconds", wait)
-            time.sleep(wait)
-
-    def _respect_min_interval(self) -> None:
-        minimum_interval = float(self.settings.request_min_interval_seconds or 0.0)
-        if minimum_interval <= 0:
-            return
-        last_completed_at = self._last_request_completed_at
-        if last_completed_at is None:
-            return
-        elapsed = time.monotonic() - last_completed_at
-        remaining = minimum_interval - elapsed
-        if remaining > 0:
-            self.counters.bump("throttle_sleep_seconds", remaining)
-            time.sleep(remaining)
-
+    # -- networks ----------------------------------------------------------
     def get_networks(self) -> list[dict[str, Any]]:
-        data = self._request("GET", "/networks").json()
-        rows = data.get("networks") if isinstance(data, dict) else data
-        if not isinstance(rows, list):
-            return []
+        with _translated():
+            rows = self.sdk.networks.list()
         networks: list[dict[str, Any]] = []
         for row in rows:
-            if not isinstance(row, dict):
-                continue
-            network_id = str(row.get("id") or "").strip()
-            name = str(row.get("name") or "").strip()
-            if not network_id or not name:
-                continue
-            networks.append(
-                {
-                    "id": network_id,
-                    "name": name,
-                    "label": f"{name} ({network_id})",
-                }
-            )
+            identifier = str(getattr(row, "id", "") or "")
+            name = str(getattr(row, "name", "") or "")
+            if identifier and name:
+                networks.append({"id": identifier, "name": name, "label": f"{name} ({identifier})"})
         return networks
 
+    # -- snapshots ---------------------------------------------------------
     def get_snapshots(
-        self,
-        network_id: str,
-        *,
-        include_archived: bool = False,
-        limit: int = 100,
+        self, network_id: str, *, include_archived: bool = False, limit: int = 100
     ) -> list[dict[str, Any]]:
-        network_id = str(network_id or "").strip()
-        if not network_id:
-            raise ForwardConfigurationError("Forward network ID is required.")
-        cache_key = (network_id, bool(include_archived), int(limit))
-        cached_snapshots = self._snapshots_cache.get(cache_key)
-        if cached_snapshots is not None:
-            return [dict(snapshot) for snapshot in cached_snapshots]
-        response = self._request(
-            "GET",
-            f"/networks/{quote(network_id, safe='')}/snapshots",
-            params={
-                "includeArchived": str(bool(include_archived)).lower(),
-                "limit": limit,
-            },
-        )
-        data = response.json() or {}
-        rows = data.get("snapshots") if isinstance(data, dict) else data
-        if not isinstance(rows, list):
-            return []
-        snapshots: list[dict[str, Any]] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            snapshot_id = str(row.get("id") or "").strip()
-            if not snapshot_id:
-                continue
-            state = str(row.get("state") or "").strip()
-            created_at = str(row.get("createdAt") or "").strip()
-            processed_at = str(row.get("processedAt") or "").strip()
-            label_parts = [snapshot_id]
-            if state:
-                label_parts.append(state)
-            if processed_at:
-                label_parts.append(processed_at)
-            elif created_at:
-                label_parts.append(created_at)
-            snapshots.append(
-                {
-                    "id": snapshot_id,
-                    "state": state,
-                    "created_at": created_at,
-                    "processed_at": processed_at,
-                    "label": " | ".join(label_parts),
-                }
-            )
-        self._snapshots_cache[cache_key] = [dict(snapshot) for snapshot in snapshots]
-        return snapshots
+        def fetch() -> list[dict[str, Any]]:
+            with _translated():
+                rows = self.sdk.snapshots.list(network_id, include_archived=include_archived)
+            return [_reshape_snapshot(row) for row in rows]
 
-    def get_latest_processed_snapshot(self, network_id: str) -> dict[str, Any]:
-        network_id = str(network_id or "").strip()
-        if not network_id:
-            raise ForwardConfigurationError("Forward network ID is required.")
-        cached_snapshot = self._latest_processed_snapshot_cache.get(network_id)
-        if cached_snapshot is not None:
-            return dict(cached_snapshot)
-        response = self._request(
-            "GET",
-            f"/networks/{quote(network_id, safe='')}/snapshots/latestProcessed",
-        )
-        snapshot = response.json() or {}
-        if isinstance(snapshot, dict):
-            self._latest_processed_snapshot_cache[network_id] = dict(snapshot)
-            return snapshot
-        return {}
+        snapshots = self._cached(("snapshots", network_id, bool(include_archived)), fetch)
+        return [dict(row) for row in snapshots][: max(1, int(limit))]
 
-    def get_latest_processed_snapshot_id(self, network_id: str) -> str:
-        snapshot = self.get_latest_processed_snapshot(network_id)
-        snapshot_id = str(snapshot.get("id") or "").strip()
-        if not snapshot_id:
+    def resolve_snapshot_id(self, network_id: str, snapshot_id: str | None) -> str:
+        concrete = _sdk_snapshot(snapshot_id)
+        if concrete:
+            return concrete
+
+        def fetch() -> str:
+            with _translated():
+                return str(self.sdk.snapshots.latest_processed_id(network_id) or "")
+
+        resolved = self._cached(("latest_processed", network_id), fetch)
+        if not resolved:
             raise ForwardClientError(
-                "Forward latestProcessed snapshot response did not include an ID."
+                f"Forward network {network_id} has no latest processed snapshot."
             )
-        return snapshot_id
-
-    def resolve_snapshot_id(self, network_id: str, snapshot_id: str) -> str:
-        snapshot_id = str(snapshot_id or "").strip()
-        cache_key = (network_id, snapshot_id or LATEST_PROCESSED_SNAPSHOT)
-        cached_snapshot_id = self._resolved_snapshot_cache.get(cache_key)
-        if cached_snapshot_id is not None:
-            return cached_snapshot_id
-        if not snapshot_id or snapshot_id == LATEST_PROCESSED_SNAPSHOT:
-            resolved_snapshot_id = self.get_latest_processed_snapshot_id(network_id)
-            self._resolved_snapshot_cache[cache_key] = resolved_snapshot_id
-            return resolved_snapshot_id
-        self._resolved_snapshot_cache[cache_key] = snapshot_id
-        return snapshot_id
+        return str(resolved)
 
     def get_snapshot_metrics(self, snapshot_id: str) -> dict[str, Any]:
-        snapshot_id = str(snapshot_id or "").strip()
-        if not snapshot_id:
-            return {}
-        cached_metrics = self._snapshot_metrics_cache.get(snapshot_id)
-        if cached_metrics is not None:
-            return dict(cached_metrics)
-        response = self._request(
-            "GET",
-            f"/snapshots/{quote(snapshot_id, safe='')}/metrics",
-        )
-        metrics = response.json() or {}
-        if isinstance(metrics, dict):
-            self._snapshot_metrics_cache[snapshot_id] = dict(metrics)
-            return metrics
-        return {}
+        def fetch() -> dict[str, Any]:
+            with _translated():
+                return dict(self.sdk.snapshots.metrics(snapshot_id))
+
+        return dict(self._cached(("metrics", snapshot_id), fetch))
+
+    def get_latest_processed_snapshot_id(self, network_id: str) -> str:
+        return str(self.get_latest_processed_snapshot(network_id).get("id") or "")
+
+    def get_latest_processed_snapshot(self, network_id: str) -> dict[str, Any]:
+        with _translated():
+            snapshot = self.sdk.snapshots.latest_processed(network_id)
+        if snapshot is None:
+            raise ForwardClientError(
+                f"Forward network {network_id} has no latest processed snapshot."
+            )
+        return _reshape_snapshot(snapshot)
+
+    # -- query library -----------------------------------------------------
+    def get_nqe_repository_query_index(
+        self, *, repository: str = "org", commit_id: str = "head"
+    ) -> dict[str, Any]:
+        with _translated():
+            index = self.sdk.nqe.repo.index(repository=repository)
+        return {
+            "by_path": {
+                path: {
+                    "path": entry.path,
+                    "queryId": entry.query_id,
+                    "lastCommitId": entry.commit_id,
+                    "sourceCode": entry.source,
+                }
+                for path, entry in index.items()
+            }
+        }
 
     def get_committed_nqe_query(
         self,
@@ -411,483 +240,85 @@ class ForwardClient:
         commit_id: str = "head",
         require_source_code: bool = False,
     ) -> dict[str, Any]:
-        repository = str(repository or "org").strip() or "org"
-        query_path = self._normalize_query_path(query_path)
-        commit_id = str(commit_id or "head").strip() or "head"
-        if not query_path:
-            raise ForwardConfigurationError("Forward NQE query path is required.")
-        cache_key = (repository, query_path, commit_id, bool(require_source_code))
-        cached_query = self._resolved_query_cache.get(cache_key)
-        if cached_query is not None:
-            return dict(cached_query)
-        indexed_query = None
-        if commit_id == "head":
-            query_index = self.get_nqe_repository_query_index(
+        with _translated():
+            found = self.sdk.nqe.repo.queries(
                 repository=repository,
-                commit_id=commit_id,
+                commit_id=commit_id or "head",
+                path=query_path,
+                with_source=require_source_code,
             )
-            indexed_query = query_index.get("by_path", {}).get(query_path)
-        if isinstance(indexed_query, dict) and indexed_query.get("queryId"):
-            query = dict(indexed_query)
-            if commit_id == "head":
-                query.setdefault("lastCommitId", "")
-            has_source = any(query.get(key) for key in ("sourceCode", "source", "query"))
-            if not require_source_code or has_source:
-                self._resolved_query_cache[cache_key] = dict(query)
-                return query
-            commit_id = (
-                str(
-                    query.get("lastCommitId") or (query.get("lastCommit") or {}).get("id") or "head"
-                ).strip()
-                or "head"
-            )
-            cache_key = (repository, query_path, commit_id, True)
-        response = self._request(
-            "GET",
-            f"/nqe/repos/{quote(repository, safe='')}/commits/{quote(commit_id, safe='')}/queries",
-            params={
-                "path": query_path,
-                **({"with": "sourceCode"} if require_source_code else {}),
-            },
-        )
-        data = response.json() or {}
-        if isinstance(data, dict) and isinstance(data.get("queries"), list):
-            for row in data["queries"]:
-                if isinstance(row, dict) and str(row.get("path") or "").strip() == query_path:
-                    normalized = dict(row)
-                    normalized.setdefault(
-                        "lastCommitId",
-                        str((normalized.get("lastCommit") or {}).get("id") or "").strip(),
-                    )
-                    self._resolved_query_cache[cache_key] = dict(normalized)
-                    return normalized
-            raise ForwardClientError(
-                f"Forward NQE repository lookup did not include `{query_path}`."
-            )
-        if isinstance(data, dict):
-            normalized = dict(data)
-            normalized.setdefault(
-                "lastCommitId",
-                str((normalized.get("lastCommit") or {}).get("id") or "").strip(),
-            )
-            self._resolved_query_cache[cache_key] = dict(normalized)
-            return normalized
-        raise ForwardClientError(
-            f"Forward NQE repository lookup for `{query_path}` returned an invalid response."
-        )
-
-    @staticmethod
-    def _normalize_query_path(query_path: str) -> str:
-        normalized = str(query_path or "").strip()
-        if not normalized:
-            return ""
-        if not normalized.startswith("/"):
-            return f"/{normalized}"
-        return normalized
-
-    def get_nqe_repository_query_index(
-        self,
-        *,
-        repository: str = "org",
-        commit_id: str = "head",
-    ) -> dict[str, Any]:
-        repository = str(repository or "org").strip() or "org"
-        commit_id = str(commit_id or "head").strip() or "head"
-        cache_key = (repository, commit_id)
-        cached_index = self._resolved_query_index_cache.get(cache_key)
-        if cached_index is not None:
-            return dict(cached_index)
-        response = self._request(
-            "GET",
-            f"/nqe/repos/{quote(repository, safe='')}/commits/{quote(commit_id, safe='')}/queries",
-        )
-        data = response.json() or {}
-        if not isinstance(data, dict):
-            raise ForwardClientError(
-                f"Forward NQE repository query index for `{repository}:{commit_id}` returned an invalid response."
-            )
-        queries = data.get("queries")
-        if not isinstance(queries, list):
-            self._resolved_query_index_cache[cache_key] = {"by_path": {}}
-            return {"by_path": {}}
-        by_path: dict[str, dict[str, Any]] = {}
-        for row in queries:
-            if not isinstance(row, dict):
-                continue
-            path = str(row.get("path") or "").strip()
-            query_id = str(row.get("queryId") or "").strip()
-            if not path or not query_id:
-                continue
-            normalized = dict(row)
-            by_path[path] = normalized
-        index = {"by_path": by_path}
-        self._resolved_query_index_cache[cache_key] = dict(index)
-        return index
-
-    def _invalidate_nqe_query_read_caches(self) -> None:
-        self._resolved_query_cache.clear()
-        self._resolved_query_index_cache.clear()
-        self._nqe_query_history_cache.clear()
-        self._org_nqe_head_commit_id_cache = ""
+        if not found:
+            raise ForwardClientError(f"Forward NQE query `{query_path}` was not found.")
+        entry = found[0]
+        return {
+            "path": entry.path,
+            "queryId": entry.query_id,
+            # Forward sends the commit nested when asked for a specific one and flat
+            # when listing at head; both are real, so emit both for callers.
+            "lastCommit": {"id": entry.commit_id} if entry.commit_id else {},
+            "lastCommitId": entry.commit_id,
+            "sourceCode": entry.source,
+        }
 
     def get_nqe_query_history(self, query_id: str) -> list[dict[str, Any]]:
-        query_id = str(query_id or "").strip()
-        if not query_id:
-            return []
-        cached = self._nqe_query_history_cache.get(query_id)
-        if cached is not None:
-            return [dict(row) for row in cached]
-        response = self._request(
-            "GET",
-            f"/nqe/queries/{quote(query_id, safe='')}/history",
-        )
-        data = response.json() or {}
-        rows = data.get("commits") if isinstance(data, dict) else []
-        normalized = [dict(row) for row in (rows or []) if isinstance(row, dict)]
-        self._nqe_query_history_cache[query_id] = normalized
-        return [dict(row) for row in normalized]
-
-    def add_org_nqe_query(self, *, query_path: str, source_code: str) -> None:
-        query_path = self._normalize_query_path(query_path)
-        if not query_path:
-            raise ForwardConfigurationError("Forward NQE query path is required.")
-        self._invalidate_nqe_query_read_caches()
-        self._request(
-            "POST",
-            "/users/current/nqe/changes",
-            params={"action": "addQuery", "path": query_path},
-            json_body={"sourceCode": str(source_code)},
-        )
-
-    def add_org_nqe_directory(self, *, directory_path: str) -> None:
-        directory_path = self._normalize_query_path(directory_path).rstrip("/") + "/"
-        if directory_path == "/":
-            return
-        self._invalidate_nqe_query_read_caches()
-        self._request(
-            "POST",
-            "/users/current/nqe/changes",
-            params={"action": "addDir", "path": directory_path},
-        )
-
-    def edit_org_nqe_query(
-        self,
-        *,
-        query_path: str,
-        source_code: str,
-        query_id: str,
-        commit_id: str,
-    ) -> None:
-        query_path = self._normalize_query_path(query_path)
-        query_id = str(query_id or "").strip()
-        commit_id = str(commit_id or "").strip()
-        if not query_path:
-            raise ForwardConfigurationError("Forward NQE query path is required.")
-        if not query_id or not commit_id:
-            raise ForwardConfigurationError(
-                "Forward NQE query ID and commit ID are required to update a query."
-            )
-        self._invalidate_nqe_query_read_caches()
-        self._request(
-            "POST",
-            "/users/current/nqe/changes",
-            params={"action": "editQuery", "path": query_path},
-            json_body={
-                "sourceCode": str(source_code),
-                "basis": {"queryId": query_id, "commitId": commit_id},
-            },
-        )
+        with _translated():
+            return [dict(commit) for commit in self.sdk.nqe.repo.history(query_id)]
 
     def get_org_nqe_head_commit_id(self) -> str:
-        if self._org_nqe_head_commit_id_cache:
-            return self._org_nqe_head_commit_id_cache
-        response = self._request("GET", "/nqe/repos/org/commits/head")
-        data = response.json()
-        if isinstance(data, dict):
-            commit_id = str(data.get("id") or data.get("commitId") or "").strip()
-        else:
-            commit_id = str(data or "").strip()
-        self._org_nqe_head_commit_id_cache = commit_id
-        return commit_id
-
-    def commit_org_nqe_queries(self, *, query_paths: list[str], message: str) -> str:
-        normalized_paths = list(
-            dict.fromkeys(
-                path for value in query_paths if (path := self._normalize_query_path(value))
-            )
-        )
-        if not normalized_paths:
-            return self.get_org_nqe_head_commit_id()
-        self._invalidate_nqe_query_read_caches()
-        title, _, body = str(message or "Update bundled NQE queries").strip().partition("\n")
-        self._request(
-            "POST",
-            "/nqe/repos/org/commits",
-            json_body={
-                "paths": normalized_paths,
-                "accessSettings": [],
-                "message": {
-                    "title": title.strip() or "Update bundled NQE queries",
-                    "body": body.strip(),
-                },
-            },
-        )
-        return self.get_org_nqe_head_commit_id()
-
-    def dry_run_org_nqe_queries(
-        self,
-        *,
-        query_paths: list[str],
-        snapshot_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Validate exact organization-library draft paths before committing them."""
-
-        normalized_paths = list(
-            dict.fromkeys(
-                path for value in query_paths if (path := self._normalize_query_path(value))
-            )
-        )
-        if not normalized_paths:
-            return {
-                "newErrors": {},
-                "uses": [],
-                "unauthorizedQueryChanges": [],
-                "unauthorizedAccessSettingChanges": [],
-            }
-        params: dict[str, str] = {"dryRun": "true"}
-        resolved_snapshot_id = str(snapshot_id or "").strip()
-        if resolved_snapshot_id:
-            params["snapshotId"] = resolved_snapshot_id
-        response = self._request(
-            "POST",
-            "/nqe/repos/org/commits",
-            params=params,
-            json_body={"paths": normalized_paths, "accessSettings": []},
-        )
-        data = response.json() or {}
-        if not isinstance(data, dict):
-            raise ForwardClientError(
-                "Forward NQE commit dry-run response returned an invalid payload."
-            )
-        return data
+        with _translated():
+            return str(self.sdk.nqe.repo.head_commit_id() or "")
 
     def get_org_nqe_draft_changes(self) -> list[dict[str, Any]]:
-        """Return current-user NQE workspace changes without mutating them."""
+        with _translated():
+            return [{"type": d.action, "path": d.path} for d in self.sdk.nqe.repo.drafts()]
 
-        response = self._request("GET", "/users/current/nqe/changes")
-        data = response.json() or {}
-        rows = data.get("changes") if isinstance(data, dict) else []
-        return [dict(row) for row in (rows or []) if isinstance(row, dict)]
+    def add_org_nqe_query(self, *, query_path: str, source_code: str) -> None:
+        with _translated():
+            self.sdk.nqe.repo.stage_add(query_path, source_code)
+
+    def add_org_nqe_directory(self, *, directory_path: str) -> None:
+        with _translated():
+            self.sdk.nqe.repo.stage_directory(directory_path)
+
+    def edit_org_nqe_query(
+        self, *, query_path: str, source_code: str, query_id: str, commit_id: str
+    ) -> None:
+        if not query_id or not commit_id:
+            raise ForwardConfigurationError(
+                "Editing a saved Forward NQE query requires both a query ID and a commit ID."
+            )
+        with _translated():
+            self.sdk.nqe.repo.stage_edit(
+                query_path, source_code, query_id=query_id, commit_id=commit_id
+            )
+
+    def commit_org_nqe_queries(self, *, query_paths: list[str], message: str) -> str:
+        title, _, body = str(message or "").partition("\n")
+        with _translated():
+            report = self.sdk.nqe.repo.commit(list(query_paths), title=title, body=body.strip())
+        return str(getattr(report, "commit_id", "") or "")
+
+    def dry_run_org_nqe_queries(
+        self, *, query_paths: list[str], snapshot_id: str | None = None
+    ) -> dict[str, Any]:
+        with _translated():
+            return dict(
+                self.sdk.nqe.repo.dry_run(list(query_paths), snapshot_id=_sdk_snapshot(snapshot_id))
+            )
 
     def discard_org_nqe_draft_change(self, *, path: str) -> None:
-        """Discard one exact workspace path created or edited by this publisher."""
+        with _translated():
+            self.sdk.nqe.repo.discard(path)
 
-        normalized_path = self._normalize_query_path(path)
-        if not normalized_path:
-            raise ForwardConfigurationError("Forward NQE draft path is required.")
-        self._invalidate_nqe_query_read_caches()
-        self._request(
-            "DELETE",
-            "/users/current/nqe/changes",
-            params={"path": normalized_path},
-        )
-
+    # -- NQE execution -----------------------------------------------------
     def resolve_query_spec(self, query_spec: ForwardQuerySpec) -> ForwardQuerySpec:
-        if query_spec.query_path and query_spec.resolved_query_id:
+        if query_spec.resolved_query_id or not query_spec.query_path:
             return query_spec
-        if query_spec.query_path:
-            normalized_query_path = self._normalize_query_path(query_spec.query_path)
-            query_index = self.get_nqe_repository_query_index(
-                repository=query_spec.query_repository or "org",
-                commit_id=query_spec.commit_id or "head",
-            )
-            query = query_index.get("by_path", {}).get(normalized_query_path)
-            if not isinstance(query, dict) or not query.get("queryId"):
-                query = self.get_committed_nqe_query(
-                    repository=query_spec.query_repository or "org",
-                    query_path=normalized_query_path,
-                    commit_id=query_spec.commit_id or "head",
-                )
-            query_id = str(query.get("queryId") or "").strip()
-            commit_id = str(
-                query_spec.commit_id
-                or (query.get("lastCommit") or {}).get("id")
-                or query.get("lastCommitId")
-                or ""
-            ).strip()
-            if not query_id:
-                raise ForwardClientError(
-                    f"Forward NQE query `{query_spec.reference}` did not include a query ID."
-                )
-            resolved_query_spec = query_spec.with_query_id(query_id, commit_id or None)
-            if resolved_query_spec.query_path != normalized_query_path:
-                return replace(
-                    resolved_query_spec,
-                    query_path=normalized_query_path,
-                )
-            return resolved_query_spec
-        return query_spec
-
-    @staticmethod
-    def _record_from_nqe_item(item: Any) -> dict[str, Any] | None:
-        if not isinstance(item, dict):
-            return None
-        if isinstance(item.get("fields"), dict):
-            return dict(item["fields"])
-        return dict(item)
-
-    def _parse_nqe_records(self, data: dict[str, Any]) -> tuple[list[dict[str, Any]], int | None]:
-        if not isinstance(data, dict):
-            return [], None
-        items = data.get("items") or []
-        rows: list[dict[str, Any]] = []
-        for item in items:
-            row = self._record_from_nqe_item(item)
-            if row is not None:
-                rows.append(row)
-        total = data.get("totalNumItems")
-        try:
-            total_int = int(total) if total is not None else None
-        except (TypeError, ValueError):
-            total_int = None
-        return rows, total_int
-
-    def _parse_nqe_lines(self, text: str) -> tuple[list[dict[str, Any]], None]:
-        rows: list[dict[str, Any]] = []
-        for line in str(text or "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                parsed_line = json.loads(line)
-            except json.JSONDecodeError as exc:
-                # Surface as the client's own error type so callers' ForwardClientError
-                # handling applies, instead of a raw ValueError aborting the run.
-                raise ForwardClientError(
-                    f"Forward NQE result contained a malformed ndjson line: {exc}"
-                ) from exc
-            row = self._record_from_nqe_item(parsed_line)
-            if row is not None:
-                rows.append(row)
-        return rows, None
-
-    def _parse_nqe_async_result(
-        self,
-        response: httpx.Response,
-    ) -> tuple[list[dict[str, Any]], int | None]:
-        content_type = str(
-            (getattr(response, "headers", {}) or {}).get("content-type") or ""
-        ).lower()
-        if "jsonl" in content_type or "ndjson" in content_type:
-            return self._parse_nqe_lines(getattr(response, "text", ""))
-        return self._parse_nqe_records(response.json() or {})
-
-    def _parse_nqe_diff_rows(self, data: dict[str, Any]) -> tuple[list[dict[str, Any]], int | None]:
-        rows = data.get("rows") or []
-        parsed_rows: list[dict[str, Any]] = []
-        for row in rows:
-            if isinstance(row, dict):
-                parsed_rows.append(
-                    {
-                        "type": row.get("type"),
-                        "before": row.get("before"),
-                        "after": row.get("after"),
-                    }
-                )
-        total = data.get("totalNumRows")
-        try:
-            total_int = int(total) if total is not None else None
-        except (TypeError, ValueError):
-            total_int = None
-        return parsed_rows, total_int
-
-    def _paginate_rows(
-        self,
-        fetch_page: Callable[[int], tuple[list[dict[str, Any]], int | None]],
-        *,
-        limit: int,
-        offset: int,
-        fetch_all: bool,
-        exhausted_message: str,
-    ) -> list[dict[str, Any]]:
-        rows, total = fetch_page(offset)
-        if not fetch_all:
-            return rows
-
-        all_rows = list(rows)
-        fetched_pages = 1
-        while True:
-            if total is not None and len(all_rows) >= total:
-                return all_rows
-            if total is None and len(rows) < limit:
-                return all_rows
-            if fetched_pages >= self.settings.nqe_fetch_all_max_pages:
-                raise ForwardClientError(exhausted_message)
-            next_offset = offset + len(all_rows)
-            rows, page_total = fetch_page(next_offset)
-            fetched_pages += 1
-            if total is None and page_total is not None:
-                total = page_total
-            if not rows:
-                return all_rows
-            all_rows.extend(rows)
-
-    def _fetch_ndjson_stream(
-        self,
-        url: str,
-        *,
-        params: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        """GET url with ndjson Accept preference.
-
-        Streams line-by-line when the server returns ndjson/jsonl. The async
-        result endpoint also supports paged JSON, so retain parser support for
-        that response type without re-running the query through a different API.
-        """
-        self._respect_min_interval()
-        rows: list[dict[str, Any]] = []
-        merged_headers = {
-            **self._headers(),
-            "Accept": NQE_ASYNC_RESULT_ACCEPT,
-        }
-        try:
-            with self._get_http_client().stream(
-                "GET",
-                url,
-                params=params,
-                headers=merged_headers,
-                auth=self.auth,
-            ) as response:
-                response.raise_for_status()
-                self._last_request_completed_at = time.monotonic()
-                content_type = str(response.headers.get("content-type", "")).lower()
-                if "ndjson" in content_type or "jsonl" in content_type:
-                    for line in response.iter_lines():
-                        stripped = line.strip()
-                        if not stripped:
-                            continue
-                        try:
-                            parsed = json.loads(stripped)
-                        except json.JSONDecodeError as exc:
-                            raise ForwardClientError(
-                                f"Forward NQE stream contained a malformed ndjson line: {exc}"
-                            ) from exc
-                        row = self._record_from_nqe_item(parsed)
-                        if row is not None:
-                            rows.append(row)
-                else:
-                    data = json.loads(response.read())
-                    rows, _ = self._parse_nqe_records(data or {})
-        except httpx.HTTPStatusError as exc:
-            self._last_request_completed_at = time.monotonic()
-            raise ForwardClientError(
-                f"Forward API request failed with HTTP {exc.response.status_code}: "
-                f"{exc.response.text}"
-            ) from exc
-        except (httpx.TimeoutException, httpx.RequestError) as exc:
-            self._last_request_completed_at = time.monotonic()
-            raise ForwardClientError(f"Forward API request failed: {exc}") from exc
-        return rows
+        with _translated():
+            ref = self.sdk.nqe.resolve(_query_ref(query_spec))
+        resolved_id = getattr(ref, "resolved_query_id", None) or ref.query_id
+        resolved_commit = getattr(ref, "resolved_commit_id", None) or ref.commit_id
+        return query_spec.with_query_id(str(resolved_id or ""), resolved_commit)
 
     def run_nqe_query(
         self,
@@ -899,22 +330,91 @@ class ForwardClient:
         offset: int = 0,
         fetch_all: bool = False,
     ) -> list[dict[str, Any]]:
-        network_id = str(network_id or self.settings.network_id or "").strip()
-        if not network_id:
-            raise ForwardConfigurationError("Forward network ID is required.")
-        snapshot_id = self.resolve_snapshot_id(network_id, snapshot_id or self.settings.snapshot_id)
-        query_spec = self.resolve_query_spec(query_spec)
-        limit = int(limit or self.settings.nqe_page_size)
-        if limit < 1:
-            raise ForwardConfigurationError("Forward NQE page size must be at least 1.")
-        return self.run_nqe_query_async(
-            query_spec=query_spec,
-            network_id=network_id,
-            snapshot_id=snapshot_id,
-            limit=limit,
-            offset=offset,
-            fetch_all=fetch_all,
+        ref = _query_ref(query_spec)
+        resolved_network = network_id or self.settings.network_id or None
+        resolved_snapshot = _sdk_snapshot(snapshot_id or self.settings.snapshot_id)
+        page_size = int(limit or self.settings.nqe_page_size)
+        with _translated():
+            if fetch_all:
+                # Every row, streamed. This is what all production callers ask for.
+                rows = self.sdk.nqe.query(
+                    ref,
+                    network_id=resolved_network,
+                    snapshot_id=resolved_snapshot,
+                    page_size=page_size,
+                    stream=True,
+                )
+            else:
+                # One bounded page, preserving the previous client's semantics
+                # where `limit` capped the rows returned rather than the page size.
+                execution = self.sdk.nqe.execute(
+                    ref, network_id=resolved_network, snapshot_id=resolved_snapshot
+                )
+                execution.wait()
+                rows = execution.result_page(offset=int(offset or 0), limit=page_size).items
+        return [dict(row) for row in rows]
+
+    # The plugin's async entrypoint; the SDK has no separate synchronous path.
+    run_nqe_query_async = run_nqe_query
+
+    def _execution(self, *, execution_key: str, network_id: str | None = None) -> NqeExecution:
+        return NqeExecution(
+            self.sdk.nqe,
+            key=execution_key,
+            network_id=str(network_id or self.settings.network_id or ""),
         )
+
+    def request_nqe_execution(
+        self,
+        *,
+        query_spec: ForwardQuerySpec,
+        network_id: str | None = None,
+        snapshot_id: str | None = None,
+    ) -> dict[str, Any]:
+        with _translated():
+            execution = self.sdk.nqe.execute(
+                _query_ref(query_spec),
+                network_id=network_id or self.settings.network_id or None,
+                snapshot_id=_sdk_snapshot(snapshot_id or self.settings.snapshot_id),
+            )
+        # ``last_status`` is the status string, not the response body, so the
+        # submit result is rebuilt from the handle's own properties.
+        status: dict[str, Any] = {
+            "executionKey": execution.key,
+            "status": str(execution.last_status or ""),
+        }
+        for key, value in (
+            ("rowsProduced", execution.rows_produced),
+            ("millisExecuting", execution.millis_executing),
+            ("timeoutMinutes", execution.timeout_minutes),
+        ):
+            if value is not None:
+                status[key] = value
+        return status
+
+    def get_nqe_execution_status(self, *, network_id: str, execution_key: str) -> dict[str, Any]:
+        with _translated():
+            return dict(
+                self._execution(execution_key=execution_key, network_id=network_id).status()
+            )
+
+    def get_nqe_execution_result(
+        self,
+        *,
+        execution_key: str,
+        network_id: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        fetch_all: bool = False,
+    ) -> list[dict[str, Any]]:
+        execution = self._execution(execution_key=execution_key, network_id=network_id)
+        with _translated():
+            if fetch_all:
+                return [dict(row) for row in execution.rows()]
+            page = execution.result_page(
+                offset=offset, limit=int(limit or self.settings.nqe_page_size)
+            )
+        return [dict(row) for row in page.items]
 
     def run_nqe_diff(
         self,
@@ -927,277 +427,39 @@ class ForwardClient:
         offset: int = 0,
         fetch_all: bool = False,
     ) -> list[dict[str, Any]]:
-        query_id = str(query_id or "").strip()
-        before_snapshot_id = str(before_snapshot_id or "").strip()
-        after_snapshot_id = str(after_snapshot_id or "").strip()
-        if not query_id:
-            raise ForwardConfigurationError("Forward query ID is required.")
-        if not before_snapshot_id or not after_snapshot_id:
-            raise ForwardConfigurationError("Both before and after snapshot IDs are required.")
-        limit = int(limit or self.settings.nqe_page_size)
-        if limit < 1:
-            raise ForwardConfigurationError("Forward NQE page size must be at least 1.")
-
-        def fetch_page(page_offset: int) -> tuple[list[dict[str, Any]], int | None]:
-            payload: dict[str, Any] = {
-                "queryId": query_id,
-                "options": {
-                    "limit": limit,
-                    "offset": page_offset,
-                },
-            }
-            if commit_id:
-                payload["commitId"] = commit_id
-            response = self._request(
-                "POST",
-                f"/nqe-diffs/{quote(before_snapshot_id, safe='')}/{quote(after_snapshot_id, safe='')}",
-                json_body=payload,
-            )
-            return self._parse_nqe_diff_rows(response.json() or {})
-
-        return self._paginate_rows(
-            fetch_page,
-            limit=limit,
-            offset=offset,
-            fetch_all=fetch_all,
-            exhausted_message=(
-                "Forward NQE diff pagination exceeded "
-                f"{self.settings.nqe_fetch_all_max_pages} page(s)."
-            ),
-        )
-
-    def get_nqe_execution_status(
-        self,
-        *,
-        network_id: str,
-        execution_key: str,
-    ) -> dict[str, Any]:
-        status, _retry_after = self._get_nqe_execution_status_response(
-            network_id=network_id,
-            execution_key=execution_key,
-        )
-        return status
-
-    def _get_nqe_execution_status_response(
-        self,
-        *,
-        network_id: str,
-        execution_key: str,
-    ) -> tuple[dict[str, Any], float | None]:
-        """Return the raw status payload plus Forward's polling interval."""
-
-        network_id = str(network_id or "").strip()
-        execution_key = str(execution_key or "").strip()
-        if not network_id:
-            raise ForwardConfigurationError("Forward network ID is required.")
-        if not execution_key:
-            raise ForwardConfigurationError("Forward execution key is required.")
-        response = self._request(
-            "GET",
-            f"/networks/{quote(network_id, safe='')}/nqe-executions/{quote(execution_key, safe='')}",
-        )
-        data = response.json() or {}
-        if not isinstance(data, dict):
-            raise ForwardClientError(
-                "Forward NQE execution status response returned an invalid payload."
-            )
-        return data, self._retry_after_seconds(response.headers.get("Retry-After"))
-
-    def get_nqe_execution_result(
-        self,
-        *,
-        execution_key: str,
-        network_id: str | None = None,
-        limit: int | None = None,
-        offset: int = 0,
-        fetch_all: bool = False,
-    ) -> list[dict[str, Any]]:
-        network_id = str(network_id or self.settings.network_id or "").strip()
-        execution_key = str(execution_key or "").strip()
-        if not network_id:
-            raise ForwardConfigurationError("Forward network ID is required.")
-        if not execution_key:
-            raise ForwardConfigurationError("Forward execution key is required.")
-        limit = int(limit or self.settings.nqe_page_size)
-        if limit < 1:
-            raise ForwardConfigurationError("Forward NQE page size must be at least 1.")
-
-        def fetch_page(page_offset: int) -> tuple[list[dict[str, Any]], int | None]:
-            response = self._request(
-                "GET",
-                f"/networks/{quote(network_id, safe='')}/nqe-executions/{quote(execution_key, safe='')}/result",
-                params={
-                    "offset": page_offset,
-                    "limit": limit,
-                },
-                headers={"Accept": NQE_ASYNC_RESULT_ACCEPT},
-            )
-            return self._parse_nqe_async_result(response)
-
-        return self._paginate_rows(
-            fetch_page,
-            limit=limit,
-            offset=offset,
-            fetch_all=fetch_all,
-            exhausted_message=(
-                "Forward NQE execution result pagination exceeded "
-                f"{self.settings.nqe_fetch_all_max_pages} page(s)."
-            ),
-        )
-
-    def request_nqe_execution(
-        self,
-        *,
-        query_spec: ForwardQuerySpec,
-        network_id: str | None = None,
-        snapshot_id: str | None = None,
-    ) -> dict[str, Any]:
-        network_id = str(network_id or self.settings.network_id or "").strip()
-        if not network_id:
-            raise ForwardConfigurationError("Forward network ID is required.")
-        raw_snapshot = str(snapshot_id or self.settings.snapshot_id or "").strip()
-        resolved_snapshot_id = (
-            raw_snapshot
-            if raw_snapshot and raw_snapshot != LATEST_PROCESSED_SNAPSHOT
-            else self.resolve_snapshot_id(network_id, raw_snapshot)
-        )
-        if query_spec.query_path and not query_spec.resolved_query_id:
-            query_spec = self.resolve_query_spec(query_spec)
-        payload: dict[str, Any] = {}
-        query_id = query_spec.resolved_query_id or query_spec.query_id
-        commit_id = query_spec.resolved_commit_id or query_spec.commit_id
-        if not query_id and not query_spec.query_text:
+        # The SDK's diff always starts at offset 0 and pages internally; no
+        # production caller passes a non-zero offset.
+        if offset:
             raise ForwardConfigurationError(
-                "Forward async NQE execution requires query text or a resolved query ID."
+                "Forward NQE diffs are paged by the SDK; a non-zero offset is not supported."
             )
-        if query_spec.parameters:
-            payload["parameters"] = dict(query_spec.parameters)
-        if query_id:
-            payload["queryId"] = query_id
-            if commit_id:
-                payload["commitId"] = commit_id
-        else:
-            payload["query"] = str(query_spec.query_text)
-        if query_spec.sort_keys:
-            payload["sortKeys"] = [
-                {"columnName": col, "order": "ASC"} for col in query_spec.sort_keys
-            ]
-        response = self._request(
-            "POST",
-            f"/networks/{quote(network_id, safe='')}/nqe-executions",
-            params={"snapshotId": resolved_snapshot_id},
-            json_body=payload,
-        )
-        data = response.json() or {}
-        if not isinstance(data, dict):
-            raise ForwardClientError("Forward NQE execution response returned an invalid payload.")
-        execution_key = str(data.get("executionKey") or "").strip()
-        if not execution_key:
-            raise ForwardClientError(
-                "Forward NQE execution response did not include an execution key."
+        del fetch_all
+        with _translated():
+            entries = self.sdk.nqe.diff(
+                QueryRef.by_id(query_id, commit_id=commit_id),
+                before=before_snapshot_id,
+                after=after_snapshot_id,
+                page_size=int(limit or self.settings.nqe_page_size),
             )
-        return data
+        # Contract rows stay raw dicts; only the diff envelope is unwrapped.
+        return [
+            {"type": str(entry.type or ""), "before": entry.before, "after": entry.after}
+            for entry in entries
+        ]
 
-    def run_nqe_query_async(
-        self,
-        *,
-        query_spec: ForwardQuerySpec,
-        network_id: str | None = None,
-        snapshot_id: str | None = None,
-        limit: int | None = None,
-        offset: int = 0,
-        fetch_all: bool = False,
-        poll_interval_seconds: float = 5.0,
-        max_polls: int = 60,
-        max_wait_seconds: float = 3600.0,
-    ) -> list[dict[str, Any]]:
-        self.counters.bump("nqe_query_calls")
-        network_id = str(network_id or self.settings.network_id or "").strip()
-        if not network_id:
-            raise ForwardConfigurationError("Forward network ID is required.")
-        execution = self.request_nqe_execution(
-            query_spec=query_spec,
-            network_id=network_id,
-            snapshot_id=snapshot_id,
-        )
-        execution_key = str(execution.get("executionKey") or "").strip()
-        status = execution if isinstance(execution, dict) else {}
-        poll_count = 0
-        poll_sleep_seconds = 0.0
-        last_retry_after: float | None = None
-        started_at = time.monotonic()
-        local_deadline = started_at + max(1.0, float(max_wait_seconds))
 
-        def record_status(terminal_reason: str) -> None:
-            self._record_nqe_execution(
-                {
-                    "status": str(status.get("status") or ""),
-                    "outcome": str(status.get("outcome") or ""),
-                    "millisExecuting": status.get("millisExecuting"),
-                    "rowsProduced": status.get("rowsProduced"),
-                    "timeoutMinutes": status.get("timeoutMinutes"),
-                    "pollCount": poll_count,
-                    "pollSleepSeconds": round(poll_sleep_seconds, 3),
-                    "retryAfterSeconds": last_retry_after,
-                    "terminalReason": terminal_reason,
-                }
-            )
+class _translated:
+    """Map SDK exceptions onto the plugin's, preserving caller control flow."""
 
-        if str(status.get("status") or "").strip() != "COMPLETED":
-            poll_cap = max(0.0, float(poll_interval_seconds))
-            poll_wait = min(0.5, poll_cap)
-            for _poll_index in range(int(max_polls)):
-                status, retry_after = self._get_nqe_execution_status_response(
-                    network_id=network_id,
-                    execution_key=execution_key,
-                )
-                poll_count += 1
-                self.counters.bump("nqe_poll_calls")
-                if str(status.get("status") or "").strip() == "COMPLETED":
-                    break
-                timeout_minutes = status.get("timeoutMinutes")
-                try:
-                    server_deadline = started_at + (float(timeout_minutes) * 60.0) + 60.0
-                except (TypeError, ValueError):
-                    server_deadline = local_deadline
-                deadline = min(local_deadline, server_deadline)
-                wait = retry_after if retry_after is not None else poll_wait
-                last_retry_after = retry_after
-                if time.monotonic() + wait > deadline:
-                    record_status("polling-deadline")
-                    raise ForwardClientError(
-                        "Forward NQE execution did not complete before its polling deadline."
-                    )
-                if wait > 0:
-                    self.counters.bump("nqe_poll_sleep_seconds", wait)
-                    poll_sleep_seconds += wait
-                    time.sleep(wait)
-                poll_wait = min(poll_wait * 2.0, poll_cap)
-            else:
-                record_status("poll-limit")
-                raise ForwardClientError(
-                    "Forward NQE execution did not complete before the poll limit was reached."
-                )
-        record_status("completed")
-        outcome = str(status.get("outcome") or "").strip()
-        if outcome != "OK":
-            error = status.get("error")
-            error_text = f": {error}" if error is not None else ""
-            raise ForwardClientError(
-                f"Forward NQE execution completed with outcome {outcome or 'UNKNOWN'}{error_text}"
-            )
-        limit = int(limit or self.settings.nqe_page_size)
-        if fetch_all:
-            return self._fetch_ndjson_stream(
-                self._api_url(
-                    f"/networks/{quote(network_id, safe='')}"
-                    f"/nqe-executions/{quote(execution_key, safe='')}/result"
-                )
-            )
-        return self.get_nqe_execution_result(
-            execution_key=execution_key,
-            network_id=network_id,
-            limit=limit,
-            offset=offset,
-            fetch_all=False,
-        )
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, exc_type, exc, _tb) -> bool:
+        if exc is None or not isinstance(exc, ForwardError):
+            return False
+        # str(exc) carries Forward's raw response body, which is what the
+        # publishing code's reason matching reads. `reason` is the structured
+        # form and should replace that matching once callers are updated.
+        translated = ForwardClientError(str(exc))
+        translated.reason = getattr(exc, "reason", None)
+        raise translated from exc

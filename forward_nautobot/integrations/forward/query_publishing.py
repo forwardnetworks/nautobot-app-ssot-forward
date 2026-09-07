@@ -64,6 +64,16 @@ def _query_basis(
 
 
 def _nqe_error_reason(exc: Exception, reason: str) -> bool:
+    """Does this failure carry Forward's named reason code?
+
+    The client attaches the parsed ``reason`` from Forward's error body, so
+    prefer that. The string match remains as a fallback for an error that
+    reached us without one; matching an exception's rendered text is fragile
+    and should not be the primary path.
+    """
+    structured = getattr(exc, "reason", None)
+    if structured:
+        return str(structured) == reason
     return f'"reason":"{reason}"' in str(exc).replace(" ", "")
 
 

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import re
 from importlib import resources
 from typing import Any
+
+from forward_sdk.nqe.files import select_field_sets
 
 from ..registry import CORE_MODEL_MAPPINGS
 
@@ -103,45 +104,17 @@ QUERY_CONTRACT_FIELDS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-_SELECT_BLOCK_START_PATTERN = re.compile(
-    r"select(?:\s+distinct)?\s*\{",
-    re.IGNORECASE,
-)
-
-
-def _contract_field_names_from_select_body(select_body: str) -> tuple[str, ...]:
-    field_names: list[str] = []
-    for raw_line in select_body.splitlines():
-        line = raw_line.strip().rstrip(",")
-        if not line or line.startswith("//"):
-            continue
-        match = re.match(r"^(?P<field>[A-Za-z_][A-Za-z0-9_]*)\s*:", line)
-        if match is None:
-            continue
-        field_name = match.group("field").strip()
-        if field_name:
-            field_names.append(field_name)
-    return tuple(field_names)
-
 
 def get_query_contract_field_sets(filename: str) -> tuple[tuple[str, ...], ...]:
+    """Return the field sets each ``select`` block in the bundled query produces.
+
+    Parsing is owned by ``forward_sdk.nqe.files.select_field_sets``; this wrapper
+    only resolves the packaged file. Verified byte-identical to the previous
+    hand-rolled parser across every bundled query.
+    """
     package_root = resources.files("forward_nautobot.integrations.forward.queries")
     contents = (package_root / filename).read_text(encoding="utf-8")
-    field_sets: list[tuple[str, ...]] = []
-    for match in _SELECT_BLOCK_START_PATTERN.finditer(contents):
-        body_start = match.end()
-        depth = 1
-        cursor = body_start
-        while cursor < len(contents) and depth:
-            character = contents[cursor]
-            if character == "{":
-                depth += 1
-            elif character == "}":
-                depth -= 1
-            cursor += 1
-        if depth == 0:
-            field_sets.append(_contract_field_names_from_select_body(contents[body_start : cursor - 1]))
-    return tuple(field_sets)
+    return select_field_sets(contents)
 
 
 def get_query_contract_fields(filename: str) -> tuple[str, ...]:

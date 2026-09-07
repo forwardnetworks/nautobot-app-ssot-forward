@@ -1,9 +1,17 @@
-"""Bundled Forward query file metadata."""
+"""Bundled Forward query file metadata.
+
+The parsing of NQE source — stripping the saved-query ``@primaryKey`` annotation
+for inline execution, and reading the ``@contract-version`` header — is owned by
+``forward_sdk.nqe.files`` rather than reimplemented here. This module keeps the
+packaging concern: which files ship with the plugin, and reading them out of the
+installed package rather than off a filesystem path.
+"""
 
 from __future__ import annotations
 
-import re
 from importlib import resources
+
+from forward_sdk.nqe.files import contract_version, strip_primary_key
 
 from .contracts import QUERY_CONTRACT_FIELDS
 from .contracts import get_bundled_query_contracts as get_bundled_query_contracts
@@ -11,12 +19,6 @@ from .contracts import get_query_contract_field_sets as get_query_contract_field
 from .contracts import get_query_contract_fields as get_query_contract_fields
 
 QUERY_FILENAMES: tuple[str, ...] = tuple(sorted(QUERY_CONTRACT_FIELDS))
-
-_CONTRACT_VERSION_PATTERN = re.compile(r"@contract-version\s+([^\s*]+)")
-_PRIMARY_KEY_ANNOTATION_PATTERN = re.compile(
-    r"^[ \t]*@primaryKey\([^\n]*\)[ \t]*\r?\n",
-    flags=re.MULTILINE,
-)
 
 
 def read_bundled_query_source(filename: str) -> str:
@@ -29,17 +31,15 @@ def read_bundled_query_source(filename: str) -> str:
 def read_bundled_query_execution_source(filename: str) -> str:
     """Return bundled source accepted by the raw async NQE endpoint.
 
-    ``@primaryKey`` is repository metadata used by saved queries and NQE diffs.
-    Inline execution removes only that metadata and runs the same bare query
-    expression asynchronously; inline queries cannot use the diff endpoint.
+    ``@primaryKey`` is repository metadata used by saved queries and NQE
+    diffs. Inline execution removes only that metadata and runs the same bare
+    query expression asynchronously; inline queries cannot use the diff endpoint.
     """
-    return _PRIMARY_KEY_ANNOTATION_PATTERN.sub("", read_bundled_query_source(filename))
+    return strip_primary_key(read_bundled_query_source(filename))
 
 
 def get_query_contract_version(filename: str) -> str:
-    contents = read_bundled_query_source(filename)
-    match = _CONTRACT_VERSION_PATTERN.search(contents)
-    return match.group(1) if match else ""
+    return contract_version(read_bundled_query_source(filename)) or ""
 
 
 QUERY_CONTRACT_VERSIONS: dict[str, str] = {

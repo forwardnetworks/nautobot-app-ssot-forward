@@ -105,8 +105,8 @@ def _counting_transport(calls):
                 200,
                 json={
                     "items": [
-                        {"fields": {"id": "r1"}},
-                        {"fields": {"id": "r2"}},
+                        {"id": "r1"},
+                        {"id": "r2"},
                     ],
                     "totalNumItems": 2,
                 },
@@ -223,7 +223,7 @@ def test_runner_preview_and_sync_reuse_query_resolution_cache():
             return httpx.Response(
                 200,
                 json={
-                    "items": [{"fields": {"id": "r1"}}],
+                    "items": [{"id": "r1"}],
                     "totalNumItems": 1,
                 },
             )
