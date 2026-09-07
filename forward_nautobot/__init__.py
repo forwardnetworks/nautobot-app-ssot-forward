@@ -30,7 +30,7 @@ class ForwardNautobotConfig(NautobotAppConfig):
     description = (
         "Forward Field Integration — sync Forward Networks data into Nautobot through SSoT."
     )
-    version = "0.7.0"
+    version = "0.8.0"
     author = "Forward Networks"
     author_email = "support@forwardnetworks.com"
     base_url = "forward"
