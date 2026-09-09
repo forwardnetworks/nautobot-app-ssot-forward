@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "nautobot-app-ssot-forward"
-version = "0.8.0"
+version = "0.8.1"
 description = "Forward Field Integration — Forward Networks SSoT app for Nautobot"
 authors = ["Forward Networks"]
 license = "MIT"
@@ -22,7 +22,7 @@ httpx = ">=0.27,<1"
 cryptography = ">=41,<49"
 # Pinned exactly: forward-sdk is pre-1.0 and its surface is still moving.
 # Relax to a range once it reaches a stable major.
-forward-sdk = "==0.1.4"
+forward-sdk = "==0.1.5"
 nautobot = ">=3.1,<3.3"
 nautobot-ssot = ">=4.4,<5.0"
 

@@ -1142,3 +1142,52 @@ def test_client_surfaces_a_non_transient_error_without_retrying():
     with pytest.raises(ForwardClientError):
         client.get_snapshots("net-1")
     assert attempts["n"] == 1
+
+
+def test_unparseable_response_reaches_callers_as_a_client_error():
+    """A response the SDK cannot parse must not escape untranslated.
+
+    Four callers treat ForwardClientError as a signal to degrade: three fall
+    back to inline NQE source when a bundled query is unpublished, and the
+    planner disables destructive reconciliation when metrics are unavailable.
+    Before this was widened, a parse failure raised pydantic's ValidationError,
+    which is not a ForwardError, so every one of those recoveries was bypassed.
+    """
+    _require_client()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # 200, but missing a field the SDK's model requires.
+        return httpx.Response(200, json=[{"id": "net-1", "name": "Primary"}])
+
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(ForwardClientError):
+        client.get_networks()
+
+
+def test_configuration_errors_are_not_flattened_into_client_errors():
+    """Callers distinguish the two, so translation must not collapse them."""
+    _require_client()
+    client = ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"rows": []})),
+    )
+    with pytest.raises(ForwardConfigurationError):
+        client.run_nqe_diff(
+            query_id="query-123",
+            before_snapshot_id="snap-before",
+            after_snapshot_id="snap-after",
+            offset=5,
+        )

@@ -17,7 +17,6 @@ import httpx
 from forward_sdk import ForwardClient as SdkForwardClient
 from forward_sdk import QueryRef
 from forward_sdk._sync.services.nqe import NqeExecution
-from forward_sdk.errors import ForwardError
 
 from .exceptions import ForwardClientError, ForwardConfigurationError
 from .models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings, ForwardQuerySpec
@@ -449,13 +448,32 @@ class ForwardClient:
 
 
 class _translated:
-    """Map SDK exceptions onto the plugin's, preserving caller control flow."""
+    """Map SDK failures onto the plugin's error type, preserving control flow.
+
+    Deliberately wider than ``ForwardError``. Four callers treat
+    ``ForwardClientError`` as a signal to degrade — three fall back to inline
+    NQE source when a bundled query is unpublished, and the planner disables
+    destructive reconciliation when snapshot metrics are unavailable. Anything
+    that escapes untranslated defeats those recoveries at exactly the moment
+    something is already wrong.
+
+    That is not hypothetical: before forward-sdk 0.1.5, a response the SDK
+    could not parse raised pydantic's ``ValidationError``, which is not a
+    ``ForwardError``. 0.1.5 raises ``ForwardResponseError`` instead, but
+    catching only the SDK's base class would let the next such gap through on
+    a version bump, so the net is cast wider here on purpose.
+
+    ``KeyboardInterrupt``, ``SystemExit`` and ``GeneratorExit`` derive from
+    ``BaseException`` rather than ``Exception`` and so are never caught.
+    """
 
     def __enter__(self) -> None:
         return None
 
     def __exit__(self, exc_type, exc, _tb) -> bool:
-        if exc is None or not isinstance(exc, ForwardError):
+        if exc is None or not isinstance(exc, Exception):
+            return False
+        if isinstance(exc, (ForwardClientError, ForwardConfigurationError)):
             return False
         # str(exc) carries Forward's raw response body, which is what the
         # publishing code's reason matching reads. `reason` is the structured
