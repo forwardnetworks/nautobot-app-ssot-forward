@@ -7,6 +7,13 @@ import tomllib
 from pathlib import Path
 
 INIT_PY = Path("forward_nautobot/__init__.py")
+README = Path("README.md")
+_CURRENT_ROW = re.compile(r"^\|\s*`(\d+\.\d+\.\d+)`\s*\|.*\|\s*Current\s*\|\s*$", re.MULTILINE)
+
+
+def readme_current_versions(text: str) -> list[str]:
+    """Versions the README compatibility table marks as ``Current``."""
+    return _CURRENT_ROW.findall(text)
 
 
 def read_init_version() -> str | None:
@@ -31,6 +38,16 @@ def main() -> int:
         print(
             "Release state check failed: version drift — "
             f"pyproject.toml={version!r} but forward_nautobot/__init__.py={init_version!r}."
+        )
+        return 1
+
+    # Gate 1b: the README's compatibility table must name this release as current.
+    # Nothing else touches that row, so without this check it silently goes stale.
+    current = readme_current_versions(README.read_text(encoding="utf-8"))
+    if current != [version]:
+        print(
+            "Release state check failed: the README compatibility table marks "
+            f"{current or 'no version'} as Current but the package version is {version!r}."
         )
         return 1
 

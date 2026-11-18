@@ -38,6 +38,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 INIT_PY = REPO_ROOT / "forward_nautobot/__init__.py"
+README = REPO_ROOT / "README.md"
 PLAN_DIR = REPO_ROOT / "docs/03_Plans/active"
 DIST_DIR = REPO_ROOT / "dist"
 
@@ -62,6 +63,27 @@ def bump_version_text(text: str, old: str, new: str, *, key: str = "version") ->
     if n != 1:
         raise ReleaseError(f'expected exactly one `{key} = "{old}"` to bump, found {n}')
     return new_text
+
+
+_README_CURRENT_ROW = re.compile(
+    r"^(\|\s*`)(\d+\.\d+\.\d+)(`\s*\|.*\|\s*Current\s*\|\s*)$", re.MULTILINE
+)
+
+
+def bump_readme_current_row(text: str, old: str, new: str) -> str:
+    """Move the README compatibility table's ``Current`` row from ``old`` to ``new``.
+
+    Nothing else updates that row, so it used to go stale and name the previous
+    release as current. Raises unless there is exactly one Current row and it
+    names ``old``, so a drifted table fails loud.
+    """
+    rows = list(_README_CURRENT_ROW.finditer(text))
+    if len(rows) != 1 or rows[0].group(2) != old:
+        found = [row.group(2) for row in rows]
+        raise ReleaseError(
+            f"expected exactly one Current README row for {old}, found {found or 'none'}"
+        )
+    return _README_CURRENT_ROW.sub(rf"\g<1>{new}\g<3>", text)
 
 
 def read_pyproject_version(text: str) -> str:
@@ -140,13 +162,15 @@ def stage_prepare(version: str, summary: str, *, write: bool, date: str) -> None
             f"version already drifted before bump: pyproject={old_py!r} init={old_init!r}; "
             "reconcile manually first."
         )
-    print(f"[prepare] bump {old_py} -> {version} (pyproject + __init__)")
+    print(f"[prepare] bump {old_py} -> {version} (pyproject + __init__ + README table)")
     new_py = bump_version_text(py_text, old_py, version, key="version")
     new_init = bump_version_text(init_text, old_init, version, key="version")
+    new_readme = bump_readme_current_row(README.read_text(encoding="utf-8"), old_py, version)
     plan_path = PLAN_DIR / plan_filename(version, date)
     if write:
         PYPROJECT.write_text(new_py, encoding="utf-8")
         INIT_PY.write_text(new_init, encoding="utf-8")
+        README.write_text(new_readme, encoding="utf-8")
         if not plan_path.exists():
             plan_path.write_text(plan_scaffold(version, summary, date), encoding="utf-8")
         print(f"[prepare] wrote versions + plan {plan_path.relative_to(REPO_ROOT)}")

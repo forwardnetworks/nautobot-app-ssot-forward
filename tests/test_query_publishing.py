@@ -296,3 +296,19 @@ def test_a_permission_draft_with_no_path_does_not_block(monkeypatch):
     )
     result = publishing.publish_bundled_queries(client, overwrite=True)
     assert result["dry_run"]["status"] != "blocked-existing-drafts"
+
+
+def test_a_pathless_draft_of_unknown_kind_blocks_overwriting(monkeypatch):
+    """A draft that cannot be identified is assumed to touch a query: refuse, do not guess."""
+    sources, paths = _bundle(monkeypatch)
+    for unknown in ({"type": "SOMETHING_NEW", "path": ""}, {"type": None, "path": ""}):
+        client = _real_shape_draft_client(
+            [unknown],
+            {
+                paths["query_one.nqe"]: "stale source",
+                paths["query_two.nqe"]: sources["query_two.nqe"],
+            },
+        )
+        result = publishing.publish_bundled_queries(client, overwrite=True)
+        assert result["dry_run"]["status"] == "blocked-existing-drafts", unknown
+        assert client.mutations == []

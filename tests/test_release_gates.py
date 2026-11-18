@@ -5,7 +5,14 @@ from __future__ import annotations
 import sys
 from zipfile import ZipFile
 
-from scripts import check_installed_wheel, check_sensitive_content, check_wheel_contents, ci_local
+from scripts import (
+    check_installed_wheel,
+    check_release_state,
+    check_sensitive_content,
+    check_wheel_contents,
+    ci_local,
+    release,
+)
 
 
 def test_sensitive_content_gate_blocks_customer_identifiers(tmp_path, capsys, monkeypatch):
@@ -78,3 +85,66 @@ def test_full_local_gate_runs_source_absent_wheel_acceptance():
     assert "installed-wheel" not in fast_labels
     assert check_installed_wheel.SUPPORTED_NAUTOBOT_VERSIONS == ("3.1.8", "3.2.9")
     assert check_installed_wheel.COMPOSE_FILE.name == "docker-compose.wheel.yml"
+
+
+_README_TABLE = (
+    "| Plugin | Nautobot | nautobot-ssot | Forward | Status |\n"
+    "| --- | --- | --- | --- | --- |\n"
+    "| `{version}` | `3.1.8` | `4.4` - `<5.0` | `26.6+` | {status} |\n"
+)
+
+
+def test_readme_current_row_is_found():
+    text = _README_TABLE.format(version="0.9.0", status="Current")
+    assert check_release_state.readme_current_versions(text) == ["0.9.0"]
+
+
+def test_readme_rows_that_are_not_current_are_ignored():
+    text = _README_TABLE.format(version="0.8.1", status="Superseded")
+    assert check_release_state.readme_current_versions(text) == []
+
+
+def test_release_state_gate_fails_when_the_readme_names_an_older_release(
+    tmp_path, capsys, monkeypatch
+):
+    package_version = check_wheel_contents._package_version()
+    readme = tmp_path / "README.md"
+    readme.write_text(_README_TABLE.format(version="0.0.1", status="Current"), encoding="utf-8")
+    monkeypatch.setattr(check_release_state, "README", readme)
+
+    assert check_release_state.main() == 1
+    out = capsys.readouterr().out
+    assert "README compatibility table" in out
+    assert package_version in out
+
+
+def test_release_state_gate_passes_when_the_readme_names_this_release(
+    tmp_path, capsys, monkeypatch
+):
+    package_version = check_wheel_contents._package_version()
+    readme = tmp_path / "README.md"
+    readme.write_text(
+        _README_TABLE.format(version=package_version, status="Current"), encoding="utf-8"
+    )
+    monkeypatch.setattr(check_release_state, "README", readme)
+
+    assert check_release_state.main() == 0
+
+
+def test_release_script_moves_the_readme_current_row():
+    before = _README_TABLE.format(version="0.8.1", status="Current")
+    after = release.bump_readme_current_row(before, "0.8.1", "0.9.0")
+    assert check_release_state.readme_current_versions(after) == ["0.9.0"]
+    assert "0.8.1" not in after
+
+
+def test_release_script_refuses_a_drifted_readme_table():
+    import pytest
+
+    stale = _README_TABLE.format(version="0.7.0", status="Current")
+    with pytest.raises(release.ReleaseError):
+        release.bump_readme_current_row(stale, "0.8.1", "0.9.0")
+    with pytest.raises(release.ReleaseError):
+        release.bump_readme_current_row(
+            _README_TABLE.format(version="0.8.1", status="Superseded"), "0.8.1", "0.9.0"
+        )

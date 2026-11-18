@@ -132,9 +132,16 @@ def _draft_change_path(change: dict[str, Any]) -> str:
     return str(change.get("directory") or "").strip()
 
 
-def _is_edit_or_delete(change: dict[str, Any]) -> bool:
+def _may_touch_a_published_query(change: dict[str, Any]) -> bool:
+    """Whether a draft could be a change to an existing query.
+
+    Additions carry their own path and permission changes are access settings, so
+    neither can collide with an edit. Anything else, an edit, a deletion or a kind
+    this code does not recognise, is assumed to touch a query: when the draft
+    cannot be identified, refusing is safer than overwriting someone's work.
+    """
     kind = str(change.get("type") or change.get("action") or "").upper()
-    return "EDIT" in kind or "DELETE" in kind
+    return "PERMISSION" not in kind and "ADD" not in kind
 
 
 def _dry_run_summary(result: dict[str, Any], *, snapshot_id: str) -> dict[str, Any]:
@@ -320,7 +327,7 @@ def publish_bundled_queries(
         unattributed_drafts = [
             change
             for change in drafts
-            if not _draft_change_path(change) and _is_edit_or_delete(change)
+            if not _draft_change_path(change) and _may_touch_a_published_query(change)
         ]
         editing_published_queries = any(change["action"] == "edit" for change in planned_changes)
         if conflicting_paths or (editing_published_queries and unattributed_drafts):
