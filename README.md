@@ -15,7 +15,7 @@ capture, with support for Forward async query execution.
 
 | Plugin | Nautobot | nautobot-ssot | Forward | Status |
 | --- | --- | --- | --- | --- |
-| `0.8.1` | `3.1.8`, `3.2.9` | `4.4` - `<5.0` | `26.6+` for async execution and NQE diffs | Current |
+| `0.9.0` | `3.1.8`, `3.2.9` | `4.4` - `<5.0` | `26.6+` for async execution and NQE diffs | Current |
 
 ## Overview
 
