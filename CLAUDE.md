@@ -15,11 +15,13 @@ automation, and `scripts/check_harness.py` actively fails if `.github/dependabot
 
 ## Commands
 
-The repo-root `.venv/` is stale and has neither pytest nor Nautobot. Use the system `python3`,
-which has pytest 9 and Nautobot 3.1.6 installed.
+The system `python3` has neither Nautobot nor `forward-sdk`, and the plugin imports `forward_sdk`
+at module load, so the suite fails collection there rather than skipping. Run everything in the
+container stack below. There is deliberately no virtualenv in the repo. The pytest lines in this
+block are the commands to run *inside* the container (via `docker compose ... exec -T nautobot`).
 
 ```bash
-python3 -m pytest -q -m "not integration"          # unit suite (214 tests, ~seconds)
+python3 -m pytest -q -m "not integration"          # unit suite (217 tests, ~seconds)
 python3 -m pytest -q tests/test_planner.py         # one file
 python3 -m pytest -q tests/test_planner.py -k scope_fingerprint   # one test
 python3 -m pytest -q -m integration                # live Forward tests, needs FORWARD_LIVE_* env
@@ -31,7 +33,7 @@ Tests that need a real database (contrib sync, REST API, crypto) skip without a 
 Run those in the container stack:
 
 ```bash
-export NAUTOBOT_VERSION=3.2.2   # or 3.1.8; both are supported lines
+export NAUTOBOT_VERSION=3.2.9   # or 3.1.8; both are supported lines
 docker compose -p fwdnautobot -f development/docker-compose.yml up -d --build
 docker compose -p fwdnautobot -f development/docker-compose.yml \
   exec -T nautobot python -m pytest tests/ -q -p no:django
@@ -40,10 +42,19 @@ docker compose -p fwdnautobot -f development/docker-compose.yml down -v
 
 Container-stack mechanics that are easy to get wrong:
 
+- `ghcr.io` answers `denied` if `~/.docker/config.json` holds a stale ghcr credential, even though
+  the Nautobot images are public. Point `DOCKER_CONFIG` at a directory containing `{}` for the
+  build rather than editing your real config.
 - Pass `-p no:django` so DB-backed tests hit the migrated dev database instead of a pytest-django
   test database with an access guard.
 - The image entrypoint auto-migrates on startup. Do not run `nautobot-server migrate` by hand; it
   races. Wait for `showmigrations forward_nautobot` to show the latest migration applied.
+- Live Forward runs: set `FORWARD_LIVE_BASE_URL`, `FORWARD_LIVE_USERNAME`, `FORWARD_LIVE_PASSWORD`,
+  `FORWARD_LIVE_NETWORK_ID` and `FORWARD_LIVE_VERIFY_TLS=true`, then `pytest -m integration`. Most live
+  tests skip until the bundled queries are published to that org (`forward_publish_queries`), and a
+  few need a network with VRFs, IPv6 prefixes, modules or two snapshots, so a small lab skips them.
+  Pass credentials by name (`docker compose exec -e VAR`), never as arguments, and keep network
+  IDs and names out of tracked files.
 - Write tests are not transaction-isolated against the shared database. Reset with `down -v` then
   `up` before an authoritative full run, or create-count assertions fail on a dirty database.
 - The source tree is bind-mounted at `/source`, so edits are live without a rebuild.
@@ -72,6 +83,10 @@ nautobot-server forward_demo_seed
 nautobot-server forward_publish_queries --profile <name> --fail-on-gap [--overwrite|--audit-only]
 nautobot-server forward_dry_run <fixture.json> --sample-size 5 --output /tmp/replay.json
 nautobot-server forward_metrics             # Prometheus metrics
+nautobot-server forward_health --profile <name> [--fail-on-warn]   # pre-flight: connectivity, network, snapshot, collection, queries
+nautobot-server forward_architecture_audit  # registry vs packaged queries/contracts; exit 1 on a failing finding
+nautobot-server shell < scripts/check_hand_made_objects.py   # hand-made objects with empty relations must not break a sync
+nautobot-server shell < scripts/check_override_history.py    # applied delete overrides persist as rows
 ```
 
 ## Architecture
@@ -87,22 +102,29 @@ Flow through a run:
 ```
 ForwardInventoryDataSource
   -> ForwardIngestionPlanner (planner.py)
-     -> ForwardClient (client.py)          transport, snapshots, query resolution, async NQE
+     -> ForwardClient (client.py)          adapts forward-sdk; transport is the SDK's
      -> ForwardSourceAdapter (adapters.py) raw source rows
      -> NautobotTargetAdapter (adapters.py)
      -> ForwardWritePlanner (write_path.py)
-  -> writes, only when SSoT dryrun is false
+  -> contrib_sync writes, only when SSoT dryrun is false
   -> support bundle pair (support.py), full plus redacted
   -> SSoT Sync.diff / Sync.summary
 ```
 
-There are two write paths, chosen at runtime. The default is the hand-rolled
-`ForwardNautobotWriteExecutor` in `write_executor.py`. Setting
-`PLUGINS_CONFIG = {"forward_nautobot": {"use_contrib_sync": True}}` switches to `contrib_sync.py`,
-which populates `NautobotModel` subclasses and lets `nautobot-ssot` contrib CRUD apply the changes.
-`contrib_sync` imports safely without Django and exposes `CONTRIB_AVAILABLE`, which is how its tests
-decide to skip. Deletion through the contrib path is governed separately by `delete_policy.py`,
-which gates deletes per model so an under-collected slice cannot wipe Nautobot.
+There is one write path: `contrib_sync.py`, which populates `NautobotModel` subclasses and lets
+`nautobot-ssot` contrib CRUD (`source.sync_to(target)`) apply create/update/delete. The old
+hand-rolled `write_executor.py`, the `use_contrib_sync` toggle and the registry's `write_handler`
+field were removed; older `docs/03_Plans` still describe them as history. `contrib_sync` imports safely without Django and exposes
+`CONTRIB_AVAILABLE`, which is how its tests decide to skip.
+
+contrib delete-reconciles the whole target table, so deletes are gated twice. `delete_policy.py`
+decides per model whether a delete is allowed (profile `delete_policy` is opt-in, default `ignore`;
+zero-rows and fraction guards stop an under-collected slice wiping Nautobot). `managed.py` then
+restricts deletes to objects carrying the `forward_managed` custom field, stamped on create/update.
+The mark is a synced attribute, so the next sync adopts unmarked objects (the `managed.py`
+docstring claims otherwise and is stale; `contrib_sync.py` and the check script are authoritative).
+Unmarked objects are never deleted. `scripts/check_managed_ownership.py` proves this against a real
+database (`nautobot-server shell < scripts/check_managed_ownership.py`, prints `OWNERSHIP: PASS`).
 
 Key module boundaries beyond those already named:
 

@@ -1,4 +1,8 @@
 .venv/
+# Any sibling virtualenv, so an ignore does not depend on the one venv
+# writes inside itself. .venv_local_test/ was excluded only by that file.
+.venv*/
+venv/
 .pytest_cache/
 .ruff_cache/
 __pycache__/

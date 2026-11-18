@@ -17,12 +17,12 @@ from ...models import (
 )
 from .client import ForwardClient
 from .cloud import ForwardCloudIngestionPlan, ForwardCloudIngestionPlanner
+from .drift import explain_drift
 from .models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings
 from .planner import ForwardIngestionPlanner, ForwardIngestionRequest
 from .query_publishing import publish_bundled_queries
 from .registry import CORE_MODEL_MAPPINGS, get_model_mapping
 from .support import build_support_bundle_pair, classify_failure
-from .write_executor import ForwardNautobotWriteExecutor
 
 try:
     from django.apps import apps as django_apps
@@ -286,22 +286,6 @@ def _build_ingestion_request(*, dryrun: bool, **data):
     )
 
 
-def _use_contrib_sync() -> bool:
-    """Whether to write via the nautobot-ssot contrib CRUD path (cutover) instead
-    of the legacy write executor. Off by default; enable in PLUGINS_CONFIG:
-    ``PLUGINS_CONFIG = {"forward_nautobot": {"use_contrib_sync": True}}``."""
-    try:
-        from django.conf import settings
-
-        return bool(
-            (settings.PLUGINS_CONFIG or {})
-            .get("forward_nautobot", {})
-            .get("use_contrib_sync", False)
-        )
-    except Exception:
-        return False
-
-
 def _contrib_include_cloud() -> bool:
     """Whether the contrib path also syncs cloud accounts/networks/services.
     On by default; disable in PLUGINS_CONFIG:
@@ -332,6 +316,23 @@ def _contrib_include_cables() -> bool:
         )
     except Exception:
         return True
+
+
+def _record_applied_overrides(profile, plan, write_execution) -> None:
+    """Keep a durable row for any delete override that was actually applied.
+
+    A delete override is a deliberate bypass of a safety control, and the support
+    bundle that also carries it is replaced by the next run.
+    """
+    if profile is None:
+        return
+    from .override_history import record_delete_overrides
+
+    record_delete_overrides(
+        profile_name=str(getattr(profile, "name", "") or ""),
+        snapshot_id=str(plan.diff_detail.get("current_snapshot_id") or ""),
+        write_execution=write_execution,
+    )
 
 
 def _run_ingestion_plan(*, dryrun: bool, **data):
@@ -390,17 +391,28 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
             # (planner._slice_fetch_error); append a compact API-usage tail so the
             # operator sees whether throttling/retries contributed. Never let
             # telemetry access crash the failure-recording path itself.
-            counters = getattr(client, "counters", None)
             usage_note = ""
-            if counters is not None:
-                usage = counters.as_dict()
-                usage_note = (
-                    f" [api: {usage['nqe_query_calls']} nqe, {usage['http_retries']} retries, "
-                    f"{usage['http_429']} 429s]"
-                )
+            try:
+                # Reading ``counters`` builds the SDK client. If building it was
+                # what failed, building it again raises here and would replace the
+                # original error and skip recording the failure at all.
+                counters = getattr(client, "counters", None)
+                if counters is not None:
+                    usage = counters.as_dict()
+                    usage_note = (
+                        f" [api: {usage['nqe_query_calls']} nqe, {usage['http_retries']} retries, "
+                        f"{usage['http_429']} 429s]"
+                    )
+            except Exception:  # noqa: BLE001 - telemetry must never mask the real failure
+                usage_note = ""
+            from .explain import explain_failure
+
+            explanation = explain_failure(exc).one_line()
             failed = request.connection_profile.with_run_history(
                 last_run_at=datetime.now().isoformat(timespec="seconds"),
-                last_failure=(f"error: {type(exc).__name__}: {exc}"[:440] + usage_note),
+                last_failure=(
+                    f"error: {type(exc).__name__}: {exc}"[:440] + usage_note + f" [{explanation}]"
+                ),
             )
             _save_profile_record(failed)
         raise
@@ -420,45 +432,39 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
         and bool(plan.diff_detail.get("destructive_reconciliation_enabled", True))
     )
     if not dryrun and request.network_enabled:
-        if _use_contrib_sync():
-            # Cutover path: write through nautobot-ssot contrib CRUD (delete-safe)
-            # across the full network + cloud model set, instead of the hand-rolled
-            # write executor. Flag-gated via PLUGINS_CONFIG so the legacy path stays
-            # the default until the contrib path is promoted.
-            from . import contrib_sync
+        # Write through nautobot-ssot contrib CRUD across the network model set.
+        # Deletes are opt-in via the profile's delete_policy, gated per model
+        # (zero-rows / fraction) by the governor and by managed-object
+        # ownership, and an operator can force past a governance block with a
+        # recorded override reason.
+        from . import contrib_sync
 
-            source_records = {
-                slug: [dict(rec.fields) for rec in recs.values()]
-                for slug, recs in plan.source.records.items()
-            }
-            # Deletes are opt-in via the profile's delete_policy and still gated
-            # per model (zero-rows / fraction) by the governor; an operator can
-            # force past a block with a recorded override reason.
-            write_execution = {
-                "engine": "contrib",
-                "summaries": contrib_sync.run_contrib_full_sync(
-                    source_records=source_records,
-                    profile=profile,
-                    dryrun=False,
-                    client=client,
-                    network_id=str(request.connection.network_id or ""),
-                    snapshot_id=plan.diff_detail.get("current_snapshot_id"),
-                    include_cloud=False,
-                    include_cables=_contrib_include_cables(),
-                    allow_delete=allow_delete,
-                    filtered_scope=request.filtered_scope,
-                    delete_controls=controls,
-                ),
-            }
-        else:
-            write_execution = (
-                ForwardNautobotWriteExecutor()
-                .execute(
-                    plan.write_plan,
-                    request.connection_profile,
-                )
-                .as_dict()
+        source_records = {
+            slug: [dict(rec.fields) for rec in recs.values()]
+            for slug, recs in plan.source.records.items()
+        }
+        try:
+            network_summaries = contrib_sync.run_contrib_full_sync(
+                source_records=source_records,
+                profile=profile,
+                dryrun=False,
+                client=client,
+                network_id=str(request.connection.network_id or ""),
+                snapshot_id=plan.diff_detail.get("current_snapshot_id"),
+                include_cloud=False,
+                include_cables=_contrib_include_cables(),
+                allow_delete=allow_delete,
+                filtered_scope=request.filtered_scope,
+                delete_controls=controls,
             )
+        except Exception as exc:
+            # The core sync can have applied deletes under an override before a
+            # later domain failed. Keep the audit row for what already happened.
+            _record_applied_overrides(
+                profile, plan, {"summaries": getattr(exc, "partial_summaries", None) or {}}
+            )
+            raise
+        write_execution = {"engine": "contrib", "summaries": network_summaries}
 
     if cloud_plan is not None:
         if "summaries" not in write_execution:
@@ -504,6 +510,9 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                 )
             }
 
+    if not dryrun and write_execution:
+        _record_applied_overrides(profile, plan, write_execution)
+
     failure_classification = (
         "clean"
         if dryrun and not plan.configuration_status.get("profile_provided")
@@ -537,6 +546,11 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
         source_summary = plan.source_summary
         if cloud_plan is not None:
             source_summary = {**source_summary, "cloud": cloud_plan.as_dict()}
+        _delete_governance = {
+            domain: summary["delete_governance"]
+            for domain, summary in (write_execution.get("summaries") or {}).items()
+            if isinstance(summary, dict) and "delete_governance" in summary
+        }
         bundle, shared_bundle = build_support_bundle_pair(
             plan.reports[0],
             source_summary=source_summary,
@@ -562,11 +576,11 @@ def _run_ingestion_plan(*, dryrun: bool, **data):
                 "changed_fields_top": plan.write_plan.diff_detail.get("changed_fields_top", {}),
                 "changed_fields_by_model": plan.write_plan.diff_detail.get("changed_fields", {}),
                 # Per-domain delete governance audit (blocks / overrides / who-why-when).
-                "delete_governance": {
-                    domain: summary["delete_governance"]
-                    for domain, summary in (write_execution.get("summaries") or {}).items()
-                    if isinstance(summary, dict) and "delete_governance" in summary
-                },
+                "delete_governance": _delete_governance,
+                # What would change and why, in operator terms (counts and field names).
+                "drift_explanations": explain_drift(
+                    plan.write_plan.diff_detail, plan.configuration_status, _delete_governance
+                ),
             },
             sharing_profile=str(data.get("support_bundle_sharing_profile") or "external").strip()
             or "external",
@@ -1027,7 +1041,7 @@ class ForwardInventoryDataSource(DataSource):  # pylint: disable=too-many-instan
         # Capture the acting user so a delete override is attributable in the audit.
         acting_user = getattr(self, "user", None)
         if acting_user is not None:
-            data.setdefault("acting_user", str(getattr(acting_user, "username", "") or acting_user))
+            data["acting_user"] = str(getattr(acting_user, "username", "") or acting_user)
         result, plan, _write_execution = _run_ingestion_plan(
             dryrun=bool(getattr(self, "dryrun", True)),
             **data,

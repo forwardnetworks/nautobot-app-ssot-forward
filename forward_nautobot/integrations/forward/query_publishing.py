@@ -132,6 +132,11 @@ def _draft_change_path(change: dict[str, Any]) -> str:
     return str(change.get("directory") or "").strip()
 
 
+def _is_edit_or_delete(change: dict[str, Any]) -> bool:
+    kind = str(change.get("type") or change.get("action") or "").upper()
+    return "EDIT" in kind or "DELETE" in kind
+
+
 def _dry_run_summary(result: dict[str, Any], *, snapshot_id: str) -> dict[str, Any]:
     new_errors = result.get("newErrors") if isinstance(result.get("newErrors"), dict) else {}
     invalid_paths = sorted(path for path, errors in new_errors.items() if errors)
@@ -305,13 +310,20 @@ def publish_bundled_queries(
         "error_use_count": 0,
     }
     if changed_paths:
-        existing_draft_paths = {
-            path
-            for change in client.get_org_nqe_draft_changes()
-            if (path := _draft_change_path(change))
-        }
+        drafts = client.get_org_nqe_draft_changes()
+        existing_draft_paths = {path for change in drafts if (path := _draft_change_path(change))}
         conflicting_paths = sorted(set(changed_paths) & existing_draft_paths)
-        if conflicting_paths:
+        # Forward names the path of an ADDITION only. A staged edit or deletion comes
+        # back with no path, so it cannot be matched to a query. Editing a published
+        # query while such a draft exists could overwrite someone's staged work, so
+        # refuse rather than guess; adding new queries cannot collide with it.
+        unattributed_drafts = [
+            change
+            for change in drafts
+            if not _draft_change_path(change) and _is_edit_or_delete(change)
+        ]
+        editing_published_queries = any(change["action"] == "edit" for change in planned_changes)
+        if conflicting_paths or (editing_published_queries and unattributed_drafts):
             return {
                 "status": "fail",
                 "repository": "org",
@@ -323,6 +335,7 @@ def publish_bundled_queries(
                     **dry_run,
                     "status": "blocked-existing-drafts",
                     "conflicting_paths": conflicting_paths,
+                    "unattributed_draft_count": len(unattributed_drafts),
                 },
                 "audit": audit_bundled_queries(client, directory=directory),
             }

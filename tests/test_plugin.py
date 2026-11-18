@@ -151,28 +151,6 @@ def test_ssot_data_source_uses_persisted_profile_selection(monkeypatch):
         def all(self):
             return [SimpleNamespace(to_record=lambda: stored_profile)]
 
-    class _FakeExecution:
-        def as_dict(self):
-            return {
-                "items": [{"model_slug": "devices", "status": "created"}],
-                "summary": {
-                    "created": 2,
-                    "updated": 0,
-                    "no-change": 0,
-                    "blocked": 0,
-                    "skipped": 0,
-                    "errors": 0,
-                },
-                "configuration_status": {"profile_provided": True, "write_ready": True},
-                "failure_classification": "clean",
-            }
-
-    class _FakeExecutor:
-        def execute(self, plan, profile):
-            captured["writes"] += 1
-            captured["profile"] = profile
-            return _FakeExecution()
-
     def _client_factory(settings):
         captured["settings"] = settings
         return ForwardClient(settings, transport=_mock_transport())
@@ -186,12 +164,6 @@ def test_ssot_data_source_uses_persisted_profile_selection(monkeypatch):
         jobs_module,
         "ForwardClient",
         _client_factory,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        jobs_module,
-        "ForwardNautobotWriteExecutor",
-        lambda: _FakeExecutor(),
         raising=True,
     )
 
@@ -272,7 +244,9 @@ def test_run_ingestion_plan_persists_failure_on_hard_error(monkeypatch):
             pass
 
         def run(self, request):
-            raise ForwardClientError("bad credentials")
+            err = ForwardClientError("bad credentials")
+            err.kind = "ForwardAuthError"
+            raise err
 
     monkeypatch.setattr(
         jobs_module, "ForwardConnectionProfile", SimpleNamespace(objects=_FakeManager())
@@ -295,6 +269,9 @@ def test_run_ingestion_plan_persists_failure_on_hard_error(monkeypatch):
 
     assert "prof" in saved, "failed run must persist a profile record"
     assert saved["prof"].last_failure.startswith("error:")
+    # The operator is told what kind of failure it was and what to check first.
+    assert "[authentication:" in saved["prof"].last_failure
+    assert "Next:" in saved["prof"].last_failure
     assert saved["prof"].last_snapshot_id == "snap-1"  # baseline not advanced on failure
 
 
@@ -438,10 +415,9 @@ def test_cloud_only_dryrun_uses_native_cloud_sync_without_network_writer(monkeyp
         captured["cloud_sync_kwargs"] = kwargs
         return {"create": 1, "update": 0, "delete": 0}
 
-    class _ForbiddenNetworkWriter:
-        def execute(self, *args, **kwargs):
-            captured["network_write"] += 1
-            raise AssertionError("cloud-only mode must not execute the network writer")
+    def _forbidden_network_sync(**kwargs):
+        captured["network_write"] += 1
+        raise AssertionError("cloud-only mode must not run the network sync")
 
     monkeypatch.setattr(
         jobs_module, "ForwardConnectionProfile", SimpleNamespace(objects=_FakeManager())
@@ -452,7 +428,7 @@ def test_cloud_only_dryrun_uses_native_cloud_sync_without_network_writer(monkeyp
         lambda settings: ForwardClient(settings, transport=_mock_transport()),
     )
     monkeypatch.setattr(jobs_module, "ForwardCloudIngestionPlanner", _FakeCloudPlanner)
-    monkeypatch.setattr(jobs_module, "ForwardNautobotWriteExecutor", _ForbiddenNetworkWriter)
+    monkeypatch.setattr(contrib_sync, "run_contrib_full_sync", _forbidden_network_sync)
     monkeypatch.setattr(contrib_sync, "run_contrib_cloud_sync", _cloud_sync)
 
     result, plan, write_execution = jobs_module._run_ingestion_plan(
@@ -613,12 +589,6 @@ def test_ssot_data_source_dryrun_uses_bundled_contracts_and_persists_diff(monkey
     _require_httpx()
     captured = {"writes": 0}
 
-    class _FakeExecutor:
-        def execute(self, plan, profile):
-            captured["writes"] += 1
-            captured["profile"] = profile
-            return None
-
     def _client_factory(settings):
         return ForwardClient(settings, transport=_mock_transport())
 
@@ -626,12 +596,6 @@ def test_ssot_data_source_dryrun_uses_bundled_contracts_and_persists_diff(monkey
         jobs_module,
         "ForwardClient",
         _client_factory,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        jobs_module,
-        "ForwardNautobotWriteExecutor",
-        lambda: _FakeExecutor(),
         raising=True,
     )
 
@@ -669,28 +633,17 @@ def test_ssot_data_source_non_dryrun_applies_writes_and_persists_diff(monkeypatc
     _require_httpx()
     captured = {"writes": 0}
 
-    class _FakeExecution:
-        def as_dict(self):
-            return {
-                "items": [{"model_slug": "devices", "status": "created"}],
-                "summary": {
-                    "created": 2,
-                    "updated": 0,
-                    "no-change": 0,
-                    "blocked": 0,
-                    "skipped": 0,
-                    "errors": 0,
-                },
+    def _fake_contrib_sync(**kwargs):
+        captured["writes"] += 1
+        captured["profile"] = kwargs.get("profile")
+        captured["dryrun"] = kwargs.get("dryrun")
+        return {
+            "network": {
+                "summary": {"created": 2, "updated": 0, "no-change": 0, "errors": 0},
                 "configuration_status": {"profile_provided": True, "write_ready": True},
                 "failure_classification": "clean",
             }
-
-    class _FakeExecutor:
-        def execute(self, plan, profile):
-            captured["writes"] += 1
-            captured["profile"] = profile
-            captured["plan"] = plan
-            return _FakeExecution()
+        }
 
     def _client_factory(settings):
         return ForwardClient(settings, transport=_mock_transport())
@@ -701,12 +654,9 @@ def test_ssot_data_source_non_dryrun_applies_writes_and_persists_diff(monkeypatc
         _client_factory,
         raising=True,
     )
-    monkeypatch.setattr(
-        jobs_module,
-        "ForwardNautobotWriteExecutor",
-        lambda: _FakeExecutor(),
-        raising=True,
-    )
+    import forward_nautobot.integrations.forward.contrib_sync as contrib_module
+
+    monkeypatch.setattr(contrib_module, "run_contrib_full_sync", _fake_contrib_sync, raising=True)
 
     job = ForwardInventoryDataSource()
     result = job.run(
@@ -728,7 +678,8 @@ def test_ssot_data_source_non_dryrun_applies_writes_and_persists_diff(monkeypatc
 
     assert captured["writes"] == 1
     assert captured["profile"] is not None
-    assert result["write_execution"]["summary"]["created"] == 2
+    assert captured["dryrun"] is False
+    assert result["write_execution"]["engine"] == "contrib"
     assert result["failure_classification"] == "clean"
     assert job.sync.summary["create"] == 2
     # sync.diff is the render-safe DiffSync shape ({model: {key: {"+"/"-"}}}), not
@@ -751,3 +702,63 @@ def test_requested_model_mappings_are_deduplicated():
 
     mappings = get_model_mappings(["devices", "devices", "interfaces", "devices"])
     assert [mapping.slug for mapping in mappings] == ["devices", "interfaces"]
+
+
+def test_failure_is_still_recorded_when_building_the_sdk_client_is_what_failed(monkeypatch):
+    """Reading client.counters rebuilds the SDK client; that must not mask the real error."""
+    _require_jobs_module()
+    _require_httpx()
+    from forward_nautobot.integrations.forward.exceptions import ForwardConfigurationError
+
+    stored_profile = ForwardConnectionProfileRecord(
+        name="primary",
+        base_url="https://fwd.example",
+        username="alice",
+        password="secret",
+        network_id="net-1",
+        snapshot_id="snap-2",
+        enabled_models=("devices",),
+        last_snapshot_id="snap-1",
+        is_default=True,
+    )
+    saved = {}
+
+    class _FakeManager:
+        def all(self):
+            return [SimpleNamespace(to_record=lambda: stored_profile)]
+
+    class _BrokenClient:
+        @property
+        def counters(self):
+            raise ForwardConfigurationError("cannot build the SDK client")
+
+    class _BoomPlanner:
+        def __init__(self, client):
+            pass
+
+        def run(self, request):
+            raise ForwardConfigurationError("cannot build the SDK client")
+
+    monkeypatch.setattr(
+        jobs_module, "ForwardConnectionProfile", SimpleNamespace(objects=_FakeManager())
+    )
+    monkeypatch.setattr(
+        jobs_module, "ForwardClient", lambda settings: _BrokenClient(), raising=True
+    )
+    monkeypatch.setattr(jobs_module, "ForwardIngestionPlanner", _BoomPlanner, raising=True)
+    monkeypatch.setattr(
+        jobs_module, "_save_profile_record", lambda prof: saved.setdefault("prof", prof)
+    )
+
+    with pytest.raises(ForwardConfigurationError, match="cannot build the SDK client"):
+        jobs_module._run_ingestion_plan(
+            dryrun=False,
+            profile_name="primary",
+            selected_models="",
+            snapshot_id="snap-2",
+            fetch_all=False,
+            limit=1,
+        )
+
+    assert "prof" in saved, "the failure must still be recorded"
+    assert "[configuration:" in saved["prof"].last_failure

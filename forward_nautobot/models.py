@@ -688,5 +688,37 @@ if models is not None:
             candidate = str(self.delete_policy or "").strip()
             return candidate if candidate in DELETE_POLICIES else "ignore"
 
+    class ForwardDeleteOverride(BaseModel):  # type: ignore[too-many-ancestors]
+        """One applied delete override: who forced deletes past the governor, and why.
+
+        The support bundle carries this for the latest run only, and the next run
+        replaces it. Overrides are the one place an operator deliberately bypasses
+        a safety control, so each is kept as its own row. ``profile_name`` is stored
+        alongside the link so the record survives deleting the profile.
+        """
+
+        # A lazy reference: it resolves in the real app, and it keeps this module
+        # importable with a stand-in base model (the job-refresh regression test).
+        profile = models.ForeignKey(
+            "forward_nautobot.ForwardConnectionProfile",
+            null=True,
+            blank=True,
+            on_delete=models.SET_NULL,
+            related_name="delete_overrides",
+        )
+        profile_name = models.CharField(max_length=128, blank=True, default="")
+        user = models.CharField(max_length=255, blank=True, default="")
+        reason = models.TextField(blank=True, default="")
+        snapshot_id = models.CharField(max_length=128, blank=True, default="")
+        overridden = models.JSONField(default=list, blank=True)
+        created_at = models.DateTimeField(auto_now_add=True)
+
+        class Meta:
+            ordering = ["-created_at"]
+
+        def __str__(self) -> str:
+            return f"{self.profile_name or 'profile'} override by {self.user or 'unknown'}"
+
 else:
     ForwardConnectionProfile = ForwardConnectionProfileRecord
+    ForwardDeleteOverride = None  # type: ignore[assignment,misc]

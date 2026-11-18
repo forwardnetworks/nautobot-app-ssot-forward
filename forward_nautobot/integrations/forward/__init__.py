@@ -46,7 +46,13 @@ _EXPORT_MAP = {
 
 
 def __getattr__(name: str):
-    module_name, attr_name = _EXPORT_MAP[name]
+    # Unknown names must raise AttributeError, not KeyError: the import system
+    # calls this before falling back to importing a submodule, so a KeyError
+    # here makes `from . import <submodule>` fail outright.
+    try:
+        module_name, attr_name = _EXPORT_MAP[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
     module = __import__(f"{__name__}{module_name}", fromlist=[attr_name])
     value = getattr(module, attr_name)
     globals()[name] = value

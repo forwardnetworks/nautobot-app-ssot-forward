@@ -23,7 +23,6 @@ class ForwardModelMapping:
     dependency_group: str = ""
     depends_on: tuple[str, ...] = ()
     lookup_strategy: str = "name"
-    write_handler: str = ""
     query_parameters: dict[str, tuple[str, ...]] = field(default_factory=dict)
     supports_device_filters: bool = False
 
@@ -44,7 +43,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         missing_row_policy="mark_inactive",
         dependency_group="core",
         lookup_strategy="name",
-        write_handler="_upsert_location",
         supports_device_filters=True,
     ),
     ForwardModelMapping(
@@ -57,7 +55,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         missing_row_policy="ignore",
         dependency_group="core",
         lookup_strategy="name",
-        write_handler="_upsert_platform",
         supports_device_filters=True,
     ),
     ForwardModelMapping(
@@ -70,7 +67,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         missing_row_policy="ignore",
         dependency_group="core",
         lookup_strategy="device_type",
-        write_handler="_upsert_device_type",
         supports_device_filters=True,
     ),
     ForwardModelMapping(
@@ -84,7 +80,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         dependency_group="core",
         depends_on=("locations", "platforms", "device_types"),
         lookup_strategy="name",
-        write_handler="_upsert_device",
         supports_device_filters=True,
     ),
     ForwardModelMapping(
@@ -99,7 +94,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         dependency_group="core",
         depends_on=("devices",),
         lookup_strategy="device_interface",
-        write_handler="_upsert_interface",
         supports_device_filters=True,
     ),
     ForwardModelMapping(
@@ -114,7 +108,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         dependency_group="ipam",
         depends_on=("locations",),
         lookup_strategy="location_vid",
-        write_handler="_upsert_vlan",
         supports_device_filters=True,
     ),
     ForwardModelMapping(
@@ -129,7 +122,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         dependency_group="ipam",
         depends_on=("devices",),
         lookup_strategy="name",
-        write_handler="_upsert_vrf",
         supports_device_filters=True,
     ),
     ForwardModelMapping(
@@ -144,7 +136,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         dependency_group="ipam",
         depends_on=("vrfs",),
         lookup_strategy="prefix_vrf",
-        write_handler="_upsert_prefix",
         supports_device_filters=True,
     ),
     ForwardModelMapping(
@@ -159,7 +150,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         dependency_group="ipam",
         depends_on=("vrfs",),
         lookup_strategy="prefix_vrf",
-        write_handler="_upsert_prefix",
         supports_device_filters=True,
     ),
     ForwardModelMapping(
@@ -174,7 +164,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         dependency_group="ipam",
         depends_on=("devices", "interfaces", "vrfs"),
         lookup_strategy="device_interface_address_vrf",
-        write_handler="_upsert_ip_address",
         supports_device_filters=True,
     ),
     ForwardModelMapping(
@@ -189,7 +178,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         dependency_group="assets",
         depends_on=("devices",),
         lookup_strategy="device_name",
-        write_handler="_resolve_inventory_item",
         supports_device_filters=True,
     ),
     ForwardModelMapping(
@@ -204,7 +192,6 @@ CORE_MODEL_MAPPINGS: tuple[ForwardModelMapping, ...] = (
         dependency_group="assets",
         depends_on=("devices",),
         lookup_strategy="device_module_bay",
-        write_handler="_resolve_module",
         supports_device_filters=True,
     ),
 )

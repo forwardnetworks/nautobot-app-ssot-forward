@@ -59,23 +59,25 @@ def _mock_transport():
                 json={"id": "snap-2", "state": "processed"},
             )
         if path == "/api/networks/net-1/snapshots":
-            return httpx.Response(
-                200,
-                json={
-                    "snapshots": [
-                        {
-                            "id": "snap-1",
-                            "state": "archived",
-                            "createdAt": "2026-06-09T00:00:00Z",
-                        },
-                        {
-                            "id": "snap-2",
-                            "state": "processed",
-                            "processedAt": "2026-06-10T00:00:00Z",
-                        },
-                    ]
+            snapshots = [
+                {
+                    "id": "snap-1",
+                    "state": "archived",
+                    "createdAt": "2026-06-09T00:00:00Z",
                 },
-            )
+                {
+                    "id": "snap-2",
+                    "state": "processed",
+                    "createdAt": "2026-06-10T00:00:00Z",
+                    "processedAt": "2026-06-10T00:00:00Z",
+                },
+            ]
+            # Forward filters on `state` server-side; the SDK relies on that and
+            # then orders what comes back by creation time.
+            wanted = request.url.params.get("state")
+            if wanted:
+                snapshots = [s for s in snapshots if s["state"].upper() == wanted.upper()]
+            return httpx.Response(200, json={"snapshots": snapshots})
         if path == "/api/nqe/repos/org/commits/head/queries":
             path_param = request.url.params.get("path")
             if path_param is not None:
@@ -950,13 +952,20 @@ def test_client_uses_snapshot_aware_nqe_commit_dry_run_and_exact_discard():
     ]
 
 
-def _snapshot_listing() -> dict:
-    return {
-        "snapshots": [
-            {"id": "snap-1", "state": "archived", "createdAt": "2026-06-09T00:00:00Z"},
-            {"id": "snap-2", "state": "PROCESSED", "processedAt": "2026-06-10T00:00:00Z"},
-        ]
-    }
+def _snapshot_listing(state: str | None = None) -> dict:
+    """A listing as Forward returns it, filtered server-side when `state` is given."""
+    snapshots = [
+        {"id": "snap-1", "state": "archived", "createdAt": "2026-06-09T00:00:00Z"},
+        {
+            "id": "snap-2",
+            "state": "PROCESSED",
+            "createdAt": "2026-06-10T00:00:00Z",
+            "processedAt": "2026-06-10T00:00:00Z",
+        },
+    ]
+    if state:
+        snapshots = [s for s in snapshots if s["state"].upper() == state.upper()]
+    return {"snapshots": snapshots}
 
 
 def test_client_async_nqe_execution_returns_rows_without_polling_a_finished_run():
@@ -1073,7 +1082,7 @@ def test_client_caches_snapshot_listing_and_resolution():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/networks/net-1/snapshots":
             calls["listings"] += 1
-            return httpx.Response(200, json=_snapshot_listing())
+            return httpx.Response(200, json=_snapshot_listing(request.url.params.get("state")))
         raise AssertionError(f"unexpected path: {request.url.path}")
 
     client = ForwardClient(
@@ -1191,3 +1200,114 @@ def test_configuration_errors_are_not_flattened_into_client_errors():
             after_snapshot_id="snap-after",
             offset=5,
         )
+
+
+def _nqe_retry_client(handler):
+    return ForwardClient(
+        ForwardConnectionSettings(
+            base_url="https://fwd.example",
+            username="alice",
+            password="secret",
+            network_id="net-1",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+
+def test_full_query_resubmits_after_a_system_error_execution(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)  # the SDK backs off between tries
+    """Forward sometimes ends a healthy query SYSTEM_ERROR; one blip must not fail a slice."""
+    _require_client()
+    monkeypatch.setattr(client_module, "NQE_OUTCOME_RETRIES", 2)
+    submits = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/nqe-executions":
+            submits["n"] += 1
+            if submits["n"] == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "executionKey": "ek-bad",
+                        "status": "COMPLETED",
+                        "outcome": "SYSTEM_ERROR",
+                    },
+                )
+            return httpx.Response(
+                200, json={"executionKey": "ek-ok", "status": "COMPLETED", "outcome": "OK"}
+            )
+        if path == "/api/networks/net-1/nqe-executions/ek-ok/result":
+            return httpx.Response(
+                200,
+                text='{"id": "r1"}\n',
+                headers={"content-type": "application/x-ndjson"},
+            )
+        raise AssertionError(f"unexpected path: {path}")
+
+    rows = _nqe_retry_client(handler).run_nqe_query(
+        query_spec=ForwardQuerySpec(query_id="query-123"), fetch_all=True
+    )
+    assert rows == [{"id": "r1"}]
+    assert submits["n"] == 2
+
+
+def test_persistent_system_error_surfaces_detail_and_attempts(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)  # the SDK backs off between tries
+    """After the retry budget, the failure keeps what the SDK knew about it."""
+    _require_client()
+    monkeypatch.setattr(client_module, "NQE_OUTCOME_RETRIES", 1)
+    submits = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/networks/net-1/nqe-executions":
+            submits["n"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "executionKey": f"ek-{submits['n']}",
+                    "status": "COMPLETED",
+                    "outcome": "SYSTEM_ERROR",
+                    "error": {"message": "boom"},
+                },
+            )
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    with pytest.raises(ForwardClientError) as caught:
+        _nqe_retry_client(handler).run_nqe_query(
+            query_spec=ForwardQuerySpec(query_id="query-123"), fetch_all=True
+        )
+    assert submits["n"] == 2  # the original plus one resubmission
+    assert caught.value.outcome == "SYSTEM_ERROR"
+    assert caught.value.attempts == 2
+
+
+def test_bounded_page_query_also_resubmits_after_a_system_error(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)  # the SDK backs off between tries
+    """The one-page path used execute()+wait(), which never retried; it must now."""
+    _require_client()
+    monkeypatch.setattr(client_module, "NQE_OUTCOME_RETRIES", 2)
+    submits = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/networks/net-1/nqe-executions":
+            submits["n"] += 1
+            outcome = "SYSTEM_ERROR" if submits["n"] == 1 else "OK"
+            return httpx.Response(
+                200,
+                json={
+                    "executionKey": f"ek-{submits['n']}",
+                    "status": "COMPLETED",
+                    "outcome": outcome,
+                },
+            )
+        if path == "/api/networks/net-1/nqe-executions/ek-2/result":
+            return httpx.Response(200, json={"items": [{"id": "r1"}], "totalNumItems": 1})
+        raise AssertionError(f"unexpected path: {path}")
+
+    rows = _nqe_retry_client(handler).run_nqe_query(
+        query_spec=ForwardQuerySpec(query_id="query-123"), fetch_all=False
+    )
+    assert rows == [{"id": "r1"}]
+    assert submits["n"] == 2

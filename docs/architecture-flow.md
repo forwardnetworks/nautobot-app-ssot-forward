@@ -33,7 +33,7 @@ flowchart TB
     end
 
     subgraph fwd["Forward platform  (HTTPS · Basic Auth)"]
-        snap["GET /snapshots/latestProcessed\nresolve current snapshot ID"]
+        snap["GET /networks/{id}/snapshots?state=PROCESSED\nresolve current snapshot ID"]
     end
 
     job --> profile
@@ -64,15 +64,15 @@ flowchart TB
     subgraph nautobot["Nautobot"]
         job["ForwardInventoryDataSource\nSSoT job"]
         planner["ForwardIngestionPlanner\nbuild ingestion plan"]
-        executor["ForwardNautobotWriteExecutor\napply plan — skipped on dry-run"]
+        executor["contrib_sync\nnautobot-ssot contrib CRUD — skipped on dry-run"]
         db["Nautobot DB\ncreate / update / mark-inactive"]
     end
 
-    subgraph client["ForwardClient"]
-        resolve_snap["GET /snapshots/latestProcessed"]
+    subgraph client["forward-sdk — reached through ForwardClient"]
+        resolve_snap["GET /networks/{id}/snapshots?state=PROCESSED\nnewest by creation, skipping drafts, forks and predictions; cached for the run"]
         prewarm["GET /nqe/repos/org/commits/head/queries\npre-warm query index cache"]
         submit["POST /nqe-executions\nsubmit async saved or inline query"]
-        poll["GET /nqe-executions/{key}\npoll until COMPLETED\n(exponential backoff)"]
+        poll["GET /nqe-executions/{key}\nSDK polls; skipped when submit is already terminal"]
         result["GET /nqe-executions/{key}/result\nstream ndjson rows"]
     end
 
@@ -123,12 +123,12 @@ flowchart TB
     subgraph nautobot["Nautobot"]
         job["ForwardInventoryDataSource\nSSoT job"]
         planner["ForwardIngestionPlanner"]
-        executor["ForwardNautobotWriteExecutor"]
+        executor["contrib_sync"]
         db["Nautobot DB\napply delta"]
     end
 
-    subgraph client["ForwardClient"]
-        resolve_snap["GET /snapshots/latestProcessed\ncurrent = Y  (baseline = X)"]
+    subgraph client["forward-sdk — reached through ForwardClient"]
+        resolve_snap["GET /networks/{id}/snapshots?state=PROCESSED\ncurrent = Y  (baseline = X)"]
         prewarm["GET /nqe/repos/org/commits/head/queries\nresolve saved query → queryId + commitId"]
         diff["POST /nqe-diffs/{X}/{Y}\nqueryId + commitId + page options\nreturns added / removed / unchanged rows"]
         fail["fail run with slice attribution"]
@@ -234,7 +234,7 @@ flowchart LR
 
 | Call | When | Purpose |
 |---|---|---|
-| `GET /networks/{id}/snapshots/latestProcessed` | Every run | Resolve current snapshot ID |
+| `GET /networks/{id}/snapshots?state=PROCESSED` | Every run, cached | Resolve current snapshot ID. The dedicated `latestProcessed` endpoint is deprecated and the listing has no documented order, so the SDK sorts what comes back and picks the newest by creation time, ignoring drafts, forks and predictions. |
 | `GET /nqe/repos/org/commits/head/queries` | Every run (once, cached) | Pre-warm query index; resolve `.nqe` paths to query IDs |
 | `POST /networks/{id}/nqe-executions` | Snapshot mode, per slice | Submit an async saved query or packaged inline query |
 | `GET /networks/{id}/nqe-executions/{key}` | After submit | Poll execution status |
@@ -253,7 +253,7 @@ but no query parameters.
 
 | API call | Required Forward permission |
 |---|---|
-| `GET /snapshots/latestProcessed` | read snapshots |
+| `GET /networks/{id}/snapshots` | read snapshots |
 | `GET /nqe/repos/org/commits/head/queries` | read NQE repository |
 | `POST /nqe-executions` | execute NQE |
 | `GET /nqe-executions/{key}` | read NQE executions |
@@ -283,7 +283,7 @@ automatically.
 
 ## Key operational properties
 
-- **Dry-run safe** — `ForwardNautobotWriteExecutor` is skipped entirely when the
+- **Dry-run safe** — `contrib_sync` is skipped entirely when the
   SSoT job runs with `dryrun=True`. The plan is computed and reported; no DB
   writes occur.
 - **Incremental by default** — the planner records `last_snapshot_id` on the

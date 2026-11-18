@@ -233,3 +233,66 @@ def test_query_publication_refuses_to_overwrite_preexisting_user_draft(monkeypat
     assert result["dry_run"]["status"] == "blocked-existing-drafts"
     assert result["dry_run"]["conflicting_paths"] == [paths["query_one.nqe"]]
     assert client.mutations == []
+
+
+def _real_shape_draft_client(drafts, committed):
+    """A client whose drafts have the shape the real ForwardClient returns.
+
+    ``get_org_nqe_draft_changes`` yields only ``{"type", "path"}``, and Forward sets
+    the path for an addition only, so a staged edit or deletion has an empty path.
+    """
+
+    class _Client(_FakePublishingClient):
+        def get_org_nqe_draft_changes(self):
+            return drafts
+
+    return _Client(committed)
+
+
+def test_an_edit_draft_with_no_path_blocks_overwriting_published_queries(monkeypatch):
+    sources, paths = _bundle(monkeypatch)
+    client = _real_shape_draft_client(
+        [{"type": "QUERY_EDIT", "path": ""}],
+        {paths["query_one.nqe"]: "stale source", paths["query_two.nqe"]: sources["query_two.nqe"]},
+    )
+
+    result = publishing.publish_bundled_queries(client, overwrite=True)
+
+    assert result["status"] == "fail"
+    assert result["dry_run"]["status"] == "blocked-existing-drafts"
+    assert result["dry_run"]["unattributed_draft_count"] == 1
+    assert client.mutations == []
+
+
+def test_a_delete_draft_with_no_path_also_blocks_overwriting(monkeypatch):
+    sources, paths = _bundle(monkeypatch)
+    client = _real_shape_draft_client(
+        [{"type": "QUERY_DELETE", "path": ""}],
+        {paths["query_one.nqe"]: "stale source", paths["query_two.nqe"]: sources["query_two.nqe"]},
+    )
+    result = publishing.publish_bundled_queries(client, overwrite=True)
+    assert result["dry_run"]["status"] == "blocked-existing-drafts"
+    assert client.mutations == []
+
+
+def test_adding_new_queries_is_not_blocked_by_a_pathless_edit_draft(monkeypatch):
+    """An addition cannot collide with an edit of some other query."""
+    sources, paths = _bundle(monkeypatch)
+    client = _real_shape_draft_client(
+        [{"type": "QUERY_EDIT", "path": ""}], {paths["query_one.nqe"]: sources["query_one.nqe"]}
+    )
+
+    result = publishing.publish_bundled_queries(client)
+
+    assert result["status"] == "pass"
+    assert ("add", paths["query_two.nqe"]) in client.mutations
+
+
+def test_a_permission_draft_with_no_path_does_not_block(monkeypatch):
+    sources, paths = _bundle(monkeypatch)
+    client = _real_shape_draft_client(
+        [{"type": "PERMISSION_SET", "path": ""}],
+        {paths["query_one.nqe"]: "stale source", paths["query_two.nqe"]: sources["query_two.nqe"]},
+    )
+    result = publishing.publish_bundled_queries(client, overwrite=True)
+    assert result["dry_run"]["status"] != "blocked-existing-drafts"

@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = REPO_ROOT / "development/docker-compose.wheel.yml"
-SUPPORTED_NAUTOBOT_VERSIONS = ("3.1.8", "3.2.2")
+SUPPORTED_NAUTOBOT_VERSIONS = ("3.1.8", "3.2.9")
 
 
 def _default_wheel_path() -> Path:

@@ -76,5 +76,5 @@ def test_full_local_gate_runs_source_absent_wheel_acceptance():
 
     assert "installed-wheel" in full_labels
     assert "installed-wheel" not in fast_labels
-    assert check_installed_wheel.SUPPORTED_NAUTOBOT_VERSIONS == ("3.1.8", "3.2.2")
+    assert check_installed_wheel.SUPPORTED_NAUTOBOT_VERSIONS == ("3.1.8", "3.2.9")
     assert check_installed_wheel.COMPOSE_FILE.name == "docker-compose.wheel.yml"

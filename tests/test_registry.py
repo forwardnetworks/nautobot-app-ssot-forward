@@ -11,7 +11,6 @@ def test_registry_entries_expose_dispatch_metadata():
         assert mapping.nautobot_scope
         assert mapping.identity_fields
         assert mapping.lookup_strategy
-        assert mapping.write_handler
         assert mapping.contract_version in {"v1", "v2"}
         assert isinstance(mapping.depends_on, tuple)
     assert CORE_MODEL_SLUGS == tuple(mapping.slug for mapping in CORE_MODEL_MAPPINGS)

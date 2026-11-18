@@ -1,12 +1,12 @@
 # Local Nautobot container stack
 
-A throwaway Nautobot 3.1.8 or 3.2.2 + Postgres + Redis stack for running the full test
+A throwaway Nautobot 3.1.8 or 3.2.9 + Postgres + Redis stack for running the full test
 suite (the contrib / REST-API / crypto tests that skip without a real Nautobot)
 and exercising the plugin end-to-end. Dev-only credentials; never used in prod.
 
 ```bash
-# Select a supported Nautobot release (default is 3.2.2).
-export NAUTOBOT_VERSION=3.2.2
+# Select a supported Nautobot release (default is 3.2.9).
+export NAUTOBOT_VERSION=3.2.9
 
 # Build + start (Nautobot auto-migrates on startup, including this plugin).
 docker compose -p fwdnautobot -f development/docker-compose.yml up -d --build
@@ -48,5 +48,5 @@ python -m build
 python scripts/check_installed_wheel.py
 ```
 
-Use `--versions 3.2.2` for a focused iteration. The full local release gate always runs both
+Use `--versions 3.2.9` for a focused iteration. The full local release gate always runs both
 supported versions and removes its disposable containers and volumes.

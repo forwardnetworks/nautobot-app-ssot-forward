@@ -16,10 +16,12 @@ from typing import Any
 import httpx
 from forward_sdk import ForwardClient as SdkForwardClient
 from forward_sdk import QueryRef
-from forward_sdk._sync.services.nqe import NqeExecution
 
 from .exceptions import ForwardClientError, ForwardConfigurationError
 from .models import LATEST_PROCESSED_SNAPSHOT, ForwardConnectionSettings, ForwardQuerySpec
+
+#: Extra submissions the SDK may make when an NQE execution ends in SYSTEM_ERROR.
+NQE_OUTCOME_RETRIES = 2
 
 
 def _sdk_snapshot(snapshot_id: str | None) -> str | None:
@@ -335,32 +337,39 @@ class ForwardClient:
         page_size = int(limit or self.settings.nqe_page_size)
         with _translated():
             if fetch_all:
-                # Every row, streamed. This is what all production callers ask for.
+                # Every row, streamed. The default for production runs; a user who clears
+                # fetch_all takes the bounded-page path below.
                 rows = self.sdk.nqe.query(
                     ref,
                     network_id=resolved_network,
                     snapshot_id=resolved_snapshot,
                     page_size=page_size,
                     stream=True,
+                    # Forward occasionally ends a healthy query with SYSTEM_ERROR.
+                    # The SDK resubmits only that outcome, with backoff; a compile
+                    # error or a timeout is never retried.
+                    outcome_retries=NQE_OUTCOME_RETRIES,
                 )
             else:
                 # One bounded page, preserving the previous client's semantics
                 # where `limit` capped the rows returned rather than the page size.
-                execution = self.sdk.nqe.execute(
-                    ref, network_id=resolved_network, snapshot_id=resolved_snapshot
+                # Same outcome retry as the full path: a SYSTEM_ERROR is resubmitted.
+                execution = self.sdk.nqe.execute_and_wait(
+                    ref,
+                    network_id=resolved_network,
+                    snapshot_id=resolved_snapshot,
+                    outcome_retries=NQE_OUTCOME_RETRIES,
                 )
-                execution.wait()
                 rows = execution.result_page(offset=int(offset or 0), limit=page_size).items
         return [dict(row) for row in rows]
 
     # The plugin's async entrypoint; the SDK has no separate synchronous path.
     run_nqe_query_async = run_nqe_query
 
-    def _execution(self, *, execution_key: str, network_id: str | None = None) -> NqeExecution:
-        return NqeExecution(
-            self.sdk.nqe,
-            key=execution_key,
-            network_id=str(network_id or self.settings.network_id or ""),
+    def _execution(self, *, execution_key: str, network_id: str | None = None) -> Any:
+        """Re-attach to an execution by key; the SDK makes no request to do so."""
+        return self.sdk.nqe.execution(
+            execution_key, network_id=network_id or self.settings.network_id or None
         )
 
     def request_nqe_execution(
@@ -479,5 +488,9 @@ class _translated:
         # publishing code's reason matching reads. `reason` is the structured
         # form and should replace that matching once callers are updated.
         translated = ForwardClientError(str(exc))
+        translated.kind = type(exc).__name__
         translated.reason = getattr(exc, "reason", None)
+        translated.outcome = getattr(exc, "outcome", None)
+        translated.detail = getattr(exc, "detail", None)
+        translated.attempts = getattr(exc, "attempts", None)
         raise translated from exc

@@ -4,7 +4,7 @@ De-risking + build-out for the redesign in
 docs/03_Plans/active/2026-06-23-diffsync-crud-redesign.md. Writes flow through
 the standard nautobot-ssot ``contrib`` path: source rows populate
 ``NautobotModel`` subclasses, then ``source.sync_to(target)`` applies create/
-update/delete via framework CRUD (no hand-rolled write_executor).
+update/delete via framework CRUD.
 
 Phase 1: locations. Phase 2: manufacturers, platforms, device_types, devices —
 the full device FK chain, all resolved by lookup (contrib never get_or_creates
@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from typing import Any
+from typing import Annotated, Any
 
+from . import managed
 from .delete_policy import (
     DeleteControls,
     allowed_models,
@@ -36,6 +37,7 @@ from .delete_policy import (
     evaluate_adapter_deletes,
 )
 from .normalize import normalize_location_key
+from .registry import CORE_MODEL_MAPPINGS
 
 
 def _now_iso() -> str:
@@ -44,9 +46,36 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _mark_inactive_modelnames(target) -> set[str]:
+    """Contrib model names whose registry policy is ``mark_inactive``.
+
+    Six slices declare it and the profile exposes it, so the contrib path has to
+    honour it or promoting this path would silently drop a documented option.
+    The mapping is derived from the registry's ``nautobot_scope``, which matches
+    each ORM model's label, rather than maintained as a second list that could
+    drift from the registry.
+    """
+    policies = {
+        mapping.nautobot_scope: mapping.missing_row_policy for mapping in CORE_MODEL_MAPPINGS
+    }
+    names: set[str] = set()
+    for attribute in dir(type(target)):
+        candidate = getattr(type(target), attribute, None)
+        orm_model = getattr(candidate, "_model", None)
+        modelname = getattr(candidate, "_modelname", None)
+        if orm_model is None or not modelname:
+            continue
+        if policies.get(orm_model._meta.label_lower) == "mark_inactive":
+            names.add(modelname)
+    return names
+
+
 def _govern_deletes(source, target, *, allow_delete, controls):
     """Evaluate per-model delete gates, set ``target.delete_allowed_models`` for the
     delete mixin to consult, and return an audit record for the run summary."""
+    # Independent of allow_delete: marking inactive is not a delete, and the
+    # registry asks for it whether or not deletes are permitted.
+    target.mark_inactive_models = _mark_inactive_modelnames(target)
     if not allow_delete:
         target.delete_allowed_models = set()
         return {"allow_delete": False}
@@ -131,6 +160,7 @@ try:
         Prefix,
     )
     from nautobot_ssot.contrib import NautobotAdapter, NautobotModel
+    from nautobot_ssot.contrib.types import CustomFieldAnnotation
     from pydantic import field_validator
 
     CONTRIB_AVAILABLE = True
@@ -221,15 +251,47 @@ def cloud_object_name(
     return f"{label[: 255 - len(suffix)]}{suffix}"
 
 
+def _mark_object_inactive(obj) -> bool:
+    """Set an object's status to Inactive. Returns False if it has no status."""
+    if not hasattr(obj, "status"):
+        return False
+    try:
+        status = _ensure_status_with_content_types("Inactive", [type(obj)])
+        obj.status = status
+        obj.validated_save()
+    except Exception:
+        # Never let a failed mark turn into a delete; keeping the object as-is
+        # is the safe outcome.
+        return True
+    return True
+
+
 class _ForwardContribDeleteMixin:
-    """Skip ORM deletes unless the target adapter opts in (``allow_delete=True``).
+    """Claim ownership on write, and never delete an object the plugin does not own.
 
     contrib ``source.sync_to(target)`` delete-reconciles the whole target table:
     any object the source lacks would be deleted. Since the plugin imports a
     scoped subset, that default would wipe Nautobot objects it does not manage.
-    Defaulting deletes off makes every contrib runner create/update-safe; deletes
-    are opt-in once delete scoping (a managed-object filter) is in place.
+
+    Two gates stand in front of every delete, and both must pass:
+
+    1. The runner's governance gate -- ``delete_allowed_models`` after the
+       zero-rows and fraction checks, falling back to the blanket
+       ``allow_delete`` flag.
+    2. Ownership. The object must carry the mark this mixin stamps on create and
+       update. Anything unmarked is someone else's and is kept.
+
+    The ownership gate is what makes ``allow_delete=True`` safe to switch on at
+    all; before it existed the only safe answer was to refuse every delete.
     """
+
+    @classmethod
+    def _update_obj_with_parameters(cls, obj, parameters, adapter):
+        # Claim before the write so the mark lands in the same validated_save
+        # rather than costing a second round trip. Covers create and update
+        # alike, because contrib routes both through here.
+        managed.claim(obj)
+        return super()._update_obj_with_parameters(obj, parameters, adapter)
 
     def delete(self):
         # Per-model gate (delete governance): the runner sets
@@ -239,9 +301,24 @@ class _ForwardContribDeleteMixin:
         if allowed_models is not None:
             if getattr(self, "_modelname", None) not in allowed_models:
                 return self
-            return super().delete()
-        if not getattr(self.adapter, "allow_delete", False):
+        elif not getattr(self.adapter, "allow_delete", False):
             return self
+
+        # Ownership gate. Fails closed: an object we cannot read, or cannot
+        # confirm as ours, is kept.
+        try:
+            obj = self.get_from_db()
+        except Exception:
+            return self
+        if not managed.is_managed(obj):
+            return self
+
+        # mark_inactive is a removal policy, not a delete: the object stays and
+        # its status changes, so it is still in the target on the next run.
+        if self._modelname in (getattr(self.adapter, "mark_inactive_models", None) or set()):
+            if _mark_object_inactive(obj):
+                return self
+
         return super().delete()
 
 
@@ -279,14 +356,20 @@ if CONTRIB_AVAILABLE:
         _model = Manufacturer
         _modelname = "manufacturer"
         _identifiers = ("name",)
-        _attributes = ()
+        _attributes = ("forward_managed",)
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         name: str
 
     class ForwardContribLocation(_ForwardContribDeleteMixin, NautobotModel):
         _model = Location
         _modelname = "location"
         _identifiers = ("name",)
-        _attributes = ("location_type__name", "status__name")
+        _attributes = ("location_type__name", "status__name", "forward_managed")
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         name: str
         location_type__name: str
         status__name: str
@@ -295,15 +378,21 @@ if CONTRIB_AVAILABLE:
         _model = Platform
         _modelname = "platform"
         _identifiers = ("name",)
-        _attributes = ("manufacturer__name",)
+        _attributes = ("manufacturer__name", "forward_managed")
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         name: str
-        manufacturer__name: str
+        manufacturer__name: str | None = None
 
     class ForwardContribDeviceType(_ForwardContribDeleteMixin, NautobotModel):
         _model = DeviceType
         _modelname = "device_type"
         _identifiers = ("manufacturer__name", "model")
-        _attributes = ()
+        _attributes = ("forward_managed",)
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         manufacturer__name: str
         model: str
 
@@ -318,6 +407,10 @@ if CONTRIB_AVAILABLE:
             "device_type__manufacturer__name",
             "device_type__model",
             "platform__name",
+            "forward_managed",
+        )
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
         )
         name: str
         location__name: str
@@ -325,13 +418,33 @@ if CONTRIB_AVAILABLE:
         status__name: str
         device_type__manufacturer__name: str
         device_type__model: str
-        platform__name: str
+        # Nullable in Nautobot: a hand-made device with no platform must load, or one
+        # such device anywhere in the table makes every sync raise.
+        platform__name: str | None = None
+
+        @classmethod
+        def get_queryset(cls):
+            # Nautobot allows a device with no name. It has no identity to match on,
+            # so neither it nor anything attached to it is loaded; loading one
+            # raises and takes the whole sync down with it.
+            return Device.objects.filter(name__isnull=False)
 
     class ForwardContribInterface(_ForwardContribDeleteMixin, NautobotModel):
         _model = Interface
         _modelname = "interface"
         _identifiers = ("device__name", "name")
-        _attributes = ("type", "status__name", "enabled", "mtu", "description", "mac_address")
+        _attributes = (
+            "type",
+            "status__name",
+            "enabled",
+            "mtu",
+            "description",
+            "mac_address",
+            "forward_managed",
+        )
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         device__name: str
         name: str
         type: str
@@ -349,6 +462,13 @@ if CONTRIB_AVAILABLE:
         @classmethod
         def _coerce_mac(cls, value):
             return _normalize_mac(value)
+
+        @classmethod
+        def get_queryset(cls):
+            # Nautobot allows a device with no name. It has no identity to match on,
+            # so neither it nor anything attached to it is loaded; loading one
+            # raises and takes the whole sync down with it.
+            return Interface.objects.filter(device__name__isnull=False)
 
     # Dependency order: FK targets must be created before the objects that
     # reference them, since contrib resolves FKs by lookup.
@@ -384,6 +504,14 @@ if CONTRIB_AVAILABLE:
         device_type = ForwardContribDeviceType
         device = ForwardContribDevice
         interface = ForwardContribInterface
+
+        def add(self, obj):
+            # The source always claims what it syncs; the target reads the real
+            # mark. That difference is what drives adoption of objects the
+            # legacy write path created.
+            if hasattr(obj, "forward_managed"):
+                obj.forward_managed = True
+            return super().add(obj)
 
         def __init__(
             self,
@@ -509,7 +637,10 @@ if CONTRIB_AVAILABLE:
         _model = CloudAccount
         _modelname = "cloud_account"
         _identifiers = ("name",)
-        _attributes = ("account_number", "provider__name", "description")
+        _attributes = ("account_number", "provider__name", "description", "forward_managed")
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         name: str
         account_number: str
         provider__name: str
@@ -530,6 +661,10 @@ if CONTRIB_AVAILABLE:
             "cloud_account__name",
             "description",
             "extra_config",
+            "forward_managed",
+        )
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
         )
         name: str
         cloud_resource_type__name: str
@@ -555,6 +690,10 @@ if CONTRIB_AVAILABLE:
             "parent__name",
             "description",
             "extra_config",
+            "forward_managed",
+        )
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
         )
         name: str
         cloud_resource_type__name: str
@@ -578,6 +717,10 @@ if CONTRIB_AVAILABLE:
             "cloud_account__name",
             "description",
             "extra_config",
+            "forward_managed",
+        )
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
         )
         name: str
         cloud_resource_type__name: str
@@ -604,6 +747,14 @@ if CONTRIB_AVAILABLE:
         cloud_vpc = ForwardContribCloudVPC
         cloud_subnet = ForwardContribCloudSubnet
         cloud_service = ForwardContribCloudService
+
+        def add(self, obj):
+            # The source always claims what it syncs; the target reads the real
+            # mark. That difference is what drives adoption of objects the
+            # legacy write path created.
+            if hasattr(obj, "forward_managed"):
+                obj.forward_managed = True
+            return super().add(obj)
 
         def __init__(
             self,
@@ -778,16 +929,22 @@ if CONTRIB_AVAILABLE:
         _model = VRF
         _modelname = "vrf"
         _identifiers = ("name", "namespace__name")
-        _attributes = ("status__name",)
+        _attributes = ("status__name", "forward_managed")
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         name: str
         namespace__name: str
-        status__name: str
+        status__name: str | None = None
 
     class ForwardContribVLAN(_ForwardContribDeleteMixin, NautobotModel):
         _model = VLAN
         _modelname = "vlan"
         _identifiers = ("vid", "name")
-        _attributes = ("status__name",)
+        _attributes = ("status__name", "forward_managed")
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         vid: int
         name: str
         status__name: str
@@ -799,7 +956,10 @@ if CONTRIB_AVAILABLE:
         _model = Prefix
         _modelname = "prefix"
         _identifiers = ("network", "prefix_length", "namespace__name")
-        _attributes = ("status__name",)
+        _attributes = ("status__name", "forward_managed")
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         network: str
         prefix_length: int
         namespace__name: str
@@ -825,7 +985,10 @@ if CONTRIB_AVAILABLE:
         # Namespace (VRF) is part of the identity so the same host/mask in two VRFs
         # stays distinct; it traverses parent (the containing Prefix) -> namespace.
         _identifiers = ("host", "mask_length", "parent__namespace__name")
-        _attributes = ("status__name",)
+        _attributes = ("status__name", "forward_managed")
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         host: str
         mask_length: int
         parent__namespace__name: str = "Global"
@@ -850,16 +1013,29 @@ if CONTRIB_AVAILABLE:
         _model = InventoryItem
         _modelname = "inventory_item"
         _identifiers = ("device__name", "name")
-        _attributes = ("manufacturer__name",)
+        _attributes = ("manufacturer__name", "forward_managed")
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         device__name: str
         name: str
-        manufacturer__name: str
+        manufacturer__name: str | None = None
+
+        @classmethod
+        def get_queryset(cls):
+            # Nautobot allows a device with no name. It has no identity to match on,
+            # so neither it nor anything attached to it is loaded; loading one
+            # raises and takes the whole sync down with it.
+            return InventoryItem.objects.filter(device__name__isnull=False)
 
     class ForwardContribModuleType(_ForwardContribDeleteMixin, NautobotModel):
         _model = ModuleType
         _modelname = "module_type"
         _identifiers = ("manufacturer__name", "model")
-        _attributes = ()
+        _attributes = ("forward_managed",)
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         manufacturer__name: str
         model: str
 
@@ -867,21 +1043,46 @@ if CONTRIB_AVAILABLE:
         _model = ModuleBay
         _modelname = "module_bay"
         _identifiers = ("parent_device__name", "name")
-        _attributes = ()
+        _attributes = ("forward_managed",)
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         parent_device__name: str
         name: str
+
+        @classmethod
+        def get_queryset(cls):
+            # Nautobot allows a device with no name. It has no identity to match on,
+            # so neither it nor anything attached to it is loaded; loading one
+            # raises and takes the whole sync down with it.
+            return ModuleBay.objects.filter(parent_device__name__isnull=False)
 
     class ForwardContribModule(_ForwardContribDeleteMixin, NautobotModel):
         # A Module occupies a ModuleBay; identity is the bay (device + bay name).
         _model = Module
         _modelname = "module"
         _identifiers = ("parent_module_bay__parent_device__name", "parent_module_bay__name")
-        _attributes = ("module_type__manufacturer__name", "module_type__model", "status__name")
+        _attributes = (
+            "module_type__manufacturer__name",
+            "module_type__model",
+            "status__name",
+            "forward_managed",
+        )
+        forward_managed: Annotated[bool, CustomFieldAnnotation(key=managed.FORWARD_MANAGED_KEY)] = (
+            False
+        )
         parent_module_bay__parent_device__name: str
         parent_module_bay__name: str
         module_type__manufacturer__name: str
         module_type__model: str
         status__name: str
+
+        @classmethod
+        def get_queryset(cls):
+            # Nautobot allows a device with no name. It has no identity to match on,
+            # so neither it nor anything attached to it is loaded; loading one
+            # raises and takes the whole sync down with it.
+            return Module.objects.filter(parent_module_bay__parent_device__name__isnull=False)
 
     # IPAM + assets sync after the device chain (devices must already exist).
     # module_type/module_bay precede module (FK targets created first).
@@ -917,6 +1118,14 @@ if CONTRIB_AVAILABLE:
         module_type = ForwardContribModuleType
         module_bay = ForwardContribModuleBay
         module = ForwardContribModule
+
+        def add(self, obj):
+            # The source always claims what it syncs; the target reads the real
+            # mark. That difference is what drives adoption of objects the
+            # legacy write path created.
+            if hasattr(obj, "forward_managed"):
+                obj.forward_managed = True
+            return super().add(obj)
 
         def __init__(
             self,
@@ -1092,6 +1301,9 @@ def ensure_core_prerequisites(
     lookup (with the right content-types), since contrib will not create them."""
     if not CONTRIB_AVAILABLE:  # pragma: no cover
         raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
+    managed.ensure_managed_custom_field(
+        [Manufacturer, Location, Platform, DeviceType, Device, Interface]
+    )
     location_type, _ = LocationType.objects.get_or_create(name=location_type_name)
     # A Device may only sit at a LocationType whose content_types include Device.
     dev_ct = ContentType.objects.get_for_model(Device)
@@ -1176,6 +1388,9 @@ def ensure_extended_prerequisites(
     distinct; ``Global`` always exists."""
     if not CONTRIB_AVAILABLE:  # pragma: no cover
         raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
+    managed.ensure_managed_custom_field(
+        [VRF, VLAN, Prefix, IPAddress, InventoryItem, Module, ModuleBay, ModuleType]
+    )
     for name in {"Global", *(namespace_names or set())}:
         Namespace.objects.get_or_create(name=name)
     _ensure_status_with_content_types(status_name, [VLAN, VRF, Prefix, IPAddress, Module])
@@ -1338,6 +1553,7 @@ def ensure_cloud_prerequisites(
     that the cloud slices resolve by lookup."""
     if not CONTRIB_AVAILABLE:  # pragma: no cover
         raise RuntimeError("nautobot-ssot contrib path is unavailable in this environment.")
+    managed.ensure_managed_custom_field([CloudAccount, CloudNetwork, CloudService])
     providers: dict[str, Any] = {}
 
     def provider_for(cloud_type: str):
@@ -1524,6 +1740,23 @@ def _profile_defaults(profile) -> dict[str, str]:
     }
 
 
+def _cables_in_scope(cable_rows, selected_devices):
+    """Keep the cables a filtered run may touch; ``None`` means no filter.
+
+    A cable joins two interfaces and both must already exist in Nautobot, so in a
+    filtered run it is kept only when both of its devices were selected.
+    """
+    if selected_devices is None:
+        return list(cable_rows)
+    selected = {str(name).strip() for name in selected_devices}
+    return [
+        row
+        for row in cable_rows
+        if str(row.get("device") or "").strip() in selected
+        and str(row.get("remote_device") or "").strip() in selected
+    ]
+
+
 def _cloud_query_rows(client, network_id, snapshot_id, query_file, *, parameters=None):
     """Run a bundled auxiliary query by path, falling back to inline async NQE.
 
@@ -1657,18 +1890,24 @@ def run_contrib_full_sync(
         job=job,
         **defaults,
     )
-    summaries["ipam_assets"] = run_contrib_extended_sync(
-        vrf_rows=rows("vrfs"),
-        vlan_rows=rows("vlans"),
-        prefix_rows=rows("ipv4_prefixes") + rows("ipv6_prefixes"),
-        ipaddress_rows=rows("ip_addresses"),
-        inventory_rows=rows("inventory_items"),
-        module_rows=rows("modules"),
-        dryrun=dryrun,
-        allow_delete=allow_delete,
-        delete_controls=delete_controls,
-        job=job,
-    )
+    try:
+        summaries["ipam_assets"] = run_contrib_extended_sync(
+            vrf_rows=rows("vrfs"),
+            vlan_rows=rows("vlans"),
+            prefix_rows=rows("ipv4_prefixes") + rows("ipv6_prefixes"),
+            ipaddress_rows=rows("ip_addresses"),
+            inventory_rows=rows("inventory_items"),
+            module_rows=rows("modules"),
+            dryrun=dryrun,
+            allow_delete=allow_delete,
+            delete_controls=delete_controls,
+            job=job,
+        )
+    except Exception as exc:
+        # The core sync above already applied its changes, deletes included. Hand
+        # its summary to the caller so what already happened can still be audited.
+        exc.partial_summaries = dict(summaries)  # type: ignore[attr-defined]
+        raise
     if include_cables and client is not None and network_id:
         # Cables are inferred from interface links via a bundled NQE and applied
         # after the core sync (both endpoint interfaces must already exist). A
@@ -1679,17 +1918,15 @@ def run_contrib_full_sync(
                 for row in rows("devices")
                 if str(row.get("name") or "").strip()
             ]
-            # An empty list means "all devices" to the reusable NQE. In a
-            # filtered run, zero selected devices must therefore produce zero
-            # cable rows rather than accidentally widening back to the network.
+            # In a filtered run, zero selected devices must produce zero cable rows
+            # rather than widening back to the whole network.
             cable_rows = []
             if device_names or not filtered_scope:
-                cable_rows = _cloud_query_rows(
-                    client,
-                    network_id,
-                    snapshot_id,
-                    "forward_cables.nqe",
-                    parameters={"forward_device_names": device_names},
+                # The query takes no parameters (Forward rejects them with HTTP 400),
+                # so the scope is applied here, on the rows.
+                cable_rows = _cables_in_scope(
+                    _cloud_query_rows(client, network_id, snapshot_id, "forward_cables.nqe"),
+                    device_names if filtered_scope else None,
                 )
             summaries["cables"] = run_contrib_cable_sync(
                 cable_rows=cable_rows, dryrun=dryrun, job=job

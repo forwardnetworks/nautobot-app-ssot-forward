@@ -12,9 +12,9 @@ Build a Nautobot 3.1/3.2 SSoT integration that syncs Forward Networks data into 
 - an operational UI with overview, status, configuration, diagnostics, and slice-detail pages
 - a model registry for the first inventory/IPAM slice
 
-Earlier branching/sharding protection is intentionally not carried over. Nautobot will use the SSoT
-job lifecycle, DiffSync adapters, API-level pagination/retry protection, and explicit dry-run gates
-instead.
+Earlier branching/sharding protection is intentionally not carried over. Nautobot uses the SSoT
+job lifecycle, DiffSync adapters, and explicit dry-run gates instead. Pagination and retry
+protection are `forward-sdk`'s, not this repo's.
 
 ## Current Shape
 
@@ -75,14 +75,20 @@ The most useful hardening patterns for this repo are contractual rather than pla
   concrete committed source before runtime use.
 - Support bundles should remain the canonical troubleshooting artifact, with both the full payload and a redacted shareable view.
 - Replay tooling should be able to rebuild a dry run from a saved fixture or exported bundle without requiring live credentials.
-- Request pressure should stay bounded through query-index caching, conservative pagination,
-  retry/backoff behavior, and at most two concurrent async submissions per dependency tier.
+- Request pressure stays bounded by `forward-sdk`, which owns pagination, retry and backoff, and
+  rate limiting. What remains this repo's concern is the snapshot cache in `client.py`, the query
+  index warmed before parallel dispatch, and the cap of two concurrent async submissions per
+  dependency tier, which exists because Forward's submit endpoint destabilises above it.
 - The local release gate should keep checking contract drift, wheel contents, release/tag state, and sensitive-content hygiene. Artifact publication is also initiated locally; the repository has no GitHub-hosted automation.
 - The SSoT job lifecycle already covers run history, so there is no separate orchestration layer to recreate here.
 
 ## Current Boundaries
 
-- `forward_nautobot/integrations/forward/client.py` owns API transport, snapshots, query lookup, and NQE execution.
+- `forward_nautobot/integrations/forward/client.py` adapts `forward-sdk` to this plugin's
+  vocabulary. Transport is the SDK's: retry, backoff, rate limiting, pagination guards, the async
+  NQE poll loop and the query library workflow all live there. What this module owns is the
+  plugin's settings and query-spec shapes, the response reshaping its adapters expect, the
+  snapshot cache, and the telemetry the SSoT job result persists.
 - `forward_nautobot/integrations/forward/query_publishing.py` owns query add/edit/commit and
   exact committed-source verification.
 - `forward_nautobot/integrations/forward/runner.py` turns a `ForwardSyncSpec` into a report for jobs/UI.
@@ -121,7 +127,7 @@ ForwardInventoryDataSource
      -> ForwardSourceAdapter
      -> NautobotTargetAdapter
      -> ForwardWritePlanner
-  -> ForwardNautobotWriteExecutor only when SSoT dryrun is false
+  -> contrib_sync (nautobot-ssot contrib CRUD) only when SSoT dryrun is false
   -> support bundle pair
   -> SSoT Sync.diff / Sync.summary
 ```

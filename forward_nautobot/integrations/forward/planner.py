@@ -516,9 +516,16 @@ class ForwardIngestionPlanner:
         """Re-raise a slice fetch failure with the failing slice + Forward query
         attributed, so the operator sees *what* broke (domain data only we hold)
         instead of a bare transport error."""
-        return ForwardClientError(
+        attributed = ForwardClientError(
             f"slice '{mapping.slug}' (query {mapping.forward_query_file}) failed: {exc}"
         )
+        # Keep what the SDK knew about the failure; only the message is re-worded.
+        attributed.kind = exc.kind
+        attributed.reason = exc.reason
+        attributed.outcome = exc.outcome
+        attributed.detail = exc.detail
+        attributed.attempts = exc.attempts
+        return attributed
 
     def _fetch_slice(
         self,

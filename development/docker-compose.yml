@@ -32,7 +32,7 @@ services:
       context: ..
       dockerfile: development/Dockerfile
       args:
-        NAUTOBOT_VERSION: ${NAUTOBOT_VERSION:-3.2.2}
+        NAUTOBOT_VERSION: ${NAUTOBOT_VERSION:-3.2.9}
         PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
     depends_on:
       postgres:

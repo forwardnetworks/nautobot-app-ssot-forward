@@ -1135,3 +1135,25 @@ def test_slice_fetch_error_attributes_slice_and_query():
     assert "devices" in message
     assert "forward_devices.nqe" in message
     assert "boom" in message
+
+
+def test_slice_fetch_error_keeps_the_sdk_failure_details():
+    """Attribution rewrites the message but must not erase why Forward failed."""
+    from forward_nautobot.integrations.forward.exceptions import ForwardClientError
+    from forward_nautobot.integrations.forward.planner import ForwardIngestionPlanner
+    from forward_nautobot.integrations.forward.registry import get_model_mapping
+
+    original = ForwardClientError("execution failed")
+    original.outcome = "SYSTEM_ERROR"
+    original.attempts = 3
+    original.detail = {"message": "boom"}
+    original.reason = "EXECUTION"
+
+    err = ForwardIngestionPlanner._slice_fetch_error(get_model_mapping("devices"), original)
+
+    assert (err.outcome, err.attempts, err.detail, err.reason) == (
+        "SYSTEM_ERROR",
+        3,
+        {"message": "boom"},
+        "EXECUTION",
+    )

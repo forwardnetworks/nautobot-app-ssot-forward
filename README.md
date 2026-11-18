@@ -15,13 +15,13 @@ capture, with support for Forward async query execution.
 
 | Plugin | Nautobot | nautobot-ssot | Forward | Status |
 | --- | --- | --- | --- | --- |
-| `0.7.0` | `3.1.8`, `3.2.2` | `4.4` - `<5.0` | `26.6+` for async execution and NQE diffs | Current |
+| `0.8.1` | `3.1.8`, `3.2.9` | `4.4` - `<5.0` | `26.6+` for async execution and NQE diffs | Current |
 
 ## Overview
 
 - Plugin metadata and app wiring under `forward_nautobot/__init__.py`
 - SSoT data source entrypoint and job registration in `forward_nautobot/jobs.py`
-- Forward API client with snapshot lookup, query resolution, and paging
+- Forward API client backed by `forward-sdk`, with snapshot lookup and query resolution
 - Persisted device-population filters applied to full-query and NQE-diff rows
 - Native Nautobot cloud ingestion with cloud-only execution and account closure
 - Idempotent bundled-query publication with committed-source parity checks
@@ -146,8 +146,8 @@ The profile form includes these fields:
 - `delete_policy` (`ignore`, `mark_inactive`, `delete`)
 - `is_default`
 
-The plugin uses `httpx` with `trust_env=True`, so environment proxy settings are
-respected automatically. Configure standard `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`
+Forward API traffic goes through `forward-sdk`, which builds its HTTP client with
+`trust_env=True`, so environment proxy settings are respected automatically. Configure standard `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`
 variables on the Nautobot process to route Forward API traffic through enterprise
 proxies when needed.
 
@@ -234,10 +234,19 @@ for async full syncs. A dry-run SSoT job never publishes queries.
 
 ### Management commands
 
+`forward_health` is a pre-flight check. It reports connectivity and credentials, whether the
+configured network is visible, whether the selected snapshot is processed, whether Forward
+collected the devices (and whether any disappeared since the previous snapshot), and whether the
+queries for the profile's enabled models are published and current. A failing check names the
+action most likely to fix it. `forward_architecture_audit` cross-checks the slice registry
+against the packaged queries and contract versions.
+
 ```bash
 nautobot-server forward_fixture_seed
 nautobot-server forward_demo_seed
 nautobot-server forward_publish_queries --profile <profile> --fail-on-gap
+nautobot-server forward_health --profile <profile>
+nautobot-server forward_architecture_audit
 nautobot-server forward_dry_run <fixture.json> \
   --sample-size 5 \
   --sharing-profile external \
@@ -252,7 +261,7 @@ Unit and integration testing commands:
 ```bash
 python -m pytest -q -m "not integration"
 NAUTOBOT_VERSION=3.1.8 docker compose -f development/docker-compose.yml up -d --build
-NAUTOBOT_VERSION=3.2.2 docker compose -f development/docker-compose.yml up -d --build
+NAUTOBOT_VERSION=3.2.9 docker compose -f development/docker-compose.yml up -d --build
 python -m pytest -q -m integration
 ```
 

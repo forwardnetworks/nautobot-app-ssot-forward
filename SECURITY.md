@@ -34,8 +34,9 @@ listed in the README compatibility matrix.
   `SECRET_KEY`, masked in UI output, and redacted from support bundles. Protect
   `SECRET_KEY` like a credential; rotating it makes existing encrypted Forward
   passwords undecryptable until operators re-enter them.
-- Forward API traffic uses `httpx` with `trust_env=True`, so Nautobot process
-  proxy variables such as `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` are honored.
+- Forward API traffic goes through `forward-sdk`, which builds its `httpx` client with
+  `trust_env=True`, so Nautobot process proxy variables such as `HTTP_PROXY`, `HTTPS_PROXY`,
+  and `NO_PROXY` are honored.
 - SaaS profiles should use `https://fwd.app` with TLS verification enabled.
   On-prem profiles may use a custom URL and may disable TLS verification only
   when local certificate policy requires it.

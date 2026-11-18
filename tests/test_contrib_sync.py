@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import get_args
 
+import pytest
+
 import forward_nautobot.integrations.forward.contrib_sync as contrib_sync
 from forward_nautobot.integrations.forward.contrib_sync import (
     CONTRIB_AVAILABLE,
@@ -381,3 +383,96 @@ def test_auxiliary_query_falls_back_to_bundled_inline_async():
 
     assert rows == [{"account_id": "fixture-account"}]
     assert client.modes == ["query_path", "query"]
+
+
+def _cable_run(monkeypatch, *, filtered, device_names, all_cables):
+    """Drive run_contrib_full_sync's cable step; return (rows received, query kwargs)."""
+    seen = {}
+
+    def fake_rows(client, network_id, snapshot_id, query_file, **kwargs):
+        seen["kwargs"] = kwargs
+        return list(all_cables)
+
+    monkeypatch.setattr(contrib_sync, "CONTRIB_AVAILABLE", True)
+    monkeypatch.setattr(contrib_sync, "run_contrib_core_sync", lambda **kwargs: {})
+    monkeypatch.setattr(contrib_sync, "run_contrib_extended_sync", lambda **kwargs: {})
+    monkeypatch.setattr(contrib_sync, "_cloud_query_rows", fake_rows)
+    monkeypatch.setattr(
+        contrib_sync,
+        "run_contrib_cable_sync",
+        lambda *, cable_rows, **kwargs: {"rows": [dict(r) for r in cable_rows]},
+    )
+    result = contrib_sync.run_contrib_full_sync(
+        source_records={"devices": [{"name": n} for n in device_names]},
+        profile=SimpleNamespace(),
+        dryrun=True,
+        client=object(),
+        network_id="network-fixture",
+        include_cloud=False,
+        include_cables=True,
+        filtered_scope=filtered,
+        job=SimpleNamespace(),
+    )
+    return result["cables"]["rows"], seen["kwargs"]
+
+
+_CABLES = [
+    {"device": "a", "remote_device": "b"},
+    {"device": "a", "remote_device": "c"},
+    {"device": "c", "remote_device": "d"},
+]
+
+
+def test_cable_query_is_run_without_parameters(monkeypatch):
+    """Forward rejects parameters on a main query that declares none (HTTP 400)."""
+    _, kwargs = _cable_run(monkeypatch, filtered=False, device_names=["a"], all_cables=_CABLES)
+    assert "parameters" not in kwargs
+
+
+def test_an_unfiltered_run_keeps_every_cable(monkeypatch):
+    rows, _ = _cable_run(monkeypatch, filtered=False, device_names=["a"], all_cables=_CABLES)
+    assert rows == _CABLES
+
+
+def test_a_filtered_run_keeps_only_cables_with_both_ends_selected(monkeypatch):
+    rows, _ = _cable_run(monkeypatch, filtered=True, device_names=["a", "b"], all_cables=_CABLES)
+    assert rows == [{"device": "a", "remote_device": "b"}]
+
+
+@pytest.mark.skipif(not contrib_sync.CONTRIB_AVAILABLE, reason="needs nautobot-ssot contrib")
+def test_models_accept_the_empty_relations_nautobot_allows():
+    """Found by a live run: a device with no platform made every sync raise.
+
+    Loading existing Nautobot objects builds these models from the database, where
+    these relations may be empty. They must accept that, or one hand-made object
+    breaks the whole sync.
+    """
+    device = contrib_sync.ForwardContribDevice(
+        name="d",
+        location__name="l",
+        role__name="r",
+        status__name="s",
+        device_type__manufacturer__name="m",
+        device_type__model="t",
+        platform__name=None,
+    )
+    assert device.platform__name is None
+    assert (
+        contrib_sync.ForwardContribPlatform(name="p", manufacturer__name=None).manufacturer__name
+        is None
+    )
+    assert (
+        contrib_sync.ForwardContribVRF(
+            name="v", namespace__name="Global", status__name=None
+        ).status__name
+        is None
+    )
+    item = contrib_sync.ForwardContribInventoryItem(
+        device__name="d", name="i", manufacturer__name=None
+    )
+    assert item.manufacturer__name is None
+
+
+def test_cable_scoping_ignores_stray_whitespace_in_device_names():
+    rows = [{"device": " a ", "remote_device": "b\n"}]
+    assert contrib_sync._cables_in_scope(rows, ["a", "b"]) == rows

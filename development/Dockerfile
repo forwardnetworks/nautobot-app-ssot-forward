@@ -1,6 +1,6 @@
 # Local test/dev image: selected official Nautobot release + this plugin
 # (editable) + the test toolchain. CI supplies both supported release lines.
-ARG NAUTOBOT_VERSION=3.2.2
+ARG NAUTOBOT_VERSION=3.2.9
 ARG PYTHON_VERSION=3.12
 FROM ghcr.io/nautobot/nautobot:${NAUTOBOT_VERSION}-py${PYTHON_VERSION}
 

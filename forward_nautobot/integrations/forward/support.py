@@ -40,6 +40,14 @@ SHARING_PROFILES: dict[str, dict[str, set[str]]] = {
             "deleted",
             "diff_summary",
             "diagnostics",
+            "drift_explanations",
+            "drift_slices",
+            "drift_slice",
+            "drift_explanation",
+            "drift_action",
+            "label_index",
+            "figure_label",
+            "figure_path",
             "errors",
             "failure_classification",
             "available_snapshots",
@@ -154,6 +162,55 @@ def redact_support_bundle_payload(
             for item in value
         )
     return value
+
+
+#: Sections left out of the label index: rows are data rather than figures, and
+#: the index must not index itself.
+_INDEX_SKIP = {"sample_rows", "label_index", "available_snapshots", "rows", "before", "after"}
+
+
+def build_label_index(payload: Any, *, prefix: str = "") -> list[dict[str, str]]:
+    """List a readable label and the JSON path of every numeric figure in ``payload``.
+
+    A support engineer reading a number in a report can look it up by name instead
+    of hunting through nested sections, and a grader can address figures without
+    knowing the layout. Booleans are not figures. Labels are unique: if two paths
+    would read the same, the later one keeps its full path as the label.
+
+    A list of ``{figure_label, figure_path}`` entries rather than a mapping keyed by label:
+    sharing redacts by key name, and a key per figure could not be allowlisted. The
+    entry keys are deliberately specific: sharing allowlists by key name at every
+    depth, so a generic ``label`` or ``path`` would expose every unrelated value
+    stored under those names (component labels, snapshot labels, raw rows).
+    """
+    index: dict[str, str] = {}
+
+    def walk(value: Any, path: str) -> None:
+        if isinstance(value, bool):
+            return
+        if isinstance(value, (int, float)):
+            label = path.replace(".", " / ").replace("_", " ")
+            if label in index:
+                # Two paths read the same. Fall back to the path, and number it if
+                # even that is taken, so no figure ever overwrites another.
+                label = path
+                suffix = 2
+                while label in index:
+                    label = f"{path} #{suffix}"
+                    suffix += 1
+            index[label] = path
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if str(key) in _INDEX_SKIP:
+                    continue
+                walk(item, f"{path}.{key}" if path else str(key))
+        elif isinstance(value, (list, tuple)):
+            for position, item in enumerate(value):
+                walk(item, f"{path}[{position}]")
+
+    walk(payload, prefix)
+    return [{"figure_label": label, "figure_path": path} for label, path in index.items()]
 
 
 @dataclass(slots=True)
@@ -430,5 +487,26 @@ def build_support_bundle(
         write_policy=dict(write_policy or {}),
         configuration_status=dict(configuration_status or {}),
         failure_classification=resolved_failure_classification,
-        diagnostics=dict(diagnostics or {}),
+        diagnostics=_diagnostics_with_index(
+            report,
+            diagnostics,
+            source_summary=source_summary,
+            target_summary=target_summary,
+            write_summary=write_summary,
+            diff_summary=diff_summary,
+        ),
     )
+
+
+def _diagnostics_with_index(
+    report: ForwardSyncReport,
+    diagnostics: dict[str, Any] | None,
+    **sections: dict[str, Any] | None,
+) -> dict[str, Any]:
+    merged = dict(diagnostics or {})
+    figures = {name: value for name, value in sections.items() if value}
+    figures["row_count"] = report.row_count
+    figures["snapshot_metrics"] = dict(report.snapshot_metrics)
+    figures["diagnostics"] = {k: v for k, v in merged.items() if k != "label_index"}
+    merged["label_index"] = build_label_index(figures)
+    return merged

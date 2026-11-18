@@ -41,3 +41,34 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     skipped = getattr(terminal, "stats", {}).get("skipped", ()) if terminal else ()
     if skipped:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+@pytest.fixture(autouse=True)
+def _fresh_sync_baseline():
+    """Give each test the clean profile table an in-memory database would.
+
+    A run records the snapshot it synced on the saved profile, and the next run
+    with the same snapshot is skipped as unchanged. That is correct behaviour in
+    production and a trap in a shared database: two tests using the same profile
+    and snapshot pass alone and the second fails in sequence, as the plan it
+    expected to build is skipped before it starts. An in-memory database hides
+    this because it is rebuilt per process; the container stack does not.
+
+    Only touches the database when one is available; a bare environment is a
+    no-op.
+    """
+    try:
+        from django.apps import apps
+        from django.db import connection
+
+        if not apps.ready or connection.settings_dict.get("NAME") in (None, ""):
+            yield
+            return
+        from forward_nautobot.models import ForwardConnectionProfile
+
+        # Match what an in-memory database gives every test: no saved profiles
+        # from a previous test. Some tests assert that none exists.
+        ForwardConnectionProfile.objects.all().delete()
+    except Exception:
+        pass
+    yield

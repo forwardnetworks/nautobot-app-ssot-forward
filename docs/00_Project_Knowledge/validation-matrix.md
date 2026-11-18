@@ -8,7 +8,7 @@ publishing.
 | Documentation only | `python scripts/check_harness.py`, `python -m pytest -q tests/test_release_workflow.py` |
 | Forward API client change | `python -m pytest -q tests/test_client.py tests/test_runner.py`, `python -m pytest -q tests/test_support_grader.py` |
 | NQE contract or registry change | `python scripts/check_query_contracts.py`, `python scripts/generate_contract_diff_report.py --baseline-ref HEAD~1 --output dist/contract-diff-report.json`, `python -m pytest -q tests/test_queries.py tests/test_registry.py` |
-| Planner or write-path change | `python -m pytest -q tests/test_planner.py tests/test_write_path.py tests/test_write_executor.py tests/test_target_adapter.py` |
+| Planner or write-path change | `python -m pytest -q tests/test_planner.py tests/test_write_path.py tests/test_target_adapter.py` |
 | SSoT job or Nautobot UI change | `python -m pytest -q tests/test_plugin.py tests/test_views.py tests/test_nautobot_job_refresh.py` |
 | Security or credential handling change | `python -m pytest -q tests/test_configuration.py tests/test_release_gates.py`, `python scripts/check_sensitive_content.py --all-history` |
 | Release or packaging change | `python scripts/ci_local.py`, then inspect the local build artifacts |
@@ -32,7 +32,7 @@ The local release gate runs the complete required validation set:
 - wheel-content check
 - Twine metadata check
 - source-absent installation of the exact wheel into separate disposable PostgreSQL/Redis stacks
-  for Nautobot 3.1.8 and 3.2.2, including authenticated HTML/API route probes
+  for Nautobot 3.1.8 and 3.2.9, including authenticated HTML/API route probes
 
 The non-live pytest gate runs with `FORWARD_STRICT_NO_SKIPS=1`; any skipped
 non-integration test fails the release gate.
